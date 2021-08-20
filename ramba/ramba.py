@@ -25,7 +25,9 @@ import weakref
 from cffi import FFI
 import operator
 import copy as libcopy
-import pickle
+import pickle as pickle
+if pickle.HIGHEST_PROTOCOL < 5:
+    import pickle5 as pickle
 import cloudpickle
 import weakref
 import threading

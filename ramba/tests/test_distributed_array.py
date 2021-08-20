@@ -2,7 +2,6 @@ import ramba
 import numpy as np
 import random
 
-"""
 class TestBroadcast:
     def test1(self):
         N = 10
@@ -21,10 +20,10 @@ class TestBroadcast:
         r = a + X
         r_l = r.asarray()
         assert(np.array_equal(rnp, r_l))
-"""
+
 
 class TestGeneric:
-    def test1(self):
+    def test6(self):
         ntests=10
         testsize=100
 
@@ -73,7 +72,7 @@ class TestGeneric:
             fails += run_test(testsize)
         assert(fails == 0)
 
-    def test2(self):
+    def test6b(self):
         ntests=10
         testsize=100
 

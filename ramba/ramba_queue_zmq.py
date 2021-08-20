@@ -17,6 +17,8 @@ from collections.abc import Iterable
 #import cloudpickle as cp
 #import pyarrow
 import pickle as pick
+if pick.HIGHEST_PROTOCOL < 5:
+    import pickle5 as pick
 
 import zmq
 context = zmq.Context()

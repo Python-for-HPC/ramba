@@ -2,3 +2,4 @@ numba
 ray
 pyzmq
 cffi
+pickle5
