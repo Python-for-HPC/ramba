@@ -25,7 +25,7 @@ def get_zone_cpus(z):
     with open("/sys/devices/system/node/node"+str(z)+"/cpulist") as f:
         cpuranges = f.read()[:-1].split(',')
     cpuranges = [ x.split('-') for x in cpuranges ]
-    cpus = [ i for x in cpuranges for i in range(int(x[0]),int(x[1])+1) ]
+    cpus = [ i for x in cpuranges for i in range(int(x[0]),int(x[-1])+1) ]
     return cpus
 
 # set cpu affinity to a particular zone's cpus

@@ -14,7 +14,9 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 import asyncio
 from typing import Optional, Any, List, Dict
 from collections.abc import Iterable
-import cloudpickle as cp
+#import cloudpickle as cp
+#import pyarrow
+import pickle as pick
 
 import zmq
 context = zmq.Context()
@@ -38,7 +40,13 @@ class Full(Exception):
     pass
 
 def pickle(item: Any) -> Any:
-    return cp.dumps(item)
+    #return cp.dumps(item)
+    #return pyarrow.serialize(item).to_buffer()
+    #return pick.dumps(item,protocol=5)
+    rv = [0]
+    rv0 = pick.dumps(item,protocol=5,buffer_callback=rv.append)
+    rv[0] = rv0
+    return rv
 
 class Queue:
     """A first-in, first-out queue implementation on Ray.
@@ -77,10 +85,12 @@ class Queue:
         prefiltered[self] = []
         self.sent_data=0
         self.recv_data=0
+        self.pickle_time = 0.0
+        self.unpickle_time = 0.0
         #print ("ADDR:",ip,port, "HINT:",hint_ip)
 
     def get_stats(self):
-        return (self.ip, self.port, self.recv_data, self.sent_data)
+        return (self.ip, self.port, self.recv_data, self.sent_data, self.unpickle_time, self.pickle_time)
 
     '''
     def __len__(self) -> int:
@@ -142,9 +152,17 @@ class Queue:
             sockets[self] = s
         else:
             s = sockets[self]
+        t = -time.time()
         msg = item if raw else pickle(item)
-        s.send(msg)
-        self.sent_data+=len(msg)
+        t += time.time()
+        #s.send(msg,copy=False)
+        s.send_multipart(msg,copy=False)
+        #self.sent_data+=len(msg)
+        self.sent_data+=len(msg[0])
+        for d in msg[1:]:
+            self.sent_data+=len(d.raw())
+        if not raw:
+            self.pickle_time+=t
 
     '''
     async def put_async(self,
@@ -208,11 +226,18 @@ class Queue:
                 if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000)
                 return msg
         while True:
-            msg0 = s.recv()
-            self.recv_data+=len(msg0)
+            #msg0 = s.recv()
+            msg0 = s.recv_multipart(copy=False)
+            #self.recv_data+=len(msg0)
+            for d in msg0:
+                self.recv_data+=len(d)
             t1 = time.time()
-            msg = cp.loads(msg0)
+            #msg = cp.loads(msg0)
+            #msg = pick.loads(msg0)
+            msg = pick.loads(msg0[0],buffers=msg0[1:])
+            #msg = pyarrow.deserialize(msg0)
             t2 = time.time()
+            self.unpickle_time+=t2-t1
             if gfilter(msg):
                 if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
                 return msg

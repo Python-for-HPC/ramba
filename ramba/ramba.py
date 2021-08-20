@@ -26,6 +26,7 @@ from cffi import FFI
 import operator
 import copy as libcopy
 import pickle
+import cloudpickle
 import weakref
 import threading
 #import ramba.ramba_queue as ramba_queue
@@ -888,6 +889,8 @@ class RemoteState:
         self.numpy_map[gid] = lnd
         new_bcontainer = lnd.bcontainer
         if filler:
+            filler = cloudpickle.loads(filler)
+        if filler:
             try:
                 njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
@@ -1708,6 +1711,7 @@ class RemoteState:
         overlap_time=0.0
         getview_time=0.0
         arrview_time=0.0
+        copy_time=0.0
         for (g,(l,bdist,pad,_)) in arrays.items():
             for (v,info) in l:
                 arr_parts[v] = []
@@ -1743,7 +1747,10 @@ class RemoteState:
                         # deferred send data to worker i
                         #self.comm_queues[i].put( (uuid, v, part, sl) )
                         if i not in to_send: to_send[i] = []
-                        to_send[i].append( (v, part, sl) )
+                        copy_time-=timer()
+                        #to_send[i].append( (v, part, sl) )
+                        to_send[i].append( (v, part, sl.copy()) )   # pickling a slice is slower than copy+pickle !!
+                        copy_time+=timer()
                         dprint (2, "Worker",self.worker_num,"Sending to worker",i,part,sl, info[1])
         times.append(timer())
 
@@ -1863,9 +1870,9 @@ class RemoteState:
 
         times.append(timer())
         tnow = timer()
-        if ntiming>=1 and self.worker_num==15:
+        if ntiming>=1 and self.worker_num==5:
             times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
-            tprint (1, "Deferred execution", (tnow-self.tlast)*1000,times, int(overlap_time*1000000)/1000, int(getview_time*1000000)/1000, int(arrview_time*1000000)/1000)
+            tprint (1, "Deferred execution", (tnow-self.tlast)*1000,times, int(overlap_time*1000000)/1000, int(getview_time*1000000)/1000, int(arrview_time*1000000)/1000, int(copy_time*1000000)/1000)
             tprint (2, code)
         self.tlast = tnow
 
@@ -1991,13 +1998,21 @@ if ray_first_init:
 def print_comm_stats():
     stats = remote_call_all("get_comm_stats")
     totals = {}
+    pickle_times = {}
+    unpickle_times = {}
     for i,l in enumerate(stats):
         ips = l[i][0]
-        for ipd,_,_,sent in l:
+        for ipd,_,_,sent,unpick,pick in l:
             if (ips,ipd) not in totals:  totals[(ips,ipd)] = 0
             totals[(ips,ipd)] += sent
+            if (ips,ipd) not in pickle_times:  pickle_times[(ips,ipd)] = 0.0
+            pickle_times[(ips,ipd)] += pick
+            if ips not in unpickle_times:  unpickle_times[ips] = 0.0
+            unpickle_times[ips] += unpick
 
     print (totals)
+    print (pickle_times)
+    print (unpickle_times)
 
 ## track live ndarray gids.  map gid to [ref_count, remote_constructed flag, weakset of ndarray references]
 #ndarray_gids = {}
@@ -2189,8 +2204,7 @@ class ndarray:
             lb = max(self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0)
             new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
             #print("array_binop:", new_array_size)
-            new_ndarray = empty(new_array_size, local_border=lb)
-            #new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb)
+            new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb)
 
             if reverse:
                 deferred_op.add_op(["", new_ndarray, " = ", rhsview, optext, selfview], new_ndarray, imports=imports)
@@ -2831,7 +2845,7 @@ class deferred_op:
         #[ remote_states[i].run_deferred_ops.remote(
         #              self.uuid, live_gids, self.delete_gids, self.use_other.items(), self.distribution, fname, code, self.imports)
         #          for i in range(len(remote_states)) ]
-        remote_exec_all("run_deferred_ops", self.uuid, live_gids, self.delete_gids, self.use_other.items(), self.distribution, fname, code, self.imports)
+        remote_exec_all("run_deferred_ops", self.uuid, live_gids, self.delete_gids, list(self.use_other.items()), self.distribution, fname, code, self.imports)
         times.append(timer())
         # all live arrays used should be constructed by now
         for k in live_gids.keys():
@@ -2913,7 +2927,6 @@ class deferred_op:
 
 
 def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
-    #new_gid = uuid.uuid4()
     new_ndarray = ndarray(size, distribution=shardview.clean_dist(divisions), local_border=local_border, dtype=dtype)
     dprint(3, "divisions:", divisions)
     return new_ndarray
@@ -2946,7 +2959,8 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None):
         [remote_exec(i, "create_array", new_ndarray.gid,
                                         new_ndarray.distribution[i],
                                         size,
-                                        filler,
+                                        #filler,
+                                        cloudpickle.dumps(filler),
                                         local_border,
                                         dtype,
                                         new_ndarray.distribution,

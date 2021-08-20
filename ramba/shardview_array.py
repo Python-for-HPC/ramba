@@ -283,7 +283,7 @@ def array_to_view(sv, arr):
     if not isinstance(arr2, (np.ndarray)):
         arr2 = np.array([arr2])  # in case we get single element
     # add additonal axes as needed (numpy broadcast)
-    newdims = [_size(sz)[i] for i,v in enumerate(_axis_map(sv)) if v<0]
+    newdims = [_size(sv)[i] for i,v in enumerate(_axis_map(sv)) if v<0]
     if len(newdims)>0:
         newdims = tuple(newdims)+arr2.shape
         arr2 = np.broadcast_to(arr2, newdims)
@@ -325,9 +325,12 @@ def slice_to_fortran(sl):
 
 @numba.njit(cache=True)
 def clean_dist(dist):
-    d2 = np.empty_like(dist)
-    for i,s in enumerate(dist):
-        d2[i] = clean_range(s)
+    first_clean = clean_range(dist[0])
+    dshape = dist.shape
+    d2 = np.empty((dshape[0], first_clean.shape[0], first_clean.shape[1]), dtype=np.int32)
+    d2[0] = first_clean
+    for i,s in enumerate(dist[1:]):
+        d2[i+1] = clean_range(s)
     return d2
 
 
@@ -495,7 +498,7 @@ def broadcast(distribution, broadcasted_dims, size):
     new_dims = len(size) - len(_size(distribution[0]))
     #new_dims = len(size) - len(distribution[0]._size)
     dprint(4, "shardview::broadcast", distribution, broadcasted_dims, size, new_dims)
-    new_axis_map = np.array([-1 if broadcasted_dims[j] else _axis_map(distribution[0])[j-new_dims] for j in range(len(size))])
+    new_axis_map = np.array([-1 if broadcasted_dims[j] else _axis_map(distribution[0])[j - new_dims] for j in range(len(size))])
     ret = []
     for i in range(len(distribution)):
         new_size = np.array([size[j] if broadcasted_dims[j] else _size(distribution[i])[j - new_dims] for j in range(len(size))])
