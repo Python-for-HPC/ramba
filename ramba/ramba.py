@@ -98,6 +98,7 @@ dprint(3, "numba_workqueue:", numba_workqueue, type(numba_workqueue))
 ray_imports = ray.__all__[:]
 if 'PYTHON_MODE' in ray_imports:
     ray_imports.remove('PYTHON_MODE')
+if 'show_in_dashboard' in ray_imports:
     ray_imports.remove('show_in_dashboard')
 istmt = "from ray import {}".format(",".join(ray_imports))
 # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
