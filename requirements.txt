@@ -3,3 +3,4 @@ ray
 pyzmq
 cffi
 pickle5
+cloudpickle
