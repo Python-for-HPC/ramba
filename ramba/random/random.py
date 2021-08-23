@@ -16,8 +16,17 @@ import numpy as np
 def seed(x):
     [ramba.remote_states[i].seed.remote(x+i) for i in range(len(ramba.remote_states))]
 
-def random(size):
-    return ramba.init_array(size, lambda x: np.random.random())
+def random(size=None):
+    if size is None:
+        return np.random.random()
+    else:
+        return ramba.init_array(size, lambda x: np.random.random())
+
+def randn(*args):
+    if len(args) == 0:
+        return np.random.randn()
+    else:
+        return ramba.init_array(args, lambda x: np.random.randn())
 
 class RandomState:
     def __init__(self, *args):
