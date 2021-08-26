@@ -21,7 +21,26 @@ class TestBroadcast:
         r_l = r.asarray()
         assert(np.array_equal(rnp, r_l))
 
+    def test2(self):
+        N = 100
 
+        a = ramba.arange(N)
+        anp = np.arange(N)
+        a_l = a.asarray()
+        assert(np.array_equal(anp, a_l))
+
+        X = ramba.fromfunction(lambda x,y: x+y, (N,1))
+        Xnp = np.fromfunction(lambda x,y: x+y, (N,1))
+        X_l = X.asarray()
+        assert(np.array_equal(Xnp, X_l))
+
+        rnp = anp + Xnp
+        r = a + X
+        r_l = r.asarray()
+        assert(np.array_equal(rnp, r_l))
+
+
+"""
 class TestGeneric:
     def test6(self):
         ntests=10
@@ -139,3 +158,4 @@ class TestGeneric:
         for i in range(ntests):
             fails += run_test(testsize)
         assert(fails == 0)
+"""
