@@ -438,7 +438,7 @@ def distribution_to_divisions(dist):
         ret[i][1] = _stop(d)-1
     return ret
 
-def default_distribution(size):
+def default_distribution(size, dims_do_not_distribute=[]):
     num_dim = len(size)
     starts = np.zeros(num_dim, dtype=np.int64)
     ends = np.array(list(size), dtype=np.int64)
@@ -449,7 +449,7 @@ def default_distribution(size):
         make_uni_dist(divisions, 0, starts, ends)
     else:
         if regular_schedule:
-            compute_regular_schedule(size, divisions)
+            compute_regular_schedule(size, divisions, dims_do_not_distribute=dims_do_not_distribute)
             dprint(3, "compute_regular output:", size, divisions)
         else:
             numba_workqueue.do_scheduling_signed(num_dim, ffi.cast("int*", starts.ctypes.data), ffi.cast("int*", ends.ctypes.data), num_workers, ffi.cast("int*", divisions.ctypes.data), 0)
@@ -614,11 +614,11 @@ def make_uni_dist_from_shape(num_workers, node, shape):
 
 
 
-def compute_regular_schedule(size, divisions):
-    divisions[:] = compute_regular_schedule_internal(size)
+def compute_regular_schedule(size, divisions, dims_do_not_distribute=[]):
+    divisions[:] = compute_regular_schedule_internal(size, tuple(dims_do_not_distribute))
 
 @functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(size):
+def compute_regular_schedule_internal(size, dims_do_not_distribute):
     num_dim = len(size)
     divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
     the_factors = dim_factor_dict[num_dim]
@@ -646,6 +646,9 @@ def compute_regular_schedule_internal(size):
     for factored in the_factors:
         not_possible = False
         for i in range(num_dim):
+            if factored[i] != 1 and i in dims_do_not_distribute:
+               not_possible = True
+               break
             if factored[i] > size[i]:
                not_possible = True
                break

@@ -20,13 +20,25 @@ def random(size=None):
     if size is None:
         return np.random.random()
     else:
-        return ramba.init_array(size, lambda x: np.random.random())
+        def impl(bcontainer, dim_lens, starts):
+            bcontainer[:] = np.random.random(dim_lens)
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
 
 def randn(*args):
     if len(args) == 0:
         return np.random.randn()
     else:
-        return ramba.init_array(args, lambda x: np.random.randn())
+        def impl(bcontainer, dim_lens, starts):
+            bcontainer[:] = np.random.randn(*dim_lens)
+        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=False))
+
+def uniform(low=0.0, high=1.0, size=None):
+    if size is None:
+        return np.random.uniform(low=low, high=high)
+    else:
+        def impl(bcontainer, dim_lens, starts):
+            bcontainer[:] = np.random.uniform(low=low, high=high, size=dim_lens)
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
 
 class RandomState:
     def __init__(self, *args):
@@ -39,7 +51,9 @@ class RandomState:
                 rs = np.random.RandomState()
                 size = kwargs["size"]
                 del kwargs["size"]
-                return ramba.init_array(size, lambda x: getattr(rs, attr)(*args, **kwargs))
+                def impl(bcontainer, dim_lens, starts):
+                    bcontainer[:] = getattr(rs, attr)(*args, size=dim_lens)
+                return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
             else:
                 return getattr(np.random.RandomState(), attr)(*args, **kwargs)
 
