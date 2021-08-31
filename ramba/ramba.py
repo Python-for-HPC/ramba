@@ -29,7 +29,6 @@ import pickle as pickle
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
 import cloudpickle
-import weakref
 import threading
 #import ramba.ramba_queue as ramba_queue
 import ramba.ramba_queue_zmq as ramba_queue
@@ -95,9 +94,11 @@ dprint(3, "numba_workqueue:", numba_workqueue, type(numba_workqueue))
 # Import all the things that Ray exports.  We have to remove PYTHON_MODE
 # from the list because they have a bug.  This "if" can go away once the
 # fix for this issue this is in Ray mainline makes it into a Ray release.
-ray_imports = ray.__all__[:]
+ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
 if 'PYTHON_MODE' in ray_imports:
     ray_imports.remove('PYTHON_MODE')
+if 'dataget' in ray_imports:
+    ray_imports.remove('dataget')
 if 'show_in_dashboard' in ray_imports:
     ray_imports.remove('show_in_dashboard')
 istmt = "from ray import {}".format(",".join(ray_imports))
@@ -899,7 +900,7 @@ class RemoteState:
         self.numpy_map[gid] = lnd
         new_bcontainer = lnd.bcontainer
         if filler:
-            filler = cloudpickle.loads(filler)
+            filler = func_loads(filler)
         if filler:
             per_element = True
             do_compile = True
@@ -1008,42 +1009,26 @@ class RemoteState:
         #if remap_view: arr = shard.array_to_view(arr)
         #return arr
 
-#    def get_partial_array(self, gid, slice_index, order="C", bcast_dims=None):
-#        if order=="F":
-#            slice_index = shardview.slice_to_fortran(slice_index)
-#            return self.numpy_map[gid].bcontainer[slice_index].T
-#        else:
-#            return self.numpy_map[gid].bcontainer[slice_index]
-
-#    def get_partial_array_global(self, gid, global_index):
-#        lnd = self.numpy_map[gid]
-#        local_index = slice_to_local(global_index, lnd.subspace)
-#        dprint(2, "get_partial_array_global:", global_index, local_index)
-#        return self.numpy_map[gid].bcontainer[local_index]
 
     def getitem_global(self, gid, global_index, shard):
         lnd = self.numpy_map[gid]
         return lnd.bcontainer[shardview.index_to_base(shard, global_index)]
 
-    def array_unaryop(self, lhs_gid, shard, out_gid, op):
-        #print("start array_unary_op", timer())
-        lhs = self.numpy_map[lhs_gid]
-        unaryop = getattr(self.get_view(lhs_gid, shard), op)
-        #print("after getattr array_unary_op", timer())
+    def array_unaryop(self, lhs_gid, out_gid, dist, out_dist, op, axis, dtype):
+        unaryop = getattr(self.get_view(lhs_gid, dist[self.worker_num]), op)
         if out_gid is not None:
-            lnd = lhs.init_like(out_gid)
-            self.numpy_map[out_gid] = lnd
-            new_bcontainer = lnd.bcontainer
-            new_bcontainer[lnd.core_slice] = unaryop()
-#            print("array_unaryop:", lhs[0], new_bcontainer)
+            outarr = self.get_view(out_gid, out_dist[self.worker_num])
+            sl = tuple(0 if i==axis else slice(None) for i in range(outarr.ndim))
+            outarr[sl] = unaryop(axis=axis, dtype=dtype)
         else:
         #    print("befor unaryop array_unary_op", timer())
-            ret = unaryop()  # works for some simple reductions
+            ret = unaryop(axis=axis,dtype=dtype)  # works for some simple reductions
         #    print("after unaryop array_unary_op", timer())
             return ret
 
     # TODO: should use get_view
     def smap(self, out_gid, first_gid, args, func):
+        func = func_loads(func)
         first = self.numpy_map[first_gid]
         lnd = first.init_like(out_gid)
         self.numpy_map[out_gid] = lnd
@@ -1056,6 +1041,7 @@ class RemoteState:
 
     # TODO: should use get_view
     def smap_index(self, out_gid, first_gid, args, func):
+        func = func_loads(func)
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
@@ -1068,6 +1054,8 @@ class RemoteState:
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer):
+        func=func_loads(func)
+        reducer=func_loads(reducer)
         first = self.numpy_map[first_gid]
         result = None
         for index in np.ndindex(first.dim_lens):
@@ -1646,6 +1634,7 @@ class RemoteState:
             write_to_out(out, incoming_data, map_out_combined, region)
 
     def sstencil(self, stencil_op_uuid, out_gid, neighborhood, first_gid, args, func, create_flag):
+        func=func_loads(func)
         first = self.numpy_map[first_gid]
         if create_flag:
             lnd = first.init_like(out_gid)
@@ -1682,6 +1671,7 @@ class RemoteState:
 
     # TODO: should use get_view
     def scumulative_local(self, out_gid, in_gid, func):
+        func=func_loads(func)
         in_bcontainer = self.numpy_map[in_gid]
         self.numpy_map[out_gid] = in_bcontainer.init_like(out_gid)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
@@ -1692,6 +1682,7 @@ class RemoteState:
 
     # TODO: should use get_view
     def scumulative_final(self, array_gid, boundary_value, func):
+        func=func_loads(func)
         in_bcontainer = self.numpy_map[array_gid]
         in_array = in_bcontainer.bcontainer
         boundary_value = boundary_value[0]
@@ -1716,6 +1707,7 @@ class RemoteState:
 #        print("array_binop:", lhs[0], rhs, new_bcontainer)
 
     def spmd(self, func, args):
+        func=func_loads(func)
         fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
         func(*fargs)
 
@@ -2021,6 +2013,15 @@ def remote_call_all( method, *args, **kwargs):
     #return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(len(remote_states)) ])
     return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
+if USE_RAY:
+    def func_dumps( f ):
+        return f
+    def func_loads( f ):
+        return f
+else:
+    func_dumps = cloudpickle.dumps
+    func_loads = cloudpickle.loads
+
 
 # *******************************
 # ** Initialize Remote Workers **
@@ -2131,6 +2132,10 @@ class ndarray:
         return self.size
 
     @property
+    def ndim(self):
+        return len(self.size)
+
+    @property
     def T(self):
         ndims = len(self.size)
         return self.remapped_axis([ndims-i-1 for i in range(ndims)])
@@ -2185,26 +2190,35 @@ class ndarray:
             ret[ shardview.to_slice(self.distribution[i]) ] = shards[i]
         return ret
 
-    def array_unaryop(self, op, optext, reduction=False, imports=[], dtype=None):
+    def array_unaryop(self, op, optext, reduction=False, imports=[], dtype=None, axis=None):
         if reduction:
             # TODO: should see if this can be converted into a deferred op
-            #print("ndarray::unaryop start", timer())
             deferred_op.do_ops()
-            #sync()
-            #print("ndarray::unaryop after sync", timer())
-            #v = [remote_states[i].array_unaryop.remote(self.gid, self.distribution[i], self.order, self.broadcasted_dims, None, op) for i in range(len(remote_states))]
-            #v = [remote_states[i].array_unaryop.remote(self.gid, self.distribution[i], None, op) for i in range(len(remote_states))]
-            v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op) for i in range(len(remote_states))]
-            #print("ndarray::unaryop after remotes", timer())
-            #g1 = ray.get(v)
-            g1 = get_results(v)
-            #print("ndarray::unaryop after get", timer())
-            v = np.array(g1)
-            #print("ndarray::unaryop after np.array", timer())
-            uop = getattr(v, op)
-            #print("ndarray::unaryop after getattr", timer())
-            ret = uop()
-            #print("ndarray::unaryop after uop", timer())
+            if axis is None or (axis==0 and self.ndim==1):
+                #v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(len(remote_states))]
+                #g1 = get_results(v)
+                g1 = remote_call_all("array_unaryop", self.gid, None, self.distribution, None, op, None, dtype)
+                v = np.array(g1)
+                uop = getattr(v, op)
+                ret = uop(dtype=dtype)
+            else:
+                dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
+                k = dsz[axis]
+                red_arr = empty(dsz, dtype=dtype, distribution=dist)  # should create immediately
+                remote_exec_all("array_unaryop", self.gid, red_arr.gid, self.distribution, dist, op, axis, dtype)
+                sl = tuple(0 if i==axis else slice(None) for i in range(red_arr.ndim))
+                if k==1:  # done, just get the slice with axis removed
+                    ret = red_arr[sl]
+                else:
+                    # need global reduction
+                    arr = empty_like( red_arr[sl] )
+                    code = ["", arr, " = "+optext+"( np.array([", red_arr[sl]]
+                    for j in range(1,k):
+                        sl = tuple(j if i==axis else slice(None) for i in range(red_arr.ndim))
+                        code += [", ", red_arr[sl]]
+                    code.append("]) )")
+                    deferred_op.add_op(code, arr, imports=imports)
+                    ret = arr
             return ret
         else:
             new_ndarray = create_array_with_divisions(self.size, self.distribution, local_border=self.local_border, dtype=dtype)
@@ -2384,6 +2398,19 @@ class ndarray:
     def reshape_copy(self, newshape):
         return reshape_copy(self, newshape)
 
+    def mean(self, axis=None, dtype=None):
+        n = np.prod(self.shape) if axis is None else self.shape[axis]
+        s = 1/n
+        rv = s * self.sum(axis=axis,dtype=dtype)
+        if dtype is not None:
+            if isinstance(rv,ndarray):
+                rv = rv.astype(dtype)
+            else:
+                rv = np.mean([rv],dtype=dtype)
+        return rv
+
+    #def __len__(self):
+    #    return self.size[0]
 
 def dot(a, b, out=None):
     ashape = a.shape
@@ -2779,9 +2806,9 @@ def numpy_broadcast_size(a, b):
 
 def make_method(name, optext, inplace=False, unary=False, reduction=False, reverse=False, imports=[], dtype=None):
     if unary:
-        def _method(self):
-            new_ndarray = self.array_unaryop(name, optext, reduction, imports=imports, dtype=dtype)
-            return new_ndarray
+        def _method(self, **kwargs):
+            retval = self.array_unaryop(name, optext, reduction, imports=imports, **kwargs)
+            return retval
     else:
         def _method(self, rhs):
             t0=timer()
@@ -2819,12 +2846,12 @@ for (abf,code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
-array_binop_rfuncs = {"__radd__":" + ", "__rmul__":" * ", "__rsub__":" - ", "__rtruediv__":" / ", "__rfloordiv__": " // "}
+array_binop_rfuncs = {"__radd__":" + ", "__rmul__":" * ", "__rsub__":" - ", "__rtruediv__":" / ", "__rfloordiv__": " // ", "__rmod__":" % ","__rpow__":" ** "}
 for (abf,code) in array_binop_rfuncs.items():
     new_func = make_method(abf,code,reverse=True)
     setattr(ndarray, abf, new_func)
 
-array_inplace_binop_funcs = {"__iadd__":" += ","__isub__":" -= ","__imul__":" *= ","__idiv__":" /= ","__ifloordiv__":" //= ","__imod__":" %= ","__ipow__":" **= "}
+array_inplace_binop_funcs = {"__iadd__":" += ","__isub__":" -= ","__imul__":" *= ","__itruediv__":" /= ","__ifloordiv__":" //= ","__imod__":" %= ","__ipow__":" **= "}
 for (abf,code) in array_inplace_binop_funcs.items():
     new_func = make_method(abf, code, inplace=True)
     setattr(ndarray, abf, new_func)
@@ -2844,7 +2871,7 @@ for (abf,code) in array_unaryop_funcs.items():
 
 array_simple_reductions = ["sum","prod","min","max"]
 for abf in array_simple_reductions:
-    new_func = make_method(abf, "", unary=True, reduction=True)
+    new_func = make_method(abf, "np."+abf, imports=["numpy"],unary=True, reduction=True)
     setattr(ndarray, abf, new_func)
 
 
@@ -3054,7 +3081,7 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
                                         new_ndarray.distribution[i],
                                         size,
                                         #filler,
-                                        cloudpickle.dumps(filler),
+                                        func_dumps(filler),
                                         local_border,
                                         dtype,
                                         new_ndarray.distribution,
@@ -3079,19 +3106,19 @@ def empty(size, local_border=0, dtype=None, distribution=None):
     return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution)
 
 def empty_like(other_ndarray):
-    return empty(other_ndarray.size, local_border=other_ndarray.local_border)
+    return empty(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
 def zeros(size, local_border=0, dtype=None, distribution=None):
     return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution)
 
 def zeros_like(other_ndarray):
-    return zeros(other_ndarray.size, local_border=other_ndarray.local_border)
+    return zeros(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
 def ones(size, local_border=0, dtype=None):
     return init_array(size, "1", local_border=local_border, dtype=dtype)
 
 def ones_like(other_ndarray):
-    return ones(other_ndarray.size, local_border=other_ndarray.local_border)
+    return ones(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
 def full(size, v, local_border=0):
     return init_array(size, str(v), local_border=local_border)
@@ -3209,7 +3236,7 @@ def concatenate(arrayseq, axis=0, out=None):
         for i in range(len(remote_states))]
     return out
 
-mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt"]
+mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean"]
 for mfunc in mod_to_array:
     mcode =  "def " + mfunc + "(the_array, *args, **kwargs):\n"
     mcode += "    if isinstance(the_array, ndarray):\n"
@@ -3229,12 +3256,18 @@ for mfunc in mod_to_array:
 #        return the_array.abs(*args, **kwargs)
 #    else:
 #        return np.abs(the_array)
+#
+#def mean(the_array, *args, **kwargs):
+#    if isinstance(the_array, ndarray):
+#        return the_array.sum(*args, **kwargs)/np.prod(the_array.shape)
+#    else:
+#        return np.mean(the_array, *args, **kwargs)
 
-def mean(the_array, *args, **kwargs):
-    if isinstance(the_array, ndarray):
-        return the_array.sum(*args, **kwargs)/np.prod(the_array.shape)
+def power(a,b):
+    if isinstance(a,ndarray) or isinstance(b,ndarray):
+        return a**b
     else:
-        return np.mean(the_array, *args, **kwargs)
+        return np.power(a,b)
 
 def sync():
     sync_start_time = timer()
@@ -3311,6 +3344,26 @@ class MgridGen:
 
 mgrid = MgridGen()
 
+def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
+    assert(num > 0)
+    length = stop - start
+    if endpoint:
+        step = length / (num-1)
+    else:
+        step = length / num
+
+    def impl(bcontainer, dim_lens, starts):
+        local_start = start + (starts[0] * step)
+        local_stop = start + ((starts[0] + dim_lens[0]) * step)
+        bcontainer[:] = np.linspace(local_start, local_stop, num=dim_lens[0], endpoint=False, dtype=dtype)
+
+    res = init_array(num, Filler(impl, per_element=False, do_compile=False), dtype=dtype)
+
+    if retstep:
+        return (res, step)
+    else:
+        return res
+
 ##### Skeletons ######
 
 def smap_internal(func, attr, *args, dtype=None):
@@ -3328,7 +3381,7 @@ def smap_internal(func, attr, *args, dtype=None):
     new_ndarray = create_array_with_divisions(size, dist, partitioned[0].local_border, dtype=dtype)
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     #[getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(len(remote_states))]
-    remote_exec_all(attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func)
+    remote_exec_all(attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func))
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
@@ -3348,7 +3401,7 @@ def sreduce(func, reducer, *args):
 
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     #worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(len(remote_states))])
-    worker_results = remote_call_all("sreduce", partitioned[0].gid, args_to_remote, func, reducer)
+    worker_results = remote_call_all("sreduce", partitioned[0].gid, args_to_remote, func_dumps(func), func_dumps(reducer))
     final_result = worker_results[0]
     for result in worker_results[1:]:
         final_result = reducer(final_result, result)
@@ -3390,7 +3443,7 @@ def sstencil(func, *args, **kwargs):
         create_flag=True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     #[remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(len(remote_states))]
-    remote_exec_all("sstencil", stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag)
+    remote_exec_all("sstencil", stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func_dumps(func), create_flag)
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
@@ -3403,7 +3456,7 @@ def scumulative(local_func, final_func, array):
     new_ndarray = create_array_with_divisions(size, array.distribution, array.local_border)
     # Can we do this without ray.get?
     #ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(len(remote_states))])
-    remote_exec_all("scumulative_local", new_ndarray.gid, array.gid, local_func)
+    remote_exec_all("scumulative_local", new_ndarray.gid, array.gid, func_dumps(local_func))
     end_index = shardview.get_start(array.distribution[0])[0] + shardview.get_size(array.distribution[0])[0] - 1
     slice_to_get = (slice(end_index, end_index + 1),)
     dprint(3, "slice_to_get:", slice_to_get)
@@ -3413,7 +3466,7 @@ def scumulative(local_func, final_func, array):
     for i in range(1, len(remote_states)):
         # TODO: combine these into one?
         #ray.get(remote_states[i].scumulative_final.remote(new_ndarray.gid, boundary_val, final_func))
-        remote_exec(i, "scumulative_final", new_ndarray.gid, boundary_val, final_func)
+        remote_exec(i, "scumulative_final", new_ndarray.gid, boundary_val, func_dumps(final_func))
         local_element = shardview.get_size(array.distribution[i])[0] - 1
         slice_to_get = (slice(local_element, local_element + 1),)
         #boundary_val = ray.get(remote_states[i].get_partial_array.remote(new_ndarray.gid, slice_to_get))
@@ -3425,5 +3478,5 @@ def spmd(func, *args):
     deferred_op.do_ops()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     #ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(len(remote_states))])
-    remote_exec_all("spmd", func, args_to_remote)
+    remote_exec_all("spmd", func_dumps(func), args_to_remote)
 

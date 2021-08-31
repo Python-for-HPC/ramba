@@ -249,7 +249,8 @@ def intersect(sv, sl):
     sl_e = _stop(sl)
     s = np.array([min(max(sl_s[i],sv_s[i]),sv_e[i]) for i in range(len_size(sl))])
     e = np.array([min(max(sl_e[i],sv_s[i]),sv_e[i]) for i in range(len_size(sl))])
-    return shardview(e-s, s, axis_map=_axis_map(sv))
+    return shardview(e-s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv)*0)
+    #return shardview(e-s, s, axis_map=_axis_map(sv))
 
 
 # get a view of array (e.g. piece of a bcontainer) based on this shardview
@@ -508,7 +509,7 @@ def broadcast(distribution, broadcasted_dims, size):
         ret.append(shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map))
     return np.array(ret)
 
-# re-orders and/or removes axes.  newmap is a list that specifies which axis maps to the index.  Removes axes if lenght less than curent shardview dimensionaily.  Elements of newmap must be unique, and in range
+# re-orders and/or removes axes.  newmap is a list that specifies which axis maps to the index.  Removes axes if length less than curent shardview dimensionality.  Elements of newmap must be unique, and in range
 def remap_axis(size, distribution, newmap):
     old_ndims = len_size(distribution[0])
     old_map = _axis_map(distribution[0])
@@ -521,6 +522,18 @@ def remap_axis(size, distribution, newmap):
         new_start = np.array([_index_start(distribution[i])[j] for j in newmap])
         new_dist.append(shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map))
     return new_global_size, np.array(new_dist)
+
+# creates distribution reduced along given axis;  keeps 1 element for each division along the axis, so local reduction can be done
+@numba.njit(cache=True)
+def reduce_axis(size, dist, axis):
+    divs = list(set([_start(dist[i])[axis] for i in range(len(dist)) if not is_empty(dist[i])]))
+    rdist = clean_dist(dist)
+    for i in range(len(rdist)):
+        if rdist[i,1,axis] in divs:
+            rdist[i,1,axis] = divs.index(rdist[i,1,axis])
+            rdist[i,0,axis] = 1
+    rsz = UT.tuple_setitem(size, axis, len(divs))
+    return rsz, rdist
 
 
 def compute_from_border(size, distribution, border):
