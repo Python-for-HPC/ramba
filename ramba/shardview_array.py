@@ -335,16 +335,16 @@ def clean_dist(dist):
     return d2
 
 
-@numba.njit # doesn't work with cache=True
-def get_splits( r, v, s, e ):
-    if len(r)==0:
-        s1 = np.array(s[1:])
-        e1 = np.array(e[1:])
-        v.append( shardview( e1-s1, s1 ) )
-        return
-    r0 = r[0]
-    for i in range(len(r0)-1):
-        get_splits( r[1:], v, s+[r0[i]], e+[r0[i+1]] )
+#@numba.njit # doesn't work with cache=True
+#def get_splits( r, v, s, e ):
+#    if len(r)==0:
+#        s1 = np.array(s[1:])
+#        e1 = np.array(e[1:])
+#        v.append( shardview( e1-s1, s1 ) )
+#        return
+#    r0 = r[0]
+#    for i in range(len(r0)-1):
+#        get_splits( r[1:], v, s+[r0[i]], e+[r0[i+1]] )
 
 
 #@numba.njit
@@ -359,20 +359,51 @@ def get_splits( r, v, s, e ):
 #    s2_splits = [ s for s in all_splits if contains(s2, s) ]
 #    return s1_splits, s2_splits
 
-@numba.njit # doesn't work with cache=True
-def get_range_splits_list(svl):
+@numba.njit(cache=True)
+def cart_prod( r, shp ):
+    ndim = len(r)
+    t = shp
+    for i in range(len(shp)):
+        t=UT.tuple_setitem(t, i, len(r[i]))
+    t2 = t + (ndim,)
+    outarr = np.empty( t2, dtype=np.int64 )
+    t = shp
+    for i in range(len(shp)):
+        t=UT.tuple_setitem(t, i, 1)
+    for i in range(ndim):
+        outarr[...,i] = np.array(r[i]).reshape(UT.tuple_setitem(t,i,len(r[i])))
+    return outarr.reshape(-1,ndim)
+
+@numba.njit(cache=True)
+def get_splits( r, v, shp ):
+    r_s = [ x[:-1] for x in r ]
+    r_e = [ x[1:] for x in r ]
+    sl = cart_prod( r_s, shp )
+    el = cart_prod( r_e, shp )
+    for i in range(len(sl)):
+        v.append( shardview( el[i]-sl[i], sl[i] ) )
+
+@numba.njit(cache=True)  # doesn't work with cache=True
+def _get_range_splits_list(svl, shp):
     axis_ranges = [ sorted(set( [x for s in svl for x in [_start(s)[i], _stop(s)[i]]] )) for i in range(len_size(svl[0])) ]
     all_splits = [ svl[0] ]
-    get_splits( axis_ranges, all_splits, [-1000], [-1000] )
+    #get_splits( axis_ranges, all_splits, [-1000], [-1000] )
+    get_splits( axis_ranges, all_splits, shp )
     all_splits = all_splits[1:]
     return all_splits
 
+def get_range_splits_list(svl):
+    return _get_range_splits_list(svl, tuple([0]*svl[0].shape[1]))
+
 @numba.njit(cache=True)
-def get_range_splits(s1, s2):
-    all_splits = get_range_splits_list([s1, s2])
+def _get_range_splits(s1, s2, shp):
+    all_splits = get_range_splits_list([s1, s2], shp)
     s1_splits = [ s for s in all_splits if contains(s1, s) ]
     s2_splits = [ s for s in all_splits if contains(s2, s) ]
     return s1_splits, s2_splits
+
+def get_range_splits(s1, s2):
+    return _get_range_splits(s1, s2, tuple([0]*s1.shape[1]))
 
 @numba.njit(cache=True)
 def compatible_distributions(d1, d2):
@@ -429,6 +460,15 @@ def division_to_shape(divs):
     divshape = divs.shape
     assert(len(divshape) == 2)
     return tuple(divs[1,:] - divs[0,:] + 1)
+
+#@numba.njit(cache=True)
+def global_to_divisions(dist):
+    print("global_to_divisions:", dist)
+    #return np.array([ [_index_start(d), _stop(d)-1] for d in dist ])
+    ret = np.empty((2,dist.shape[1]),dtype=np.int32)
+    ret[0] = _index_start(dist)
+    ret[1] = _stop(dist)-1
+    return ret
 
 @numba.njit(cache=True)
 def distribution_to_divisions(dist):

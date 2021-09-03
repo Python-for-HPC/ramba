@@ -25,6 +25,8 @@ fast_reduction = True
 
 float32 = np.float32
 float64 = np.float64
+complex128 = np.complex128
+int64 = np.int64
 
 if sys.version_info >= (3, 3):
     from time import perf_counter as timer
@@ -64,7 +66,6 @@ def dprint(level, *args):
 
 num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
 num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
-#num_workers = ray.available_resources()['CPU']
 
 def do_not_distribute(size):
     return np.prod(size) < distribute_min_size

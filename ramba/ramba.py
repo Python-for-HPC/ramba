@@ -135,6 +135,9 @@ def ray_init():
     time.sleep(1)
     cores = ray.available_resources()['CPU']
     dprint(2, "Ray initialized;  available cores:", cores)
+    global num_workers
+    if cores < num_workers:
+        num_workers = cores
     return True
 
 ray_first_init = ray_init()
@@ -726,7 +729,7 @@ class LocalNdarray:
         self.whole_space = whole_space
         self.from_border = from_border
         self.to_border = to_border
-        self.dtype = None
+        self.dtype = dtype
         if self.dtype is not None:
             gnpargs = {"dtype":self.dtype}
         else:
@@ -743,6 +746,8 @@ class LocalNdarray:
     def getlocal(self, width=None):
         if isinstance(width, int):
             neighborhood = width
+        else:
+            neighborhood = 0
 
         if neighborhood <= self.border:
             return self.bcontainer
@@ -811,6 +816,76 @@ class LocalNdarray:
 
     def get_view(self, shard):
         return self.get_partial_view(shardview.to_base_slice(shard), shard, global_index=False)
+
+#------------------------------------------------------------------
+# Support LocalNdarray usage in Numba.
+#------------------------------------------------------------------
+class NumbaLocalNdarray(numba.types.Type):
+    def __init__(self, dtype, ndim):
+        try:
+            self.dtype = numba.np.numpy_support.from_dtype(dtype)
+        except NotImplementedError:
+            raise ValueError("Unsupported array dtype: %s" % (dtype,))
+
+        self.ndim = ndim
+        print("NumbaLocalNdarray:__init__:", dtype, type(dtype), self.dtype, type(self.dtype))
+        super(NumbaLocalNdarray, self).__init__(name='LocalNdarray')
+
+    def __repr__(self):
+        return "NumbaLocalNdarray(" + str(self.dtype) + "," + str(self.ndim) + ")"
+
+@numba.extending.typeof_impl.register(LocalNdarray)
+def typeof_LocalNdarray(val, c):
+    return NumbaLocalNdarray(val.bcontainer.dtype, val.bcontainer.ndim)
+
+@numba.extending.register_model(NumbaLocalNdarray)
+class NumbaLocalNdarrayModel(numba.extending.models.StructModel):
+    def __init__(self, dmm, fe_type):
+        members = [
+#            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
+            ('bcontainer', numba.types.Array(fe_type.dtype, fe_type.ndim, "C"))
+            ]
+        numba.extending.models.StructModel.__init__(self, dmm, fe_type, members)
+
+numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'bcontainer', 'bcontainer')
+#numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'subspace', 'subspace')
+
+# Convert from Python LocalNdarray to Numba format.
+@numba.extending.unbox(NumbaLocalNdarray)
+def unbox_LocalNdarray(typ, obj, c):
+    print("unbox", typ, type(typ), typ.dtype, type(typ.dtype), obj, type(obj))
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
+
+#    subspace_obj = c.pyapi.object_getattr_string(obj, "subspace")
+#    subspace_unboxed = numba.core.boxing.unbox_array(numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c)
+#    numba_localndarray.subspace = subspace_unboxed.value
+#    c.pyapi.decref(subspace_obj)
+
+    bcontainer_obj = c.pyapi.object_getattr_string(obj, "bcontainer")
+    bcontainer_unboxed = numba.core.boxing.unbox_array(numba.types.Array(typ.dtype, typ.ndim, "C"), bcontainer_obj, c)
+    numba_localndarray.bcontainer = bcontainer_unboxed.value
+    c.pyapi.decref(bcontainer_obj)
+
+    is_error = numba.core.cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
+    return numba.core.pythonapi.NativeValue(numba_localndarray._getvalue(), is_error=is_error)
+
+"""
+@numba.extending.overload_method(NumbaLocalNdarray, "getlocal")
+def localndarray_getlocal(localndarray):
+    def getter(localndarray):
+        return localndarray.bcontainer
+    return getter
+
+@numba.extending.overload_method(NumbaLocalNdarray, "getglobal")
+def localndarray_getglobal(localndarray):
+    def getter(localndarray):
+        return localndarray.subspace
+    return getter
+"""
+
+#------------------------------------------------------------------
+# Support LocalNdarray usage in Numba.
+#------------------------------------------------------------------
 
 def none_if_zero(a, b):
     x = a - b
@@ -891,7 +966,7 @@ class RemoteState:
             self.numpy_map.pop(gid)
 
     def create_array(self, gid, subspace, whole, filler, local_border, dtype, whole_space, from_border, to_border, filler_tuple_arg=True):
-        dprint(3, "RemoteState::create_array:", gid, subspace, filler, local_border)
+        dprint(3, "RemoteState::create_array:", gid, subspace, filler, local_border, dtype)
         num_dim = len(shardview.get_size(subspace))
         dim_lens = tuple(shardview.get_size(subspace))
         starts = tuple(shardview.get_start(subspace))
@@ -1707,9 +1782,20 @@ class RemoteState:
 #        print("array_binop:", lhs[0], rhs, new_bcontainer)
 
     def spmd(self, func, args):
-        func=func_loads(func)
-        fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
-        func(*fargs)
+        dprint(2, "Starting remote spmd", self.worker_num)
+        try:
+            func=func_loads(func)
+            fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
+            fmfunc = FunctionMetadata(func,[],{})
+            print("Before local spmd fmfunc call")
+            fmfunc(*fargs)
+            print("After local spmd fmfunc call")
+            #func(*fargs)
+        except:
+            print("some exception in remote spmd")
+            traceback.print_exc()
+            pass
+        sys.stdout.flush()
 
     def run_deferred_ops( self, uuid, arrays, delete_gids, pickledvars, exec_dist, fname, code, imports):
         dprint(4,"HERE - deferredops; arrays:", arrays.keys())
@@ -2835,12 +2921,12 @@ array_binop_funcs = {"__add__":op_info(" + "),
                      "__truediv__":op_info(" / "),
                      "__mod__":op_info(" % "),
                      "__pow__":op_info(" ** "),
-                     "__gt__":op_info(" > ", dtype=np.bool),
-                     "__lt__":op_info(" < ", dtype=np.bool),
-                     "__ge__":op_info(" >= ", dtype=np.bool),
-                     "__le__":op_info(" <= ", dtype=np.bool),
-                     "__eq__":op_info(" == ", dtype=np.bool),
-                     "__ne__":op_info(" != ", dtype=np.bool),
+                     "__gt__":op_info(" > ", dtype=np.bool_),
+                     "__lt__":op_info(" < ", dtype=np.bool_),
+                     "__ge__":op_info(" >= ", dtype=np.bool_),
+                     "__le__":op_info(" <= ", dtype=np.bool_),
+                     "__eq__":op_info(" == ", dtype=np.bool_),
+                     "__ne__":op_info(" != ", dtype=np.bool_),
                     }
 for (abf,code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
@@ -2863,7 +2949,7 @@ array_unaryop_funcs = {"__abs__":op_info(" numpy.abs", imports=["numpy"]),
                        "__neg__":op_info(" -"),
                        "exp":op_info(" math.exp", imports=["math"]),
                        "log":op_info(" math.log", imports=["math"]),
-                       "isnan":op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool)}
+                       "isnan":op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_)}
 
 for (abf,code) in array_unaryop_funcs.items():
     new_func = make_method(abf, code.code, unary=True, imports=code.imports, dtype=code.dtype)
@@ -3143,7 +3229,7 @@ def copy(arr, local_border=0):
 
 # TODO: should make this deferred;  need a njit function to provide global index
 def arange(size, local_border=0):
-    return init_array(size, lambda x: x[0], local_border=local_border)
+    return init_array(size, lambda x: x[0], local_border=local_border, dtype=int64)
 
 def asarray(x):
     assert(isinstance(x, ndarray))
@@ -3478,5 +3564,6 @@ def spmd(func, *args):
     deferred_op.do_ops()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     #ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(len(remote_states))])
+    dprint(2, "Before exec_all spmd")
     remote_exec_all("spmd", func_dumps(func), args_to_remote)
-
+    dprint(2, "After exec_all spmd")
