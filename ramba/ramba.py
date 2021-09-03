@@ -137,7 +137,7 @@ def ray_init():
     dprint(2, "Ray initialized;  available cores:", cores)
     global num_workers
     if cores < num_workers:
-        num_workers = cores
+        num_workers = int(cores)
     return True
 
 ray_first_init = ray_init()
