@@ -17,7 +17,7 @@ import psutil
 def get_zones():
     with open("/sys/devices/system/node/possible") as f:
         zones = f.read()
-    numzones = int(zones[:-1].split('-')[1])+1
+    numzones = int(zones[:-1].split('-')[-1])+1
     return numzones
 
 # Get list of cpus in zone -- Linux-specific!!
