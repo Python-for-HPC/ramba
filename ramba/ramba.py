@@ -838,11 +838,12 @@ class NumbaLocalNdarray(numba.types.Type):
 def typeof_LocalNdarray(val, c):
     return NumbaLocalNdarray(val.bcontainer.dtype, val.bcontainer.ndim)
 
+#            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
 @numba.extending.register_model(NumbaLocalNdarray)
 class NumbaLocalNdarrayModel(numba.extending.models.StructModel):
     def __init__(self, dmm, fe_type):
+        print("NumbaLocalNdarrayModel:", fe_type, type(fe_type), fe_type.dtype, type(fe_type.dtype))
         members = [
-#            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
             ('bcontainer', numba.types.Array(fe_type.dtype, fe_type.ndim, "C"))
             ]
         numba.extending.models.StructModel.__init__(self, dmm, fe_type, members)
@@ -853,8 +854,7 @@ numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'bcontainer', 'bcontai
 # Convert from Python LocalNdarray to Numba format.
 @numba.extending.unbox(NumbaLocalNdarray)
 def unbox_LocalNdarray(typ, obj, c):
-    print("unbox", typ, type(typ), typ.dtype, type(typ.dtype), obj, type(obj))
-    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
+    print("unbox", typ, type(typ), typ.dtype, type(typ.dtype), numba.core.typing.typeof.typeof(typ.dtype))
 
 #    subspace_obj = c.pyapi.object_getattr_string(obj, "subspace")
 #    subspace_unboxed = numba.core.boxing.unbox_array(numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c)
@@ -863,19 +863,20 @@ def unbox_LocalNdarray(typ, obj, c):
 
     bcontainer_obj = c.pyapi.object_getattr_string(obj, "bcontainer")
     bcontainer_unboxed = numba.core.boxing.unbox_array(numba.types.Array(typ.dtype, typ.ndim, "C"), bcontainer_obj, c)
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
     numba_localndarray.bcontainer = bcontainer_unboxed.value
     c.pyapi.decref(bcontainer_obj)
 
     is_error = numba.core.cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
     return numba.core.pythonapi.NativeValue(numba_localndarray._getvalue(), is_error=is_error)
 
-"""
 @numba.extending.overload_method(NumbaLocalNdarray, "getlocal")
 def localndarray_getlocal(localndarray):
     def getter(localndarray):
         return localndarray.bcontainer
     return getter
 
+"""
 @numba.extending.overload_method(NumbaLocalNdarray, "getglobal")
 def localndarray_getglobal(localndarray):
     def getter(localndarray):
