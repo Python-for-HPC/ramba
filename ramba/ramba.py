@@ -39,6 +39,7 @@ import asyncio
 import functools
 import math
 import traceback
+import numba.cpython.unsafe.tuple as UT
 
 from ramba.common import *
 
@@ -828,47 +829,61 @@ class NumbaLocalNdarray(numba.types.Type):
             raise ValueError("Unsupported array dtype: %s" % (dtype,))
 
         self.ndim = ndim
-        print("NumbaLocalNdarray:__init__:", dtype, type(dtype), self.dtype, type(self.dtype))
+        dprint(3, "NumbaLocalNdarray:__init__:", dtype, type(dtype), self.dtype, type(self.dtype))
         super(NumbaLocalNdarray, self).__init__(name='LocalNdarray')
+
+    @property
+    def key(self):
+        return self.dtype, self.ndim
 
     def __repr__(self):
         return "NumbaLocalNdarray(" + str(self.dtype) + "," + str(self.ndim) + ")"
 
 @numba.extending.typeof_impl.register(LocalNdarray)
 def typeof_LocalNdarray(val, c):
+    dprint(3, "typeof_LocalNdarray", val, type(val))
     return NumbaLocalNdarray(val.bcontainer.dtype, val.bcontainer.ndim)
 
-#            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
 @numba.extending.register_model(NumbaLocalNdarray)
 class NumbaLocalNdarrayModel(numba.extending.models.StructModel):
     def __init__(self, dmm, fe_type):
-        print("NumbaLocalNdarrayModel:", fe_type, type(fe_type), fe_type.dtype, type(fe_type.dtype))
+        dprint(3, "NumbaLocalNdarrayModel:", fe_type, type(fe_type), fe_type.dtype, type(fe_type.dtype))
         members = [
+            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
             ('bcontainer', numba.types.Array(fe_type.dtype, fe_type.ndim, "C"))
             ]
         numba.extending.models.StructModel.__init__(self, dmm, fe_type, members)
 
 numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'bcontainer', 'bcontainer')
-#numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'subspace', 'subspace')
+numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'subspace', 'subspace')
 
 # Convert from Python LocalNdarray to Numba format.
 @numba.extending.unbox(NumbaLocalNdarray)
 def unbox_LocalNdarray(typ, obj, c):
-    print("unbox", typ, type(typ), typ.dtype, type(typ.dtype), numba.core.typing.typeof.typeof(typ.dtype))
+    dprint(3, "unbox", typ, type(typ), typ.dtype, type(typ.dtype), numba.core.typing.typeof.typeof(typ.dtype))
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
 
-#    subspace_obj = c.pyapi.object_getattr_string(obj, "subspace")
-#    subspace_unboxed = numba.core.boxing.unbox_array(numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c)
-#    numba_localndarray.subspace = subspace_unboxed.value
-#    c.pyapi.decref(subspace_obj)
+    subspace_obj = c.pyapi.object_getattr_string(obj, "subspace")
+    subspace_unboxed = numba.core.boxing.unbox_array(numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c)
+    numba_localndarray.subspace = subspace_unboxed.value
 
     bcontainer_obj = c.pyapi.object_getattr_string(obj, "bcontainer")
     bcontainer_unboxed = numba.core.boxing.unbox_array(numba.types.Array(typ.dtype, typ.ndim, "C"), bcontainer_obj, c)
-    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
     numba_localndarray.bcontainer = bcontainer_unboxed.value
+
+    c.pyapi.decref(subspace_obj)
     c.pyapi.decref(bcontainer_obj)
 
     is_error = numba.core.cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
     return numba.core.pythonapi.NativeValue(numba_localndarray._getvalue(), is_error=is_error)
+
+@numba.extending.box(NumbaLocalNdarray)
+def box_LocalNdarray(typ, val, c):
+    dprint(3, "box_LocalNdarray")
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
+    classobj = c.pyapi.unserialize(c.pyapi.serialize_object(LocalNdarray))
+    assert(0)
+    return ret
 
 @numba.extending.overload_method(NumbaLocalNdarray, "getlocal")
 def localndarray_getlocal(localndarray):
@@ -876,13 +891,11 @@ def localndarray_getlocal(localndarray):
         return localndarray.bcontainer
     return getter
 
-"""
 @numba.extending.overload_method(NumbaLocalNdarray, "getglobal")
 def localndarray_getglobal(localndarray):
     def getter(localndarray):
         return localndarray.subspace
     return getter
-"""
 
 #------------------------------------------------------------------
 # Support LocalNdarray usage in Numba.
@@ -920,6 +933,7 @@ def division_non_empty(x):
     else:
         assert(0)
 
+
 @numba.njit(parallel=True, cache=True)
 def reduce_list(x):
     res = np.zeros(x[0].shape)
@@ -927,11 +941,46 @@ def reduce_list(x):
         res += x[i]
     return res
 
+
 class Filler:
     def __init__(self, func, per_element=True, do_compile=False):
         self.func = func
         self.per_element = per_element
         self.do_compile = do_compile
+
+
+class FillerFunc:
+    def __init__(self, func):
+        self.func = func
+
+    def __hash__(self):
+        if isinstance(self.func, numba.core.registry.CPUDispatcher):
+            ret = hash(self.func)
+        else:
+            ret = hash(self.func.__code__.co_code)
+
+        return ret
+
+    def __eq__(self, other):
+        return self.func.__code__.co_code == other.func.__code__.co_code
+
+@functools.lru_cache()
+def get_do_fill(filler: FillerFunc):
+    filler = filler.func
+    dprint(2, "get_do_fill", filler)
+    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+
+    @numba.njit(parallel=True)
+    def do_fill(A, sz, starts):
+        for i in numba.pndindex(sz):
+            arg = sz
+            # Construct the global index.
+            for j in range(len(starts)):
+                arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+            A[i] = njfiller(arg)
+
+    return do_fill
+
 
 #@ray.remote(num_cpus=72)
 @ray.remote(num_cpus = num_threads)
@@ -994,22 +1043,14 @@ class RemoteState:
                         new_bcontainer[i] = filler(arg)
 
                 if do_compile:
-                    import numba.cpython.unsafe.tuple as UT
                     try:
-                        njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
                         if filler_tuple_arg:
-                            @numba.njit
-                            def do_fill(A, sz, starts):
-                                #arg = np.zeros(len(starts))
-                                arg = sz
-                                for i in numba.pndindex(sz):
-                                    # Construct the global index.
-                                    for j in range(len(starts)):
-                                        #arg[j] = i[j]+starts[j]
-                                        arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
-                                    A[i] = njfiller(arg)
+                            do_fill = get_do_fill(FillerFunc(filler))
                         else:
+                            assert(0) # Code below is same as above and shouldn't be.
+                            """
+                            njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
                             @numba.njit
                             def do_fill(A, sz, starts):
                                 #arg = np.zeros(len(starts))
@@ -1020,10 +1061,13 @@ class RemoteState:
                                         #arg[j] = i[j]+starts[j]
                                         arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
                                     A[i] = njfiller(*arg)
+                            do_fill2(new_bcontainer, njfiller, dim_lens, starts)
+                            """
 
                         do_fill(new_bcontainer, dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
+                        traceback.print_exc()
                         do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
                 else:
                     do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
@@ -1780,7 +1824,6 @@ class RemoteState:
             new_bcontainer[lnd.core_slice] = binop(rhs)
         else:
             binop(rhs)
-#        print("array_binop:", lhs[0], rhs, new_bcontainer)
 
     def spmd(self, func, args):
         dprint(2, "Starting remote spmd", self.worker_num)
@@ -1788,10 +1831,9 @@ class RemoteState:
             func=func_loads(func)
             fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
             fmfunc = FunctionMetadata(func,[],{})
-            print("Before local spmd fmfunc call")
+            dprint(3, "Before local spmd fmfunc call")
             fmfunc(*fargs)
-            print("After local spmd fmfunc call")
-            #func(*fargs)
+            dprint(3, "After local spmd fmfunc call")
         except:
             print("some exception in remote spmd")
             traceback.print_exc()
@@ -3167,7 +3209,6 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
         [remote_exec(i, "create_array", new_ndarray.gid,
                                         new_ndarray.distribution[i],
                                         size,
-                                        #filler,
                                         func_dumps(filler),
                                         local_border,
                                         dtype,
