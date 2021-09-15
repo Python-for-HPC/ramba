@@ -67,6 +67,14 @@ def dprint(level, *args):
 num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
 num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
 
+# RAMBA_BIG_DATA environment variable MUST be set to 1 if the application will use arrays
+# larger than 2**32 in size.
+ramba_big_data = int(os.environ.get('RAMBA_BIG_DATA', "0"))
+if ramba_big_data != 0:
+    ramba_big_data = True
+else:
+    ramba_big_data = False
+
 def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
