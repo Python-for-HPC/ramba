@@ -1074,10 +1074,11 @@ class RemoteState:
             else:
                 if do_compile:
                     try:
-                        njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
-                        nj_filler(new_bcontainer, dim_lens, starts)
+                        njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
+                        njfiller(new_bcontainer, dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
+                        traceback.print_exc()
                         filler(new_bcontainer, dim_lens, starts)
                 else:
                     filler(new_bcontainer, dim_lens, starts)
