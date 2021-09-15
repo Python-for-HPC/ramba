@@ -22,7 +22,7 @@ def random(size=None):
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.random(dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True))
 
 def randn(*args):
     if len(args) == 0:
@@ -30,15 +30,15 @@ def randn(*args):
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.randn(*dim_lens)
-        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=False))
+        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True))
 
 def uniform(low=0.0, high=1.0, size=None):
     if size is None:
         return np.random.uniform(low=low, high=high)
     else:
         def impl(bcontainer, dim_lens, starts):
-            bcontainer[:] = np.random.uniform(low=low, high=high, size=dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
+            bcontainer[:] = np.random.uniform(low, high, size=dim_lens)
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True))
 
 class RandomState:
     def __init__(self, *args):
