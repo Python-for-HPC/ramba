@@ -143,6 +143,28 @@ def ray_init():
 
 ray_first_init = ray_init()
 
+class FillerFunc:
+    def __init__(self, func):
+        self.func = func
+
+    def __hash__(self):
+        if isinstance(self.func, numba.core.registry.CPUDispatcher):
+            ret = hash(self.func)
+        else:
+            ret = hash(self.func.__code__.co_code)
+
+        return ret
+
+    def __eq__(self, other):
+        return self.func.__code__.co_code == other.func.__code__.co_code
+
+@functools.lru_cache()
+def get_fm(func: FillerFunc, parallel):
+    real_func = func.func
+    dprint(2, "get_fm for function", real_func.__name__, "parallel =", parallel)
+    assert(isinstance(real_func, types.FunctionType))
+    return numba.njit(parallel=parallel)(real_func)
+
 class FunctionMetadata:
     def __init__(self, func, dargs, dkwargs):
         self.func = func
@@ -165,13 +187,17 @@ class FunctionMetadata:
         in npfunc or nfunc so that we don't try the failed case again.  If
         neither of those work then fall back to Python.
         """
-        dprint(2, "FunctionMetadata::__call__", self.func.__name__, args, kwargs)
+        dprint(2, "FunctionMetadata::__call__", self.func.__name__, args, kwargs, self.numba_args)
         atypes = tuple([type(x) for x in args])
         try_again = True
         count = 0
         if not self.numba_pfunc:
-            self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(self.func)
-            self.numba_func = numba.njit(**self.numba_args)(self.func)
+            if len(self.numba_args) == 0:
+                self.numba_pfunc = get_fm(FillerFunc(self.func), True)
+                self.numba_func = get_fm(FillerFunc(self.func), False)
+            else:
+                self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(self.func)
+                self.numba_func = numba.njit(**self.numba_args)(self.func)
 
         if gpu_present:
             dprint(1, "using gpu context")
@@ -948,21 +974,6 @@ class Filler:
         self.per_element = per_element
         self.do_compile = do_compile
 
-
-class FillerFunc:
-    def __init__(self, func):
-        self.func = func
-
-    def __hash__(self):
-        if isinstance(self.func, numba.core.registry.CPUDispatcher):
-            ret = hash(self.func)
-        else:
-            ret = hash(self.func.__code__.co_code)
-
-        return ret
-
-    def __eq__(self, other):
-        return self.func.__code__.co_code == other.func.__code__.co_code
 
 @functools.lru_cache()
 def get_do_fill(filler: FillerFunc):
