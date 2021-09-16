@@ -993,6 +993,24 @@ def get_do_fill(filler: FillerFunc):
     return do_fill
 
 
+@functools.lru_cache()
+def get_do_fill_non_tuple(filler: FillerFunc):
+    filler = filler.func
+    dprint(2, "get_do_fill_non_tuple", filler)
+    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+
+    @numba.njit(parallel=True)
+    def do_fill(A, sz, starts):
+        for i in numba.pndindex(sz):
+            arg = sz
+            # Construct the global index.
+            for j in range(len(starts)):
+                arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+            A[i] = njfiller(*arg)
+
+    return do_fill
+
+
 #@ray.remote(num_cpus=72)
 @ray.remote(num_cpus = num_threads)
 class RemoteState:
@@ -1051,29 +1069,17 @@ class RemoteState:
                     for i in np.ndindex(dim_lens):
                         # Construct the global index.
                         arg = tuple(map(operator.add, i, starts))
-                        new_bcontainer[i] = filler(arg)
+                        if filler_tuple_arg:
+                            new_bcontainer[i] = filler(arg)
+                        else:
+                            new_bcontainer[i] = filler(*arg)
 
                 if do_compile:
                     try:
-
                         if filler_tuple_arg:
                             do_fill = get_do_fill(FillerFunc(filler))
                         else:
-                            assert(0) # Code below is same as above and shouldn't be.
-                            """
-                            njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
-                            @numba.njit
-                            def do_fill(A, sz, starts):
-                                #arg = np.zeros(len(starts))
-                                arg = sz
-                                for i in numba.pndindex(sz):
-                                    # Construct the global index.
-                                    for j in range(len(starts)):
-                                        #arg[j] = i[j]+starts[j]
-                                        arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
-                                    A[i] = njfiller(*arg)
-                            do_fill2(new_bcontainer, njfiller, dim_lens, starts)
-                            """
+                            do_fill = get_do_fill_non_tuple(FillerFunc(filler))
 
                         do_fill(new_bcontainer, dim_lens, starts)
                     except:
@@ -3001,6 +3007,12 @@ array_unaryop_funcs = {"__abs__":op_info(" numpy.abs", imports=["numpy"]),
                        "abs":op_info(" numpy.abs", imports=["numpy"]),
                        "square":op_info(" numpy.square", imports=["numpy"]),
                        "sqrt":op_info(" numpy.sqrt", imports=["numpy"]),
+                       "sin":op_info(" numpy.sin", imports=["numpy"]),
+                       "cos":op_info(" numpy.cos", imports=["numpy"]),
+                       "tan":op_info(" numpy.tan", imports=["numpy"]),
+                       "arcsin":op_info(" numpy.arcsin", imports=["numpy"]),
+                       "arccos":op_info(" numpy.arccos", imports=["numpy"]),
+                       "arctan":op_info(" numpy.arctan", imports=["numpy"]),
                        "__neg__":op_info(" -"),
                        "exp":op_info(" math.exp", imports=["math"]),
                        "log":op_info(" math.log", imports=["math"]),
@@ -3376,7 +3388,7 @@ def concatenate(arrayseq, axis=0, out=None):
         for i in range(len(remote_states))]
     return out
 
-mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean"]
+mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean", "sin", "cos", "tan", "arcsin", "arccos", "arctan"]
 for mfunc in mod_to_array:
     mcode =  "def " + mfunc + "(the_array, *args, **kwargs):\n"
     mcode += "    if isinstance(the_array, ndarray):\n"
