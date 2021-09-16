@@ -19,6 +19,12 @@ import math
 import operator
 from ramba.common import *
 
+ramba_dist_dtype = np.int32
+
+if ramba_big_data:
+    dprint(1, "Will use big data.")
+    ramba_dist_dtype = np.int64
+
 # simple array to specify a shard or view
 # Here size is the k-dimensional size of the view/shard
 #   index_start specifies the beginning of the global index range for this shard/view portion
@@ -39,14 +45,14 @@ def shardview(size, index_start=None, base_offset=None, axis_map=None):
     #assert((len(size)==len(i_s)) and (len(size)==len(a_m)))
     #m = 3 + (len(size)+len(b_o))//len(size)
     m = 3 + (len(size)+(len(size) if base_offset is None else len(base_offset)))//len(size)
-    sv = np.zeros((m,len(size)), dtype=np.int32)
-    if np.all(size>0): sv[0] = size.astype(np.int32)
+    sv = np.zeros((m,len(size)), dtype=ramba_dist_dtype)
+    if np.all(size>0): sv[0] = size.astype(ramba_dist_dtype)
     #sv[1] = i_s
     #sv[2] = a_m
-    if index_start is not None: sv[1] = index_start.astype(np.int32)
-    sv[2] = np.arange(len(size),dtype=np.int32) if axis_map is None else axis_map.astype(np.int32)
+    if index_start is not None: sv[1] = index_start.astype(ramba_dist_dtype)
+    sv[2] = np.arange(len(size),dtype=ramba_dist_dtype) if axis_map is None else axis_map.astype(ramba_dist_dtype)
     sv[3,0] = len(size) if base_offset is None else len(base_offset)
-    if base_offset is not None: _base_offset(sv)[:] = base_offset.astype(np.int32)
+    if base_offset is not None: _base_offset(sv)[:] = base_offset.astype(ramba_dist_dtype)
     return sv
 
 #    def __repr__(self):
@@ -143,7 +149,7 @@ def base_to_index(sv, base):
 def index_to_base(sv, index):
     assert(len(index)==len_size(sv))
     offset = [index[i]-s for i,s in enumerate(_start(sv))]
-    invmap = -np.ones(len_base_offset(sv),dtype=np.int32)
+    invmap = -np.ones(len_base_offset(sv),dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: invmap[v]=i
     return tuple([bo + (0 if invmap[i]<0 else offset[invmap[i]]) for i,bo in enumerate(_base_offset(sv))])
@@ -152,7 +158,7 @@ def index_to_base(sv, index):
 def index_to_base_as_array(sv, index):
     assert(len(index)==len_size(sv))
     offset = [index[i]-s for i,s in enumerate(_start(sv))]
-    invmap = -np.ones(len_base_offset(sv),dtype=np.int32)
+    invmap = -np.ones(len_base_offset(sv),dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: invmap[v]=i
     bo = _base_offset(sv)
@@ -179,7 +185,7 @@ def to_slice(sv):
 
 def to_base_slice(sv):
     s = _base_offset(sv)
-    e = np.ones(len_base_offset(sv), dtype=np.int32)
+    e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: e[v]=_size(sv)[i]
     e += s
@@ -191,7 +197,7 @@ import numba.cpython.unsafe.tuple as UT
 def get_base_slice(sv, arr):
     t = UT.build_full_slice_tuple(arr.ndim)
     s = _base_offset(sv)
-    e = np.ones(len_base_offset(sv), dtype=np.int32)
+    e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: e[v]=_size(sv)[i]
     e += s
@@ -328,7 +334,7 @@ def slice_to_fortran(sl):
 def clean_dist(dist):
     first_clean = clean_range(dist[0])
     dshape = dist.shape
-    d2 = np.empty((dshape[0], first_clean.shape[0], first_clean.shape[1]), dtype=np.int32)
+    d2 = np.empty((dshape[0], first_clean.shape[0], first_clean.shape[1]), dtype=ramba_dist_dtype)
     d2[0] = first_clean
     for i,s in enumerate(dist[1:]):
         d2[i+1] = clean_range(s)
@@ -424,7 +430,7 @@ def dist_is_eq(d1, d2):
 
 @numba.njit(cache=True)
 def slice_distribution(sl, dist):
-    ret = np.empty_like(dist,dtype=np.int32)
+    ret = np.empty_like(dist,dtype=ramba_dist_dtype)
     for i in range(dist.shape[0]):
         ret[i] = mapslice(dist[i],sl)
     return ret
@@ -450,7 +456,7 @@ def divisions_to_distribution(divs, base_offset=None, axis_map=None):
         svl = [ shardview(size=divs[i][1]-divs[i][0]+1, index_start=divs[i][0], base_offset=None, axis_map=axis_map) for i in range(divshape[0]) ]
     else:
         svl = [ shardview(size=divs[i][1]-divs[i][0]+1, index_start=divs[i][0], base_offset=base_offset[i], axis_map=axis_map) for i in range(divshape[0]) ]
-    ret = np.empty((divshape[0],svl[0].shape[0],svl[0].shape[1]),dtype=np.int32)
+    ret = np.empty((divshape[0],svl[0].shape[0],svl[0].shape[1]),dtype=ramba_dist_dtype)
     for i,sv in enumerate(svl):
         ret[i]=sv
     return ret
@@ -465,7 +471,7 @@ def division_to_shape(divs):
 def global_to_divisions(dist):
     print("global_to_divisions:", dist)
     #return np.array([ [_index_start(d), _stop(d)-1] for d in dist ])
-    ret = np.empty((2,dist.shape[1]),dtype=np.int32)
+    ret = np.empty((2,dist.shape[1]),dtype=ramba_dist_dtype)
     ret[0] = _index_start(dist)
     ret[1] = _stop(dist)-1
     return ret
@@ -473,7 +479,7 @@ def global_to_divisions(dist):
 @numba.njit(cache=True)
 def distribution_to_divisions(dist):
     #return np.array([ [_index_start(d), _stop(d)-1] for d in dist ])
-    ret = np.empty((dist.shape[0],2,dist.shape[2]),dtype=np.int32)
+    ret = np.empty((dist.shape[0],2,dist.shape[2]),dtype=ramba_dist_dtype)
     for i,d in enumerate(dist):
         ret[i][0] = _index_start(d)
         ret[i][1] = _stop(d)-1
