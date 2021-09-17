@@ -1,6 +1,7 @@
 import ramba
 import numpy as np
 import random
+import numba
 
 class TestBroadcast:
     def test1(self):
@@ -39,6 +40,94 @@ class TestBroadcast:
         r_l = r.asarray()
         assert(np.array_equal(rnp, r_l))
 
+def run_both(func):
+    ramba_res = func(ramba)
+    ramba.sync()
+    np_res = func(np)
+    if isinstance(np_res, np.ndarray):
+        ramba_local = ramba_res.asarray()
+        assert(np.array_equal(np_res, ramba_local))
+    else:
+        assert(np_res == ramba_res)
+
+class TestBasic:
+    def test1(self):
+        def impl(app):
+            return app.ones((100,100))
+        run_both(impl)
+
+    def test2(self):
+        def impl(app):
+            return app.ones((5,5))
+        run_both(impl)
+
+    def test3(self):
+        def impl(app):
+            a = app.ones((100,100))
+            b = app.ones((100,100))
+            return a + b
+        run_both(impl)
+
+    def test4(self):
+        def impl(app):
+            return app.arange(120)
+        run_both(impl)
+
+    def test5(self):
+        a = np.arange(120)
+        b = ramba.fromarray(a)
+        a2 = a * a
+        b2 = b * b
+        b2l = b2.asarray()
+        assert(np.array_equal(a2, b2l))
+
+    def test6(self):
+        def impl(app):
+            a = app.arange(120)
+            b = a * a
+            c = 1000 - b
+            return c
+        run_both(impl)
+
+    def test7(self):
+        def impl(index):
+            return index[0] * 100
+        try:
+            a = ramba.init_array(120, impl)
+        except:
+            assert(0)
+
+    def test8(self):
+        @numba.njit
+        def impl(index):
+            return index[0] * 100
+        try:
+            a = ramba.init_array(120, impl)
+        except:
+            assert(0)
+
+    def test9(self):
+        def impl(index):
+            return (index[0] + index[1]) * 5
+        a = ramba.init_array((120, 100), impl)
+
+    def test10(self):
+        @numba.njit
+        def impl(index):
+            return (index[0] * index[1]) + 7
+        a = ramba.init_array((120, 100), impl)
+
+    def test11(self):
+        try:
+            a = ramba.init_array(120, lambda x: x[0] * 100)
+        except:
+            assert(0)
+
+    def test12(self):
+        try:
+            a = ramba.init_array((120, 100), lambda x: (x[0] * x[1]) + 5)
+        except:
+            assert(0)
 
 """
 class TestGeneric:
