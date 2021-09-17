@@ -976,39 +976,55 @@ class Filler:
 
 
 @functools.lru_cache()
-def get_do_fill(filler: FillerFunc):
+def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill", filler)
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
-    @numba.njit(parallel=True)
-    def do_fill(A, sz, starts):
-        for i in numba.pndindex(sz):
-            arg = sz
-            # Construct the global index.
-            for j in range(len(starts)):
-                arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
-            A[i] = njfiller(arg)
+    if num_dim > 1:
+        @numba.njit(parallel=True)
+        def do_fill(A, sz, starts):
+            for i in numba.pndindex(sz):
+                arg = sz
+                # Construct the global index.
+                for j in range(len(starts)):
+                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                A[i] = njfiller(arg)
 
-    return do_fill
+        return do_fill
+    else:
+        @numba.njit(parallel=True)
+        def do_fill(A, sz, starts):
+            for i in numba.prange(sz[0]):
+                A[i] = njfiller((i+starts[0],))
+
+        return do_fill
 
 
 @functools.lru_cache()
-def get_do_fill_non_tuple(filler: FillerFunc):
+def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill_non_tuple", filler)
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
-    @numba.njit(parallel=True)
-    def do_fill(A, sz, starts):
-        for i in numba.pndindex(sz):
-            arg = sz
-            # Construct the global index.
-            for j in range(len(starts)):
-                arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
-            A[i] = njfiller(*arg)
+    if num_dim > 1:
+        @numba.njit(parallel=True)
+        def do_fill(A, sz, starts):
+            for i in numba.pndindex(sz):
+                arg = sz
+                # Construct the global index.
+                for j in range(len(starts)):
+                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                A[i] = njfiller(*arg)
 
-    return do_fill
+        return do_fill
+    else:
+        @numba.njit(parallel=True)
+        def do_fill(A, sz, starts):
+            for i in numba.prange(sz[0]):
+                A[i] = njfiller(i+starts[0])
+
+        return do_fill
 
 
 #@ray.remote(num_cpus=72)
@@ -1062,7 +1078,7 @@ class RemoteState:
                 per_element = filler.per_element
                 do_compile = filler.do_compile
                 filler = filler.func
-            dprint(3, "Has filler", per_element, do_compile)
+            dprint(3, "Has filler", per_element, do_compile, filler_tuple_arg)
 
             if per_element:
                 def do_per_element_non_compiled(new_bcontainer, dim_lens, starts):
@@ -1077,9 +1093,9 @@ class RemoteState:
                 if do_compile:
                     try:
                         if filler_tuple_arg:
-                            do_fill = get_do_fill(FillerFunc(filler))
+                            do_fill = get_do_fill(FillerFunc(filler), num_dim)
                         else:
-                            do_fill = get_do_fill_non_tuple(FillerFunc(filler))
+                            do_fill = get_do_fill_non_tuple(FillerFunc(filler), num_dim)
 
                         do_fill(new_bcontainer, dim_lens, starts)
                     except:
