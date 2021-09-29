@@ -54,6 +54,9 @@ if ntiming != 0:
 else:
     timing = False
 
+timing_debug_worker = int(os.environ.get('RAMBA_TIMING_WORKER',"0"))
+
+
 def tprint(level, *args):
     if ntiming >= level:
         print(*args)
@@ -79,7 +82,7 @@ def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
 def get_common_state():
-    return (num_workers, num_threads, timing, ntiming, ndebug)
+    return (num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug)
 
 def set_common_state(st):
     global num_workers
@@ -87,5 +90,5 @@ def set_common_state(st):
     global timing
     global ntiming
     global ndebug
-    num_workers, num_threads, timing, ntiming, ndebug = st
+    num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug = st
 

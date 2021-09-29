@@ -1032,7 +1032,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
-        z = numa.set_affinity(worker_num)
+        z = 0 #numa.set_affinity(worker_num)
         dprint(1,"Worker:",worker_num, os.uname()[1],num_workers, z, num_threads, ndebug, ntiming, timing)
         self.numpy_map = {}
         self.worker_num = worker_num
@@ -1961,7 +1961,7 @@ class RemoteState:
 
         # actual sends
         for (i,v) in to_send.items():
-            self.comm_queues[i].put( (uuid, v) )
+            self.comm_queues[i].put( (uuid, v, self.worker_num) )
         expected_parts = len(from_set)  # since messages are coalesced, expect 1 from each node sending to us
 
         times.append(timer())
@@ -1978,13 +1978,13 @@ class RemoteState:
         #        assert(0)
         msgs = []
         while expected_parts>0:
-            m = self.comm_queues[self.worker_num].multi_get(expected_parts, gfilter=lambda x: x[0]==uuid, timeout=5)
+            m = self.comm_queues[self.worker_num].multi_get(expected_parts, gfilter=lambda x: x[0]==uuid, timeout=5, print_times=(ntiming>=1 and self.worker_num==timing_debug_worker), msginfo=lambda x: "[from "+str(x[2])+"]")
             msgs += m
             expected_parts -= len(m)
             if expected_parts>0:  print("Still waiting for", expected_parts, "items")
         #for _,v,part,sl in msgs:
         #    arr_parts[v].append( (part, sl) )
-        for _,l in msgs:
+        for _,l,_ in msgs:
             for v,part,sl in l:
                 #arr_parts[v].append( (part, sl) )
                 #arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
@@ -2075,7 +2075,7 @@ class RemoteState:
 
         times.append(timer())
         tnow = timer()
-        if ntiming>=1 and self.worker_num==5:
+        if ntiming>=1 and self.worker_num==timing_debug_worker:
             times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
             tprint (1, "Deferred execution", (tnow-self.tlast)*1000,times, int(overlap_time*1000000)/1000, int(getview_time*1000000)/1000, int(arrview_time*1000000)/1000, int(copy_time*1000000)/1000)
             tprint (2, code)
@@ -2134,6 +2134,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(len(remote_states))]
         rvid = str(uuid.uuid4()) if has_retval else None
         msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
+        print("control message: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
         [control_queues[i].put( msg, raw=True ) for i in range(len(remote_states))]
         return [rvid+str(i) for i in range(len(remote_states))] if has_retval else None
     if USE_RAY:
@@ -2167,6 +2168,7 @@ def remote_call( nodeid, method, *args, **kwargs):
 def remote_exec_all( method, *args, **kwargs):
     #[ _real_remote(i, method, False, args, kwargs) for i in range(len(remote_states)) ]
     _real_remote(ALL_NODES, method, False, args, kwargs)
+    #get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
 def remote_async_call_all( method, *args, **kwargs):
     #return [ _real_remote(i, method, True, args, kwargs) for i in range(len(remote_states)) ]

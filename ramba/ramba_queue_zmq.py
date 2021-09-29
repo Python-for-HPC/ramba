@@ -30,6 +30,7 @@ import time
 import socket
 def get_my_ip(hint_ip=None):
     hint_ip = "172.13.1.1" if hint_ip is None else hint_ip
+    #hint_ip = "192.168.8.1" if hint_ip is None else hint_ip
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect((hint_ip,1))
     return s.getsockname()[0]
@@ -159,6 +160,7 @@ class Queue:
         t += time.time()
         #s.send(msg,copy=False)
         s.send_multipart(msg,copy=False)
+        #s.send_multipart(msg)
         #self.sent_data+=len(msg)
         self.sent_data+=len(msg[0])
         for d in msg[1:]:
@@ -200,7 +202,8 @@ class Queue:
             block: bool = True,
             gfilter = lambda x: True,
             timeout: Optional[float] = None,
-            print_times: Optional[bool] = False) -> Any:
+            print_times: Optional[bool] = False,
+            msginfo = lambda x: "") -> Any:
         """Gets an item from the queue.
 
         If block is True and the queue is empty, blocks until the queue is no
@@ -225,11 +228,18 @@ class Queue:
                 msg = pf[i]
                 del pf[i]
                 t1 = time.time()
-                if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000)
+                if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000, msginfo(msg))
                 return msg
         while True:
             #msg0 = s.recv()
             msg0 = s.recv_multipart(copy=False)
+            #success=False
+            #while not success:
+            #    try:
+            #        msg0 = s.recv_multipart(copy=False,flags=zmq.NOBLOCK)
+            #        success=True
+            #    except:
+            #        sucess=False
             #self.recv_data+=len(msg0)
             for d in msg0:
                 self.recv_data+=len(d)
@@ -241,7 +251,8 @@ class Queue:
             t2 = time.time()
             self.unpickle_time+=t2-t1
             if gfilter(msg):
-                if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
+                #if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
+                if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms", msginfo(msg))
                 return msg
             else:
                 pf.append(msg)
@@ -273,7 +284,9 @@ class Queue:
     def multi_get(self,
             n: int = 1,
             gfilter = lambda x: True,
-            timeout: Optional[float] = None) -> Any:
+            timeout: Optional[float] = None,
+            print_times=False,
+            msginfo = lambda x: "") -> Any:
         """Get multiple items from the queue.
         Blocking call.  
         There is no guarantee of order if multiple consumers get from the
@@ -289,7 +302,7 @@ class Queue:
             raise ValueError("'timeout' must be a non-negative number")
         if n<0:
             raise ValueError("'n' must be a non-negative number")
-        return [self.get(gfilter=gfilter) for _ in range(n)]
+        return [self.get(gfilter=gfilter,print_times=print_times,msginfo=msginfo) for _ in range(n)]
 
 
 '''
