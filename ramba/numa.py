@@ -11,30 +11,58 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 """
 
 import psutil
+try:
+    import numa
+    HAS_NUMA = numa.available()
+except:
+    HAS_NUMA = False
+
 
 # Get number of numa zones -- Linux-specific!!
 
-def get_zones():
-    with open("/sys/devices/system/node/possible") as f:
-        zones = f.read()
-    numzones = int(zones[:-1].split('-')[-1])+1
+def get_zones(zones=None):
+    if zones is None or zones=="":
+        try:
+            with open("/sys/devices/system/node/possible") as f:
+                zones = f.read()
+        except:
+            return 0  # could not read
+        numzones = int(zones[:-1].split('-')[-1])+1
+    else:
+        numzones = len(zones.split(':'))
     return numzones
 
 # Get list of cpus in zone -- Linux-specific!!
-def get_zone_cpus(z):
-    with open("/sys/devices/system/node/node"+str(z)+"/cpulist") as f:
-        cpuranges = f.read()[:-1].split(',')
+def get_zone_cpus(z,zones=None):
+    if zones is None or zones=="":
+        with open("/sys/devices/system/node/node"+str(z)+"/cpulist") as f:
+            cpuranges = f.read()[:-1].split(',')
+    else:
+        cpuranges = (zones.split(':')[z]).split(',')
     cpuranges = [ x.split('-') for x in cpuranges ]
     cpus = [ i for x in cpuranges for i in range(int(x[0]),int(x[-1])+1) ]
     return cpus
 
 # set cpu affinity to a particular zone's cpus
 # based on worker number;  assumes workers are allocated on one node before going to next -- Ray seems to do this so we should be good
-def set_affinity(w):
-    nz = get_zones()
+def set_affinity_old(w, zones=None):
+    nz = get_zones(zones)
+    if nz==0:  return 0
     z = w % nz
-    cpus = get_zone_cpus(z)
+    cpus = get_zone_cpus(z,zones)
     psutil.Process().cpu_affinity(cpus)
+    #print ("Worker",w,"affinity",cpus)
+    return z
+
+# set cpu affinity to a particular zone's cpus, using numa.py;  fallback to old version if not available, or zones specified
+# based on worker number;  assumes workers are allocated on one node before going to next -- Ray seems to do this so we should be good
+def set_affinity(w, zones=None):
+    if zones=="NONE" or zones=="DISABLE": return 0
+    if not HAS_NUMA or (zones is not None and zones!="") : return set_affinity_old(w, zones)
+    nz = numa.get_max_node()+1
+    z = w % nz
+    numa.bind({z})
+    #print ("Worker",w,"affinity",z)
     return z
 
 

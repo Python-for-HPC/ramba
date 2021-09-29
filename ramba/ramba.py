@@ -1032,7 +1032,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
-        z = 0 #numa.set_affinity(worker_num)
+        z = numa.set_affinity(worker_num, numa_zones)
         dprint(1,"Worker:",worker_num, os.uname()[1],num_workers, z, num_threads, ndebug, ntiming, timing)
         self.numpy_map = {}
         self.worker_num = worker_num
@@ -2091,6 +2091,7 @@ class RemoteState:
         return [x.get_stats() for x in self.comm_queues]
 
     def rpc_serve(self, rvq):
+        #z = numa.set_affinity(self.worker_num, numa_zones)
         print_stuff = timing>2 and self.worker_num==0
         t0 = timer()
         while True:
@@ -2134,7 +2135,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(len(remote_states))]
         rvid = str(uuid.uuid4()) if has_retval else None
         msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
-        print("control message: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
+        if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
         [control_queues[i].put( msg, raw=True ) for i in range(len(remote_states))]
         return [rvid+str(i) for i in range(len(remote_states))] if has_retval else None
     if USE_RAY:
