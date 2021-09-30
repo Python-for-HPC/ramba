@@ -982,7 +982,7 @@ def get_do_fill(filler: FillerFunc, num_dim):
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
     if num_dim > 1:
-        @numba.njit(parallel=True)
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
@@ -993,7 +993,7 @@ def get_do_fill(filler: FillerFunc, num_dim):
 
         return do_fill
     else:
-        @numba.njit(parallel=True)
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
                 A[i] = njfiller((i+starts[0],))
@@ -1008,7 +1008,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
     if num_dim > 1:
-        @numba.njit(parallel=True)
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
@@ -1019,7 +1019,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 
         return do_fill
     else:
-        @numba.njit(parallel=True)
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
                 A[i] = njfiller(i+starts[0])
