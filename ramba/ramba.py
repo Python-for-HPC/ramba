@@ -1049,11 +1049,11 @@ class RemoteState:
         return self.comm_queues
 
     def get_comm_queue(self):
-        if self.my_comm_queue is None: self.my_comm_queue = ramba_queue.Queue()
+        if self.my_comm_queue is None: self.my_comm_queue = ramba_queue.Queue(hint_ip=hint_ip)
         return self.my_comm_queue
 
     def get_control_queue(self):
-        if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue()
+        if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip)
         return self.my_control_queue
 
     def destroy_array(self, gid):

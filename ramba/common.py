@@ -69,6 +69,7 @@ def dprint(level, *args):
 
 num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
 num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
+hint_ip     = os.environ.get('RAMBA_IP_HINT', None)    # IP address used to hint which interface to bind queues
 numa_zones  = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
 
 # RAMBA_BIG_DATA environment variable MUST be set to 1 if the application will use arrays
@@ -83,7 +84,7 @@ def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
 def get_common_state():
-    return (num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, numa_zones)
+    return (num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, hint_ip, numa_zones)
 
 def set_common_state(st):
     global num_workers
@@ -92,6 +93,7 @@ def set_common_state(st):
     global ntiming
     global ndebug
     global timing_debug_worker
+    global hint_ip
     global numa_zones
-    num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, numa_zones = st
+    num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, hint_ip, numa_zones = st
 

@@ -90,7 +90,7 @@ class Queue:
         self.recv_data=0
         self.pickle_time = 0.0
         self.unpickle_time = 0.0
-        #print ("ADDR:",ip,port, "HINT:",hint_ip)
+        #print ("Created Queue ADDR:",self.ip,self.port, "HINT:",hint_ip)
 
     def get_stats(self):
         return (self.ip, self.port, self.recv_data, self.sent_data, self.unpickle_time, self.pickle_time)
