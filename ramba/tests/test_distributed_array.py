@@ -3,6 +3,19 @@ import numpy as np
 import random
 import numba
 
+
+@ramba.stencil
+def stencil1(a):
+    return a[-2,-2] + a[0,0] + a[2, 2]
+
+
+class TestStencil:
+    def test1(self):
+        a = ramba.ones((20,20), local_border=3)
+        b = ramba.sstencil(stencil1, a)
+        c = ramba.copy(b)
+
+
 class TestBroadcast:
     def test1(self):
         N = 10
@@ -128,6 +141,53 @@ class TestBasic:
             a = ramba.init_array((120, 100), lambda x: (x[0] * x[1]) + 5)
         except:
             assert(0)
+
+    def test13(self):
+        def impl(app):
+            a = app.arange(120)
+            a -= 7
+            a = abs(a)
+            return a
+        run_both(impl)
+
+    def test14(self):
+        def impl(app):
+            a = app.arange(120)
+            b = app.ones(120)
+            a = a*7 + 3
+            c = a + b + b
+            d = -c
+            b[45:55] = d[22:32] + a[48:58]
+            return b
+        run_both(impl)
+
+    def test_where1(self):
+        # Test of "where" in which cond,a,b are all the same size
+        def impl(app):
+            a = app.arange(200)
+            b = app.ones(200)
+            c = app.where(a > 133, a, b)
+            return c
+        run_both(impl)
+
+    def test_where2(self):
+        # Test of "where" in which b needs to be broadcast
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
+            b = app.ones((50, 1))
+            c = app.where(a > 33, a, b)
+            return c
+        run_both(impl)
+
+    def test_where2(self):
+        # Test of "where" in which cond needs to be broadcast
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
+            e = app.fromfunction(lambda i,j: 500 + i + j, (50, 50), dtype=int)
+            b = app.fromfunction(lambda i,j: i + 200, (50, 1), dtype=int)
+            c = app.where(b > 233, a, e)
+            return c
+        run_both(impl)
 
 """
 class TestGeneric:

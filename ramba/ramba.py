@@ -44,6 +44,7 @@ import functools
 import math
 import traceback
 import numba.cpython.unsafe.tuple as UT
+import atexit
 
 
 try:
@@ -2624,6 +2625,7 @@ def dot(a, b, out=None):
         print("dot for matrices higher than 2 dimensions not currently supported.")
         assert(0)
 
+total_matmul_time = 0
 
 def matmul(a, b, reduction=False, out=None):
     dprint(2, "starting matmul")
@@ -2665,7 +2667,7 @@ def matmul(a, b, reduction=False, out=None):
         out_ndarray = empty(out_shape)
 
     pre_matmul_end_time = timer()
-    tprint(1, "pre_matmul_total_time:", pre_matmul_end_time - pre_matmul_start_time, ashape, bshape)
+    tprint(2, "pre_matmul_total_time:", pre_matmul_end_time - pre_matmul_start_time, ashape, bshape)
 
     a_send_recv = uuid.uuid4()
     b_send_recv = uuid.uuid4()
@@ -2677,7 +2679,7 @@ def matmul(a, b, reduction=False, out=None):
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
-            tprint(1, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
+            tprint(2, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
         else:
             deferred_op.do_ops()
 
@@ -2721,13 +2723,13 @@ def matmul(a, b, reduction=False, out=None):
                 if ntiming >= 1:
                     sync()
                 sync_end_time = timer()
-                tprint(1, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
+                tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
 
             matmul_end_time = timer()
-            tprint(1, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
+            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
             for worker_data in worker_timings:
                 worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                tprint(2, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
@@ -2765,13 +2767,13 @@ def matmul(a, b, reduction=False, out=None):
                     if ntiming >= 1:
                         sync()
                     sync_end_time = timer()
-                    tprint(1, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
+                    tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
 
                 matmul_end_time = timer()
-                tprint(1, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, "slicing_time", 0, "launch_time", launch_total, "get_results_time", post_get_end_time - launch_end_time)
+                tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, "slicing_time", 0, "launch_time", launch_total, "get_results_time", post_get_end_time - launch_end_time)
                 for worker_data in worker_timings:
                     worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                    tprint(2, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                    tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
                 if aextend:
                     return reshape(out_ndarray, (out_shape[1],))
@@ -2814,17 +2816,17 @@ def matmul(a, b, reduction=False, out=None):
                 reduced_end_time = timer()
                 out_ndarray[:] = fromarray(npreduced)
                 fromarray_end_time = timer()
-                tprint(1, "partial_reduce_times:", listify_end_time - listify_start_time, reduced_end_time - listify_end_time, fromarray_end_time - reduced_end_time)
+                tprint(2, "partial_reduce_times:", listify_end_time - listify_start_time, reduced_end_time - listify_end_time, fromarray_end_time - reduced_end_time)
                 #out_ndarray[:] = fromarray(functools.reduce(operator.add, [x[11] for x in worker_timings]))
 
                 if ntiming >= 1:
                     sync()
 
                 matmul_end_time = timer()
-                tprint(1, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
+                tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
                 for worker_data in worker_timings:
                     worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                    tprint(2, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                    tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
                 if aextend:
                     return reshape(out_ndarray, (out_shape[1],))
@@ -2892,10 +2894,10 @@ def matmul(a, b, reduction=False, out=None):
                 sync()
 
             matmul_end_time = timer()
-            tprint(1, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_end_time - launch_start_time, post_get_end_time - launch_end_time, matmul_end_time - post_get_end_time)
+            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_end_time - launch_start_time, post_get_end_time - launch_end_time, matmul_end_time - post_get_end_time)
             for worker_data in worker_timings:
                 worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                tprint(2, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
@@ -2907,7 +2909,7 @@ def matmul(a, b, reduction=False, out=None):
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
-            tprint(1, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
+            tprint(2, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
         else:
             deferred_op.do_ops()
 
@@ -2939,16 +2941,26 @@ def matmul(a, b, reduction=False, out=None):
         worker_timings = get_results(matmul_workers)
 
         matmul_end_time = timer()
-        tprint(1, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape)
+        tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape)
         for worker_data in worker_timings:
             worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-            tprint(2, "matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+            tprint(3, "matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+
+        global total_matmul_time
+        total_matmul_time += matmul_end_time - matmul_start_time
 
         if aextend:
             return reshape(out_ndarray, (out_shape[1],))
         else:
             return out_ndarray
 
+def matmul_summary():
+    global total_matmul_time
+    print("Total matmul time:", total_matmul_time)
+
+if ntiming > 0:
+    print("registering matmul_summary")
+    atexit.register(matmul_summary)
 
 def canonical_dim(dim, dim_size, end=False):
     if dim is None:
@@ -3471,11 +3483,24 @@ for mfunc in mod_to_array:
 #    else:
 #        return np.mean(the_array, *args, **kwargs)
 
-def power(a,b):
-    if isinstance(a,ndarray) or isinstance(b,ndarray):
+def power(a, b):
+    if isinstance(a, ndarray) or isinstance(b, ndarray):
         return a**b
     else:
         return np.power(a,b)
+
+def where(cond, a, b):
+    assert(isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray))
+
+    lb = max(a.local_border, b.local_border)
+    ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
+    conda_new_array_size, conda_condview, conda_aview = ndarray.broadcast(cond, ab_aview)
+    condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(cond, ab_bview)
+    assert(conda_new_array_size == condb_new_array_size)
+
+    new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
+    deferred_op.add_op(["", new_ndarray, " = ", conda_aview, " if ", conda_condview, " else ", condb_bview], new_ndarray, imports=[])
+    return new_ndarray
 
 def sync():
     sync_start_time = timer()
