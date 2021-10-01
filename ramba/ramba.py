@@ -10,9 +10,13 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
-# This exports a decorator that combines Ray and Numba.
+from ramba.common import *
+
 import os
-import ray
+if USE_MPI:
+    import mpi4py
+else:
+    import ray
 import numba
 import types
 import inspect
@@ -41,7 +45,6 @@ import math
 import traceback
 import numba.cpython.unsafe.tuple as UT
 
-from ramba.common import *
 
 try:
     import dpctl
@@ -92,19 +95,6 @@ dprint(3, "numba_path:", numba_path)
 numba_workqueue = ffi.dlopen(numba_path)
 dprint(3, "numba_workqueue:", numba_workqueue, type(numba_workqueue))
 
-# Import all the things that Ray exports.  We have to remove PYTHON_MODE
-# from the list because they have a bug.  This "if" can go away once the
-# fix for this issue this is in Ray mainline makes it into a Ray release.
-ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
-if 'PYTHON_MODE' in ray_imports:
-    ray_imports.remove('PYTHON_MODE')
-if 'dataget' in ray_imports:
-    ray_imports.remove('dataget')
-if 'show_in_dashboard' in ray_imports:
-    ray_imports.remove('show_in_dashboard')
-istmt = "from ray import {}".format(",".join(ray_imports))
-# Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
-exec(istmt)
 from numba import prange
 
 # Get a reference to the current module to be used for dynamic code generation.
@@ -112,36 +102,49 @@ ramba_module = __import__(__name__)
 dprint(3, "ramba_module:", ramba_module, type(ramba_module))
 
 
-#def init(num_cpus=4):
-#    global num_workers
-#    num_workers = num_cpus
+if not USE_MPI:
+    # Import all the things that Ray exports.  We have to remove PYTHON_MODE
+    # from the list because they have a bug.  This "if" can go away once the
+    # fix for this issue this is in Ray mainline makes it into a Ray release.
+    ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
+    if 'PYTHON_MODE' in ray_imports:
+        ray_imports.remove('PYTHON_MODE')
+    if 'dataget' in ray_imports:
+        ray_imports.remove('dataget')
+    if 'show_in_dashboard' in ray_imports:
+        ray_imports.remove('show_in_dashboard')
+    istmt = "from ray import {}".format(",".join(ray_imports))
+    # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
+    exec(istmt)
+    
+    def ray_init():
+        if ray.is_initialized():
+            return False
+    
+        ray_address = os.getenv("ray_address")
+        ray_redis_pass = os.getenv("ray_redis_password")
+        if ray_address==None:
+            ray_address = "auto"
+        if ray_redis_pass==None:
+            ray_redis_pass = ""
+        try:
+            ray.init(address=ray_address, _redis_password=ray_redis_pass)
+        except:
+            print("Failed to connect to existing cluster; starting local Ray")
+            ray.init(_redis_password=str(uuid.uuid4()))
+        assert ray.is_initialized() == True
+        import time
+        time.sleep(1)
+        cores = ray.available_resources()['CPU']
+        dprint(2, "Ray initialized;  available cores:", cores)
+        global num_workers
+        if cores < num_workers:
+            num_workers = int(cores)
+        return True
+    
+    ray_first_init = ray_init()
 
-def ray_init():
-    if ray.is_initialized():
-        return False
 
-    ray_address = os.getenv("ray_address")
-    ray_redis_pass = os.getenv("ray_redis_password")
-    if ray_address==None:
-        ray_address = "auto"
-    if ray_redis_pass==None:
-        ray_redis_pass = ""
-    try:
-        ray.init(address=ray_address, _redis_password=ray_redis_pass)
-    except:
-        print("Failed to connect to existing cluster; starting local Ray")
-        ray.init(_redis_password=str(uuid.uuid4()))
-    assert ray.is_initialized() == True
-    import time
-    time.sleep(1)
-    cores = ray.available_resources()['CPU']
-    dprint(2, "Ray initialized;  available cores:", cores)
-    global num_workers
-    if cores < num_workers:
-        num_workers = int(cores)
-    return True
-
-ray_first_init = ray_init()
 
 class FillerFunc:
     def __init__(self, func):
@@ -370,267 +373,271 @@ def stencil(*args, **kwargs):
     return rdec
 
 
-def remote(*args, **kwargs):
-    dprint(2, "remote:", args, kwargs)
-
-    def make_wrapper(func, args, kwargs):
-        dprint(2, "remote make_wrapper:", args, kwargs)
+#**************************************
+# Main functions to support Ray+Numba *
+#**************************************
+if not USE_MPI:
+    def remote(*args, **kwargs):
+        dprint(2, "remote:", args, kwargs)
+    
+        def make_wrapper(func, args, kwargs):
+            dprint(2, "remote make_wrapper:", args, kwargs)
+            if len(args) > 0:
+                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+            for kwa in kwargs:
+                if kwa not in ['ray', 'numba']:
+                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                if not isinstance(kwargs[kwa], dict):
+                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+    
+            #ray_init()  # should already have been initied
+    
+            if isinstance(func, type):
+                dprint(2, "remote args:", args, kwargs)
+                dprint(2, "remote func is type")
+                if 'ray' in kwargs and len(kwargs['ray']) > 0:
+                    rtype = ray.remote(**(kwargs['ray']))(func)
+                    dprint(2, "remote rtype with args:", rtype, type(rtype))
+                else:
+                    rtype = ray.remote(func)
+                    dprint(2, "remote rtype:", rtype, type(rtype))
+                return rtype
+            elif inspect.isfunction(func):
+                fname = func.__name__
+                # Use a unique name for each FunctionMetadata to avoid global name conflicts.
+                fmname = "FunctionMetadataFor" + fname
+                fm = FunctionMetadata(func, args, kwargs)
+                ftext = "def {fname}(*args, **kwargs):\n    return {fmname}(*args, **kwargs)\n".format(fname=fname, fmname=fmname)
+                ldict = {}
+                gdict = globals()
+                gdict[fmname] = fm
+                exec(ftext, gdict, ldict)
+                dprint(2, "remote make_wrapper ldict:", ldict)
+                if 'ray' in kwargs and len(kwargs['ray']) > 0:
+                    rfunc = ray.remote(**(kwargs['ray']))(ldict[fname])
+                    dprint(2, "remote rfunc with args:", rfunc, type(rfunc))
+                else:
+                    rfunc = ray.remote(ldict[fname])
+                    dprint(2, "remote rfunc:", rfunc, type(rfunc))
+                return rfunc
+    
         if len(args) > 0:
-            raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-        for kwa in kwargs:
-            if kwa not in ['ray', 'numba']:
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-            if not isinstance(kwargs[kwa], dict):
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-
-        ray_init()
-
-        if isinstance(func, type):
-            dprint(2, "remote args:", args, kwargs)
-            dprint(2, "remote func is type")
-            if 'ray' in kwargs and len(kwargs['ray']) > 0:
-                rtype = ray.remote(**(kwargs['ray']))(func)
-                dprint(2, "remote rtype with args:", rtype, type(rtype))
-            else:
-                rtype = ray.remote(func)
-                dprint(2, "remote rtype:", rtype, type(rtype))
-            return rtype
-        elif inspect.isfunction(func):
-            fname = func.__name__
-            # Use a unique name for each FunctionMetadata to avoid global name conflicts.
-            fmname = "FunctionMetadataFor" + fname
-            fm = FunctionMetadata(func, args, kwargs)
-            ftext = "def {fname}(*args, **kwargs):\n    return {fmname}(*args, **kwargs)\n".format(fname=fname, fmname=fmname)
-            ldict = {}
-            gdict = globals()
-            gdict[fmname] = fm
-            exec(ftext, gdict, ldict)
-            dprint(2, "remote make_wrapper ldict:", ldict)
-            if 'ray' in kwargs and len(kwargs['ray']) > 0:
-                rfunc = ray.remote(**(kwargs['ray']))(ldict[fname])
-                dprint(2, "remote rfunc with args:", rfunc, type(rfunc))
-            else:
-                rfunc = ray.remote(ldict[fname])
-                dprint(2, "remote rfunc:", rfunc, type(rfunc))
-            return rfunc
-
-    if len(args) > 0:
-        dprint(2, "remote args0 type:", args[0], type(args[0]))
-        func = args[0]
-        return make_wrapper(func, (), {})
-
-    def rdec(func):
-        dprint(2, "remote rdec:", func, type(func))
-        return make_wrapper(func, args, kwargs)
-
-    return rdec
-
-
-remote_exec = False
-egmf_cache = {}
-
-"""This function will facilitate the new deobjectified function code (in text
-form) being transferred to the remote.  Thus, the exec of that code into
-existence happens on the remote."""
-def exec_generic_member_function(func_name, deobj_func_name, func_as_str, numba_args, *args, **kwargs):
-    global egmf_cache
-    if func_name not in egmf_cache:
-        dprint(2, "func_name not in cache", numba_args)
-
-        ldict = {}
-        gdict = {}
-        exec(func_as_str, gdict, ldict)
-        ret_func = ldict[deobj_func_name]
-        egmf_cache[func_name] = FunctionMetadata(ret_func, (), numba_args)
-
-    func = egmf_cache[func_name]
-    return func(*args, **kwargs)
-
-def jit(*args, **kwargs):
-    dprint(2, "jit:", args, kwargs)
-    outer_globals = inspect.currentframe().f_back.f_globals
-    outer_locals = inspect.currentframe().f_back.f_locals
-
-    def make_deobj_func(fname, inst_vars, other_args, fsrc_tokens):
-        indent_line = fsrc_tokens[0]
-        indent = indent_line[:-len(indent_line.lstrip())]
-        in_nested = False
-
-        # Form a comma-separated string of all the class instance variables in the deobjectified function.
-        joined_inst_vars = ",".join(inst_vars.values())
-
-        fsrc_with_return_fix = []
-        # Fix existing return statements to also return new instance variable values.
-        for line in fsrc_tokens:
-            cur_indent = len(line) - len(line.lstrip())
-            if in_nested and cur_indent == nested_indent:
-                in_nested = False
-
-            if line.lstrip().startswith("def"):
-                in_nested = True
-                nested_indent = cur_indent
-                # Add line unmodified.
-                fsrc_with_return_fix.append(line)
-            elif line.lstrip().startswith("return") and not in_nested:
-                # New line will have same indentation as the original.
-                new_line = line[:-len(line.lstrip())]
-                new_line += "return "
-                # Find everything that comes after "return " in the line.
-                post_return = line.lstrip()[7:]
-                dprint(2, "post_return:", post_return)
-                new_line += "((" + post_return + ")," + joined_inst_vars + ")"
-                fsrc_with_return_fix.append(new_line)
-            else:
-                # Add line unmodified.
-                fsrc_with_return_fix.append(line)
-        # Add the return of the instance vars if the last line is an implicit return.
-        last_line = indent + "return "
-        last_line += "((None)," + joined_inst_vars + ")"
-        fsrc_with_return_fix.append(last_line)
-
-        # Join all the function source lines into one string.
-        fsrc_rest = "\n".join(fsrc_with_return_fix)
-        dprint(2, "fsrc_rest:")
-        dprint(2, fsrc_rest)
-
-        # Sort by decreasing length so that shorter replacements don't cause larger
-        # replacements to be missed.
-        sorted_inst_vars = sorted(inst_vars, key=lambda k: len(inst_vars[k]), reverse=True)
-        dprint(2, "sorted_inst_vars:", sorted_inst_vars, type(sorted_inst_vars))
-        for siv in sorted_inst_vars:
-            fsrc_rest = fsrc_rest.replace("self." + siv, inst_vars[siv])
-        dprint(2, "fsrc_rest post_replace:")
-        dprint(2, fsrc_rest)
-
-        deobj_func_name = "ramba_deobj_func_" + fname.replace(".","_")
-        deobj_func = "def " + deobj_func_name + "(" + joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args + "):\n"
-        if debug:
-            deobj_func += indent + "print(\"Running deobj func\")\n"
-        deobj_func += fsrc_rest + "\n"
-        return deobj_func, deobj_func_name
-
-    def exec_deobj_func(func_as_str, deobj_func_name, kwargs):
-        ldict = {} #outer_locals
-        gdict = outer_globals
-        dprint(2, "exec_deobj_func: "+str(gdict.keys()))
-        #dprint(2, "frames: "+str(inspect.getouterframes(inspect.currentframe())))
-        exec(func_as_str, gdict, ldict)
-        ret_func = ldict[deobj_func_name]
-        dprint(2, "ldict: ",ldict.keys())
-        dprint(2, id(ret_func.__module__))
-        dprint(2, ret_func.__module__)
-        # Wrap the target function with FunctionMetadata to handle Numba compilation.
-        return FunctionMetadata(ret_func, (), kwargs)
-
-    def make_wrapper(func, args, kwargs):
-        dprint(2, "jit make_wrapper:", args, kwargs)
-        if len(args) > 0:
-            raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-        for kwa in kwargs:
-            if kwa not in ['ray', 'numba']:
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-            if not isinstance(kwargs[kwa], dict):
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-
-        ray_init()
-
-        numba_args = kwargs.get('numba', {})
-
-        if inspect.isfunction(func):
-            fname = func.__name__
-            fqname = func.__qualname__
-            fsrc = inspect.getsource(func)
-            modname = func.__module__
-            fmod = sys.modules[modname]
-            dprint(2, "fname:", fname, fqname)
-            dprint(2, "fsrc:", fsrc)
-            dprint(2, "modname:", modname)
-            dprint(2, "fmod:", fmod)
-            fsrc_tokens = fsrc.split('\n')
-            dprint(2, "fsrc_tokens:", fsrc_tokens)
-            # Get the non-self arguments to the function....everything after "self" and before ")"
-            other_args = fsrc_tokens[1][fsrc_tokens[1].find("self")+4:]
-            if other_args.find(',') >= 0:
-                other_args = other_args[other_args.find(',')+1:]
-            other_args = other_args[:other_args.find(')')]
-            dprint(2, "other_args:", other_args)
-            bio_fscr = BytesIO(fsrc.encode('utf-8')).readline
-            tokens = tokenize.tokenize(bio_fscr)
-            inst_vars = {}
-            tlist = [(t, v) for t,v,_,_,_ in tokens]
-            dprint(2, "token list:", tlist)
-            for i in range(len(tlist)-2):
-                if (tlist[i][1] == "self" and tlist[i+1][1] == "."):
-                    field = tlist[i+2][1]
-                    inst_vars[field] = "ramba_deobjectified_field_"+field
-            dprint(2, "inst_vars:", inst_vars)
-
-            whole_func = fsrc_tokens[1:]
-            indent_len = len(whole_func[0]) - len(whole_func[0].lstrip())
-            whole_func = "\n".join(x[indent_len:] for x in whole_func)
-            dprint(2, "whole_func")
-            dprint(2, whole_func)
-            st = parser.suite(whole_func)
-            dprint(2, "st:", st, type(st))
-            stlist = parser.st2list(st)
-            dprint(2, "stlist:", stlist, type(stlist))
-            # Construct global helper function to do the work from the body of the incoming function.
-            deobj_func_txt, deobj_func_name = make_deobj_func(fqname, inst_vars, other_args, fsrc_tokens[2:])
-            dprint(2, "full deobj_func:")
-            dprint(2, deobj_func_txt)
-            if not remote_exec:
-                # This creates the deobj_func from text and wraps it in FunctionMetadata
-                # so that Numba is invoked.
-                deobj_func = exec_deobj_func(deobj_func_txt, deobj_func_name, kwargs)
-
-            new_func = "def " + fname + "(self" + ("," if len(other_args) > 0 else "") + other_args + "):\n"
-#            new_func += "    print(\"Running new_func.\")\n"
-            if debug:
-                for k in inst_vars:
-                    new_func += "    print(\"" + k + ":\", self." + k + ")\n"
-            new_func += "    rv = None\n"
-            new_func += "    try:\n"
-            joined_inst_vars = ",".join(["self." + x for x in inst_vars.keys()])
-            dprint(2, "joined_inst_vars:", joined_inst_vars)
-            inst_and_others = joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args
-            ret_and_inst = "rv,"+joined_inst_vars
-            if remote_exec:
-                new_func += "        " + ret_and_inst + " = curmod.exec_generic_member_function(\"" + fname + "\",\"" + deobj_func_name + "\",\"\"\"" + deobj_func_txt + "\"\"\",\"" + str(numba_args) + "\"," + inst_and_others + ")\n"
-            else:
-                new_func += "        " + ret_and_inst + " = " + deobj_func_name +"(" + inst_and_others + ")\n"
-            new_func += "    except AttributeError as ae:\n"
-            new_func += "        print(\"AttributeError:\", ae.args)\n"
-            new_func += "    except NameError as ae:\n"
-            new_func += "        print(\"NameError:\", ae.args)\n"
-            new_func += "    except:\n"
-            new_func += "        print(\"error calling deobj\", sys.exc_info()[0])\n"
-            new_func += "    return rv\n"
-            dprint(2, "new_func:", new_func)
-            ldict = {}
-            gdict = globals()
-            if remote_exec:
-                gdict["curmod"] = ramba_module
-            else:
-                gdict[deobj_func_name] = deobj_func #numba.njit(deobj_func)
-            exec(new_func, gdict, ldict)
-            nfunc = ldict[fname]
-            dprint(2, "nfunc:", nfunc, type(nfunc), nfunc.__qualname__, nfunc.__module__)
-            return nfunc
-        else:
-            dprint(2, "Object of type", func, "is not handled by ramba.jit.")
-            assert(0)
-
-    if len(args) > 0:
-        dprint(2, "jit::args0 type:", args[0], type(args[0]))
-        if isinstance(args[0], types.FunctionType):
+            dprint(2, "remote args0 type:", args[0], type(args[0]))
             func = args[0]
             return make_wrapper(func, (), {})
-
-    def rdec(func):
-        dprint(2, "jit::rdec:", func, type(func))
-        return make_wrapper(func, args, kwargs)
-
-    return rdec
+    
+        def rdec(func):
+            dprint(2, "remote rdec:", func, type(func))
+            return make_wrapper(func, args, kwargs)
+    
+        return rdec
+    
+    
+    remote_exec = False
+    egmf_cache = {}
+    
+    """This function will facilitate the new deobjectified function code (in text
+    form) being transferred to the remote.  Thus, the exec of that code into
+    existence happens on the remote."""
+    def exec_generic_member_function(func_name, deobj_func_name, func_as_str, numba_args, *args, **kwargs):
+        global egmf_cache
+        if func_name not in egmf_cache:
+            dprint(2, "func_name not in cache", numba_args)
+    
+            ldict = {}
+            gdict = {}
+            exec(func_as_str, gdict, ldict)
+            ret_func = ldict[deobj_func_name]
+            egmf_cache[func_name] = FunctionMetadata(ret_func, (), numba_args)
+    
+        func = egmf_cache[func_name]
+        return func(*args, **kwargs)
+    
+    def jit(*args, **kwargs):
+        dprint(2, "jit:", args, kwargs)
+        outer_globals = inspect.currentframe().f_back.f_globals
+        outer_locals = inspect.currentframe().f_back.f_locals
+    
+        def make_deobj_func(fname, inst_vars, other_args, fsrc_tokens):
+            indent_line = fsrc_tokens[0]
+            indent = indent_line[:-len(indent_line.lstrip())]
+            in_nested = False
+    
+            # Form a comma-separated string of all the class instance variables in the deobjectified function.
+            joined_inst_vars = ",".join(inst_vars.values())
+    
+            fsrc_with_return_fix = []
+            # Fix existing return statements to also return new instance variable values.
+            for line in fsrc_tokens:
+                cur_indent = len(line) - len(line.lstrip())
+                if in_nested and cur_indent == nested_indent:
+                    in_nested = False
+    
+                if line.lstrip().startswith("def"):
+                    in_nested = True
+                    nested_indent = cur_indent
+                    # Add line unmodified.
+                    fsrc_with_return_fix.append(line)
+                elif line.lstrip().startswith("return") and not in_nested:
+                    # New line will have same indentation as the original.
+                    new_line = line[:-len(line.lstrip())]
+                    new_line += "return "
+                    # Find everything that comes after "return " in the line.
+                    post_return = line.lstrip()[7:]
+                    dprint(2, "post_return:", post_return)
+                    new_line += "((" + post_return + ")," + joined_inst_vars + ")"
+                    fsrc_with_return_fix.append(new_line)
+                else:
+                    # Add line unmodified.
+                    fsrc_with_return_fix.append(line)
+            # Add the return of the instance vars if the last line is an implicit return.
+            last_line = indent + "return "
+            last_line += "((None)," + joined_inst_vars + ")"
+            fsrc_with_return_fix.append(last_line)
+    
+            # Join all the function source lines into one string.
+            fsrc_rest = "\n".join(fsrc_with_return_fix)
+            dprint(2, "fsrc_rest:")
+            dprint(2, fsrc_rest)
+    
+            # Sort by decreasing length so that shorter replacements don't cause larger
+            # replacements to be missed.
+            sorted_inst_vars = sorted(inst_vars, key=lambda k: len(inst_vars[k]), reverse=True)
+            dprint(2, "sorted_inst_vars:", sorted_inst_vars, type(sorted_inst_vars))
+            for siv in sorted_inst_vars:
+                fsrc_rest = fsrc_rest.replace("self." + siv, inst_vars[siv])
+            dprint(2, "fsrc_rest post_replace:")
+            dprint(2, fsrc_rest)
+    
+            deobj_func_name = "ramba_deobj_func_" + fname.replace(".","_")
+            deobj_func = "def " + deobj_func_name + "(" + joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args + "):\n"
+            if debug:
+                deobj_func += indent + "print(\"Running deobj func\")\n"
+            deobj_func += fsrc_rest + "\n"
+            return deobj_func, deobj_func_name
+    
+        def exec_deobj_func(func_as_str, deobj_func_name, kwargs):
+            ldict = {} #outer_locals
+            gdict = outer_globals
+            dprint(2, "exec_deobj_func: "+str(gdict.keys()))
+            #dprint(2, "frames: "+str(inspect.getouterframes(inspect.currentframe())))
+            exec(func_as_str, gdict, ldict)
+            ret_func = ldict[deobj_func_name]
+            dprint(2, "ldict: ",ldict.keys())
+            dprint(2, id(ret_func.__module__))
+            dprint(2, ret_func.__module__)
+            # Wrap the target function with FunctionMetadata to handle Numba compilation.
+            return FunctionMetadata(ret_func, (), kwargs)
+    
+        def make_wrapper(func, args, kwargs):
+            dprint(2, "jit make_wrapper:", args, kwargs)
+            if len(args) > 0:
+                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+            for kwa in kwargs:
+                if kwa not in ['ray', 'numba']:
+                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                if not isinstance(kwargs[kwa], dict):
+                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+    
+            ray_init()
+    
+            numba_args = kwargs.get('numba', {})
+    
+            if inspect.isfunction(func):
+                fname = func.__name__
+                fqname = func.__qualname__
+                fsrc = inspect.getsource(func)
+                modname = func.__module__
+                fmod = sys.modules[modname]
+                dprint(2, "fname:", fname, fqname)
+                dprint(2, "fsrc:", fsrc)
+                dprint(2, "modname:", modname)
+                dprint(2, "fmod:", fmod)
+                fsrc_tokens = fsrc.split('\n')
+                dprint(2, "fsrc_tokens:", fsrc_tokens)
+                # Get the non-self arguments to the function....everything after "self" and before ")"
+                other_args = fsrc_tokens[1][fsrc_tokens[1].find("self")+4:]
+                if other_args.find(',') >= 0:
+                    other_args = other_args[other_args.find(',')+1:]
+                other_args = other_args[:other_args.find(')')]
+                dprint(2, "other_args:", other_args)
+                bio_fscr = BytesIO(fsrc.encode('utf-8')).readline
+                tokens = tokenize.tokenize(bio_fscr)
+                inst_vars = {}
+                tlist = [(t, v) for t,v,_,_,_ in tokens]
+                dprint(2, "token list:", tlist)
+                for i in range(len(tlist)-2):
+                    if (tlist[i][1] == "self" and tlist[i+1][1] == "."):
+                        field = tlist[i+2][1]
+                        inst_vars[field] = "ramba_deobjectified_field_"+field
+                dprint(2, "inst_vars:", inst_vars)
+    
+                whole_func = fsrc_tokens[1:]
+                indent_len = len(whole_func[0]) - len(whole_func[0].lstrip())
+                whole_func = "\n".join(x[indent_len:] for x in whole_func)
+                dprint(2, "whole_func")
+                dprint(2, whole_func)
+                st = parser.suite(whole_func)
+                dprint(2, "st:", st, type(st))
+                stlist = parser.st2list(st)
+                dprint(2, "stlist:", stlist, type(stlist))
+                # Construct global helper function to do the work from the body of the incoming function.
+                deobj_func_txt, deobj_func_name = make_deobj_func(fqname, inst_vars, other_args, fsrc_tokens[2:])
+                dprint(2, "full deobj_func:")
+                dprint(2, deobj_func_txt)
+                if not remote_exec:
+                    # This creates the deobj_func from text and wraps it in FunctionMetadata
+                    # so that Numba is invoked.
+                    deobj_func = exec_deobj_func(deobj_func_txt, deobj_func_name, kwargs)
+    
+                new_func = "def " + fname + "(self" + ("," if len(other_args) > 0 else "") + other_args + "):\n"
+    #            new_func += "    print(\"Running new_func.\")\n"
+                if debug:
+                    for k in inst_vars:
+                        new_func += "    print(\"" + k + ":\", self." + k + ")\n"
+                new_func += "    rv = None\n"
+                new_func += "    try:\n"
+                joined_inst_vars = ",".join(["self." + x for x in inst_vars.keys()])
+                dprint(2, "joined_inst_vars:", joined_inst_vars)
+                inst_and_others = joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args
+                ret_and_inst = "rv,"+joined_inst_vars
+                if remote_exec:
+                    new_func += "        " + ret_and_inst + " = curmod.exec_generic_member_function(\"" + fname + "\",\"" + deobj_func_name + "\",\"\"\"" + deobj_func_txt + "\"\"\",\"" + str(numba_args) + "\"," + inst_and_others + ")\n"
+                else:
+                    new_func += "        " + ret_and_inst + " = " + deobj_func_name +"(" + inst_and_others + ")\n"
+                new_func += "    except AttributeError as ae:\n"
+                new_func += "        print(\"AttributeError:\", ae.args)\n"
+                new_func += "    except NameError as ae:\n"
+                new_func += "        print(\"NameError:\", ae.args)\n"
+                new_func += "    except:\n"
+                new_func += "        print(\"error calling deobj\", sys.exc_info()[0])\n"
+                new_func += "    return rv\n"
+                dprint(2, "new_func:", new_func)
+                ldict = {}
+                gdict = globals()
+                if remote_exec:
+                    gdict["curmod"] = ramba_module
+                else:
+                    gdict[deobj_func_name] = deobj_func #numba.njit(deobj_func)
+                exec(new_func, gdict, ldict)
+                nfunc = ldict[fname]
+                dprint(2, "nfunc:", nfunc, type(nfunc), nfunc.__qualname__, nfunc.__module__)
+                return nfunc
+            else:
+                dprint(2, "Object of type", func, "is not handled by ramba.jit.")
+                assert(0)
+    
+        if len(args) > 0:
+            dprint(2, "jit::args0 type:", args[0], type(args[0]))
+            if isinstance(args[0], types.FunctionType):
+                func = args[0]
+                return make_wrapper(func, (), {})
+    
+        def rdec(func):
+            dprint(2, "jit::rdec:", func, type(func))
+            return make_wrapper(func, args, kwargs)
+    
+        return rdec
 
 
 
@@ -640,36 +647,39 @@ def jit(*args, **kwargs):
 
 ######### Barrier code ##############
 
-@ray.remote(num_cpus=0)
-class BarrierActor:
-    def __init__(self, count):
-        self.current = 0
-        self.count = count
-        self.lock = threading.Lock()
-        self.cndvar = threading.Condition(lock=self.lock)
-
-    def barrier(self):
-        self.cndvar.acquire()
-        self.current += 1
-        if self.current == self.count:
+if not USE_MPI:
+    @ray.remote(num_cpus=0)
+    class BarrierActor:
+        def __init__(self, count):
             self.current = 0
-            self.cndvar.notify_all()
-        else:
-            try:
-                self.cndvar.wait(timeout=5)
-            except:
-                exp = sys.exc_info()[0]
-                print("cndvar.wait exception", exp, type(exp))
-                pass
-        self.cndvar.release()
+            self.count = count
+            self.lock = threading.Lock()
+            self.cndvar = threading.Condition(lock=self.lock)
+    
+        def barrier(self):
+            self.cndvar.acquire()
+            self.current += 1
+            if self.current == self.count:
+                self.current = 0
+                self.cndvar.notify_all()
+            else:
+                try:
+                    self.cndvar.wait(timeout=5)
+                except:
+                    exp = sys.exc_info()[0]
+                    print("cndvar.wait exception", exp, type(exp))
+                    pass
+            self.cndvar.release()
+    
+    try:
+        ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
+    except:
+        ramba_spmd_barrier = BarrierActor.options(name="RambaSpmdBarrier", max_concurrency=num_workers).remote(num_workers)
+    
+    def barrier():
+        ray.get(ramba_spmd_barrier.barrier.remote())
 
-try:
-    ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
-except:
-    ramba_spmd_barrier = BarrierActor.options(name="RambaSpmdBarrier", max_concurrency=num_workers).remote(num_workers)
-
-def barrier():
-    ray.get(ramba_spmd_barrier.barrier.remote())
+### TODO: Need non-Ray version for MPI
 
 ######### End Barrier code ##############
 
@@ -1027,8 +1037,6 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
         return do_fill
 
 
-#@ray.remote(num_cpus=72)
-@ray.remote(num_cpus = num_threads)
 class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
@@ -2123,22 +2131,27 @@ class RemoteState:
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
+if not USE_MPI:
+    RemoteState = ray.remote(num_cpus = num_threads)(RemoteState)
+
+
+
 # Wrappers to abstract away Ray method calls
 
 ALL_NODES=-1
 
 def _real_remote(nodeid, method, has_retval, args, kwargs):
     if nodeid==ALL_NODES:
-        if USE_RAY:
+        if USE_RAY_COMM:
             rargs = [ ray.put(v) for v in args ]
             rkwargs = { k:ray.put(v) for k,v in kwargs.items() }
-            return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(len(remote_states))]
+            return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(num_workers)]
         rvid = str(uuid.uuid4()) if has_retval else None
         msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
         if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
-        [control_queues[i].put( msg, raw=True ) for i in range(len(remote_states))]
-        return [rvid+str(i) for i in range(len(remote_states))] if has_retval else None
-    if USE_RAY:
+        [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
+        return [rvid+str(i) for i in range(num_workers)] if has_retval else None
+    if USE_RAY_COMM:
         rop = getattr(remote_states[nodeid], method)
         return rop.remote(*args,**kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
@@ -2146,7 +2159,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
     return rvid+str(nodeid) if has_retval else None
 
 def get_results(refs):
-    if USE_RAY:
+    if USE_RAY_COMM:
         return ray.get(refs)
     if isinstance(refs, list):
         rv = [ get_results(v) for v in refs ]
@@ -2167,19 +2180,19 @@ def remote_call( nodeid, method, *args, **kwargs):
     return get_results(_real_remote(nodeid, method, True, args, kwargs))
 
 def remote_exec_all( method, *args, **kwargs):
-    #[ _real_remote(i, method, False, args, kwargs) for i in range(len(remote_states)) ]
+    #[ _real_remote(i, method, False, args, kwargs) for i in range(num_workers) ]
     _real_remote(ALL_NODES, method, False, args, kwargs)
     #get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
 def remote_async_call_all( method, *args, **kwargs):
-    #return [ _real_remote(i, method, True, args, kwargs) for i in range(len(remote_states)) ]
+    #return [ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ]
     return _real_remote(ALL_NODES, method, True, args, kwargs)
 
 def remote_call_all( method, *args, **kwargs):
-    #return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(len(remote_states)) ])
+    #return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ])
     return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
-if USE_RAY:
+if USE_RAY_COMM:
     def func_dumps( f ):
         return f
     def func_loads( f ):
@@ -2192,30 +2205,54 @@ else:
 # *******************************
 # ** Initialize Remote Workers **
 # *******************************
+import atexit
+if USE_MPI:
+    # MPI setup
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    if rank==num_workers:  # driver
+        # do this stuff only once
+        def do_init(done=[]):
+            if len(done)>0:
+                print("HERE -- already done")
+                return None
+            done += [1]
+            rv_q = ramba_queue.Queue()
+            comm_q = comm.allgather(0)
+            con_q = comm.allgather(rv_q)
+            return rv_q, comm_q, con_q
+        x = do_init()
+        if x is not None:
+            retval_queue, comm_queues, control_queues = x
+            atexit.register(remote_exec_all,'END')
 
-# create RemoteState actors, but only if we can't find existing ones
-#ramba_base_name = "RambaRemoteState"
-#if ray_first_init: print("HERE!")
-#try:
-#    remote_states = [ray.get_actor(ramba_base_name+str(x)) for x in range(num_workers)]
-#except:
-#    dprint(1, "Could not get RemoteState actors; constructing new ones")
-#    #comm_queues = [ramba_queue.Queue() for _ in range(num_workers)]
-#    remote_states = [RemoteState.options(name=ramba_base_name+str(x)).remote(x) for x in range(num_workers)]
-#    comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
-#    [x.set_comm_queues.remote(comm_queues) for x in remote_states]
-if ray_first_init:
-    dprint(1, "Constructing RemoteState actors")
-    from ray.util.placement_group import placement_group
-    res = [{'CPU':num_threads}]*num_workers
-    pg = placement_group(res, strategy='SPREAD')
-    remote_states = [RemoteState.options(placement_group=pg).remote(x, get_common_state()) for x in range(num_workers)]
-    control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
-    comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
-    [x.set_comm_queues.remote(comm_queues) for x in remote_states]
-    if not USE_RAY:
-        retval_queue = ramba_queue.Queue()
-        [x.rpc_serve.remote(retval_queue) for x in remote_states]
+    else:   # workers -- should never leave this section!
+        RS = RemoteState(rank, get_common_state())
+        con_q = RS.get_control_queue()
+        comm_q = RS.get_comm_queue()
+        comm_queues = comm.allgather(comm_q)
+        control_queues = comm.allgather(con_q)
+        rv_q = control_queues[num_workers]
+        RS.set_comm_queues(comm_queues)
+        RS.rpc_serve(rv_q)
+        sys.exit()
+
+else:  # Ray setup
+    # Start remote Actors, but only if this was the process that initialized Ray;
+    # This avoids starting the remote workers every time ramba.py is imported
+    if ray_first_init:
+        dprint(1, "Constructing RemoteState actors")
+        from ray.util.placement_group import placement_group
+        res = [{'CPU':num_threads}]*num_workers
+        pg = placement_group(res, strategy='SPREAD')
+        remote_states = [RemoteState.options(placement_group=pg).remote(x, get_common_state()) for x in range(num_workers)]
+        control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
+        comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
+        [x.set_comm_queues.remote(comm_queues) for x in remote_states]
+        if not USE_RAY_COMM:
+            retval_queue = ramba_queue.Queue()
+            [x.rpc_serve.remote(retval_queue) for x in remote_states]
 
 
 
@@ -2342,11 +2379,11 @@ class ndarray:
         #shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
         #shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
         #                  tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])]) ) for i in range(dist_shape[0])])
-        #shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(len(remote_states))])
-        shards = get_results([remote_async_call(i, "get_view", self.gid, self.distribution[i]) for i in range(len(remote_states))])
+        #shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(num_workers)])
+        shards = get_results([remote_async_call(i, "get_view", self.gid, self.distribution[i]) for i in range(num_workers)])
 #        print("shards:", shards)
 #        for i in range(dist_shape[0]):
-        for i in range(len(remote_states)):
+        for i in range(num_workers):
 #            dprint(2, "for:", i, dist_shape[2])
             #gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
             #rindex = slice_minus_offset(gindex, topleft)
@@ -2361,7 +2398,7 @@ class ndarray:
             # TODO: should see if this can be converted into a deferred op
             deferred_op.do_ops()
             if axis is None or (axis==0 and self.ndim==1):
-                #v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(len(remote_states))]
+                #v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(num_workers)]
                 #g1 = get_results(v)
                 g1 = remote_call_all("array_unaryop", self.gid, None, self.distribution, None, op, None, dtype)
                 v = np.array(g1)
@@ -2482,7 +2519,7 @@ class ndarray:
                 if isinstance(value, ndarray):
                     if self.size == value.size:
                         deferred_op.add_op(["", self, " = ", value, ""], self)
-                        #[remote_states[i].setitem1.remote(self.gid, value.gid) for i in range(len(remote_states))]
+                        #[remote_states[i].setitem1.remote(self.gid, value.gid) for i in range(num_workers)]
                         return
                 elif isinstance(value, (int, float, complex)):
                     deferred_op.add_op(["", self, " = ", value, ""], self)
@@ -2699,7 +2736,7 @@ def matmul(a, b, reduction=False, out=None):
         elif np.array_equal(adivs[:,:,1], bdivs[:,:,0]) and np.min(adivs[:,0,0])==np.max(adivs[:,0,0]) and np.min(adivs[:,1,0])==np.max(adivs[:,1,0]):
             dprint(2, "matmul b matrix is distributed and has same inner distribution as the a matrix outer distribution")
             adivs_shape = adivs.shape
-            assert(adivs_shape[0] == len(remote_states))
+            assert(adivs_shape[0] == num_workers)
 
             worker_info = []
             workers = []
@@ -2803,7 +2840,7 @@ def matmul(a, b, reduction=False, out=None):
             ends = np.array(list(out_shape), dtype=np.int64)
             # the ends are inclusive, not one past the last index
             ends -= 1
-            assert(adivs_shape[0] == len(remote_states))
+            assert(adivs_shape[0] == num_workers)
 
             worker_info = []
             workers = []
@@ -3137,7 +3174,7 @@ class deferred_op:
         # execute on remote nodes
         #[ remote_states[i].run_deferred_ops.remote(
         #              self.uuid, live_gids, self.delete_gids, self.use_other.items(), self.distribution, fname, code, self.imports)
-        #          for i in range(len(remote_states)) ]
+        #          for i in range(num_workers) ]
         remote_exec_all("run_deferred_ops", self.uuid, live_gids, self.delete_gids, list(self.use_other.items()), self.distribution, fname, code, self.imports)
         times.append(timer())
         # all live arrays used should be constructed by now
@@ -3156,8 +3193,8 @@ class deferred_op:
     @classmethod
     def del_remote_array(cls, gid):
         if cls.ramba_deferred_ops is None:
-            #if ray.is_initialized(): [remote_states[i].destroy_array.remote(gid) for i in range(len(remote_states))]
-            if ray.is_initialized(): remote_exec_all("destroy_array", gid)
+            #if ray.is_initialized(): [remote_states[i].destroy_array.remote(gid) for i in range(num_workers)]
+            if USE_MPI or ray.is_initialized(): remote_exec_all("destroy_array", gid)
         else:
             cls.ramba_deferred_ops.delete_gids.append(gid)
 
@@ -3248,7 +3285,7 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
         #                                  new_ndarray.distribution,
         #                                  new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
         #                                  new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
-        #    for i in range(len(remote_states))]
+        #    for i in range(num_workers)]
         [remote_exec(i, "create_array", new_ndarray.gid,
                                         new_ndarray.distribution[i],
                                         size,
@@ -3259,7 +3296,7 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
                                         new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
                                         new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
                                         tuple_arg)
-            for i in range(len(remote_states))]
+            for i in range(num_workers)]
         new_ndarray.bdarray.remote_constructed = True # set remote_constructed = True
         new_ndarray.bdarray.flex_dist = False # distribution is fixed
     return new_ndarray
@@ -3308,7 +3345,7 @@ def copy(arr, local_border=0):
                                   local_border,
                                   new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
                                   new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
-        for i in range(len(remote_states))]
+        for i in range(num_workers)]
     """
     return new_ndarray
 
@@ -3333,7 +3370,7 @@ def fromarray(x, local_border=0):
                                   new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
                                   new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
                                   x.dtype)
-        for i in range(len(remote_states))]
+        for i in range(num_workers)]
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
@@ -3399,12 +3436,12 @@ def concatenate(arrayseq, axis=0, out=None):
     #[remote_states[i].push_pull_copy.remote(out.gid,
     #                                        from_ranges[i],
     #                                        to_ranges[i])
-    #    for i in range(len(remote_states))]
+    #    for i in range(num_workers)]
     [remote_exec(i, "push_pull_copy", out.gid,
                                       from_ranges[i],
                                       to_ranges[i],
                                       send_recv_uuid)
-        for i in range(len(remote_states))]
+        for i in range(num_workers)]
     return out
 
 mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean", "sin", "cos", "tan", "arcsin", "arccos", "arctan"]
@@ -3551,7 +3588,7 @@ def smap_internal(func, attr, *args, dtype=None):
         dtype = partitioned[0].dtype
     new_ndarray = create_array_with_divisions(size, dist, partitioned[0].local_border, dtype=dtype)
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #[getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(len(remote_states))]
+    #[getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func))
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
@@ -3571,7 +3608,7 @@ def sreduce(func, reducer, *args):
         assert(arg.size == size)
 
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(len(remote_states))])
+    #worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
     worker_results = remote_call_all("sreduce", partitioned[0].gid, args_to_remote, func_dumps(func), func_dumps(reducer))
     final_result = worker_results[0]
     for result in worker_results[1:]:
@@ -3613,7 +3650,7 @@ def sstencil(func, *args, **kwargs):
         new_ndarray = create_array_with_divisions(size, partitioned[0].distribution, partitioned[0].local_border)
         create_flag=True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #[remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(len(remote_states))]
+    #[remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(num_workers)]
     remote_exec_all("sstencil", stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func_dumps(func), create_flag)
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
@@ -3626,7 +3663,7 @@ def scumulative(local_func, final_func, array):
 
     new_ndarray = create_array_with_divisions(size, array.distribution, array.local_border)
     # Can we do this without ray.get?
-    #ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(len(remote_states))])
+    #ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
     remote_exec_all("scumulative_local", new_ndarray.gid, array.gid, func_dumps(local_func))
     end_index = shardview.get_start(array.distribution[0])[0] + shardview.get_size(array.distribution[0])[0] - 1
     slice_to_get = (slice(end_index, end_index + 1),)
@@ -3634,7 +3671,7 @@ def scumulative(local_func, final_func, array):
     #boundary_val = ray.get(remote_states[0].get_partial_array.remote(new_ndarray.gid, slice_to_get))
     boundary_val = remote_call(0, "get_partial_array", new_ndarray.gid, slice_to_get)
     dprint(3, "boundary_val:", boundary_val, type(boundary_val))
-    for i in range(1, len(remote_states)):
+    for i in range(1, num_workers):
         # TODO: combine these into one?
         #ray.get(remote_states[i].scumulative_final.remote(new_ndarray.gid, boundary_val, final_func))
         remote_exec(i, "scumulative_final", new_ndarray.gid, boundary_val, func_dumps(final_func))
@@ -3648,7 +3685,7 @@ def scumulative(local_func, final_func, array):
 def spmd(func, *args):
     deferred_op.do_ops()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(len(remote_states))])
+    #ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(num_workers)])
     dprint(2, "Before exec_all spmd")
     remote_exec_all("spmd", func_dumps(func), args_to_remote)
     dprint(2, "After exec_all spmd")

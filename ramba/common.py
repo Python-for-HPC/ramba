@@ -17,8 +17,26 @@ import numpy as np
 
 regular_schedule = True
 distribute_min_size = 100
-#USE_RAY=True
-USE_RAY=False
+
+try:
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    nranks = comm.Get_size()
+    rank = comm.Get_rank()
+    assert(nranks>1)
+    USE_MPI=True
+    if (rank==nranks-1): print("Using MPI with",nranks-1,"workers, 1 driver")
+    num_workers = int(os.environ.get('RAMBA_WORKERS', "-1"))
+    if (num_workers != -1 and rank==0): print("RAMBA_WORKERS setting ignored.")
+    num_workers = nranks-1
+    numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
+    
+except:
+    USE_MPI=False
+
+
+#USE_RAY_COMM=True
+USE_RAY_COMM=False
 
 fast_partial_matmul = True
 fast_reduction = True
@@ -67,10 +85,10 @@ def dprint(level, *args):
         print(*args)
         sys.stdout.flush()
 
-num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
+if not USE_MPI: num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
 num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
 hint_ip     = os.environ.get('RAMBA_IP_HINT', None)    # IP address used to hint which interface to bind queues
-numa_zones  = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
+if not USE_MPI: numa_zones  = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
 
 # RAMBA_BIG_DATA environment variable MUST be set to 1 if the application will use arrays
 # larger than 2**32 in size.
