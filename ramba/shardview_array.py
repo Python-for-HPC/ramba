@@ -175,7 +175,7 @@ def slice_to_local(sv, sl):
 
 def div_to_local(sv, div):
     s = index_to_base(sv, div[0])
-    e = index_to_base(sv, div[1]+1)
+    e = index_to_base(sv, div[1]+1, end=True)
     e = [x if x!=0 else None for x in e]   # special case to let border computation work with neg offset
     #print (div,s,e)
     return tuple( [slice(s[i],e[i]) for i in range(len(s))] )
