@@ -703,7 +703,7 @@ def distindex(dist):
 # bdarrays do not provide arithmetic operators, and should not be used directly
 class bdarray:
     gid_map = weakref.WeakValueDictionary()  # global map from gid to weak references of bdarrays
-    def __init__(self, size, distribution, gid, pad, fdist):
+    def __init__(self, size, distribution, gid, pad, fdist, dtype):
         self.size = size
         self.gid = gid
         self.pad = pad
@@ -713,6 +713,7 @@ class bdarray:
         self.flex_dist = fdist
         assert(gid not in self.gid_map)
         self.gid_map[gid] = self
+        self.dtype=dtype
 
     def __del__(self):
         dprint(2, "Deleting bdarray",self.gid, self, "refcount is", len(self.nd_set))
@@ -723,7 +724,7 @@ class bdarray:
         self.nd_set.add(nd)
 
     @classmethod
-    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False):
+    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None):
         if gid is None: gid=uuid.uuid4()
         if gid not in cls.gid_map:
             distribution = shardview.default_distribution(size) if distribution is None else libcopy.deepcopy(distribution)
@@ -731,7 +732,8 @@ class bdarray:
             for i in distribution:
                 tmp = shardview.get_base_offset(i)
                 tmp*=0
-            bd = cls(size, distribution, gid, pad, flexible_dist)
+            if dtype is None: dtype=np.float64 # default
+            bd = cls(size, distribution, gid, pad, flexible_dist, dtype)
         else: bd = cls.gid_map[gid]
         bd.add_nd(nd)
         dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
@@ -2297,12 +2299,12 @@ def find_index(distribution, index):
 class ndarray:
     def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False):
         t0 = timer()
-        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist)
+        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype)
         #self.gid = self.bdarray.gid
         self.size = size
         self.distribution = distribution if ((distribution is not None) and (gid is not None)) else self.bdarray.distribution
         self.local_border = local_border
-        self.dtype = dtype
+        #self._dtype = dtype
         self.getitem_cache = {}
         # TODO: move to_border, from_border out of ndarray; put into bdarray, or just compute when needed to construct Local_NDarray on remotes
         if local_border > 0:
@@ -2338,6 +2340,10 @@ class ndarray:
     @property
     def ndim(self):
         return len(self.size)
+
+    @property
+    def dtype(self):
+        return self.bdarray.dtype
 
     @property
     def T(self):
@@ -2395,6 +2401,10 @@ class ndarray:
         return ret
 
     def array_unaryop(self, op, optext, reduction=False, imports=[], dtype=None, axis=None):
+        if dtype is None:
+            dtype=self.dtype
+        elif dtype=="float":
+            dtype=np.float32 if self.dtype==np.float32 else np.float64
         if reduction:
             # TODO: should see if this can be converted into a deferred op
             deferred_op.do_ops()
@@ -2468,7 +2478,7 @@ class ndarray:
         deferred_op.add_op(["", new_ndarray, " = np.array(", self, ").astype(", dtype, ").item()"], new_ndarray)
         return new_ndarray
 
-    def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[]):
+    def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
         t0=timer()
         if inplace:
             deferred_op.add_op(["", self, optext, rhs], self, imports=imports)
@@ -2479,7 +2489,19 @@ class ndarray:
             lb = max(self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0)
             new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
             #print("array_binop:", new_array_size)
-            new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb)
+            if hasattr(rhs,"dtype"):
+                rhs_dtype=rhs.dtype
+            else:
+                try:
+                    rhs_dtype = np.dtype(rhs)
+                except:
+                    rhs_dtype=None
+            if dtype is None:
+                dtype = np.result_type(self.dtype,rhs_dtype)
+            elif dtype=="float":
+                dtype=np.float32 if rhs_dtype==np.float32 and self.dtype==np.float32 else np.float64
+
+            new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb, dtype=dtype)
 
             if reverse:
                 deferred_op.add_op(["", new_ndarray, " = ", rhsview, optext, selfview], new_ndarray, imports=imports)
@@ -3022,7 +3044,7 @@ def numpy_broadcast_size(a, b):
 def make_method(name, optext, inplace=False, unary=False, reduction=False, reverse=False, imports=[], dtype=None):
     if unary:
         def _method(self, **kwargs):
-            retval = self.array_unaryop(name, optext, reduction, imports=imports, **kwargs)
+            retval = self.array_unaryop(name, optext, reduction, imports=imports, dtype=dtype, **kwargs)
             return retval
     else:
         def _method(self, rhs):
@@ -3030,7 +3052,7 @@ def make_method(name, optext, inplace=False, unary=False, reduction=False, rever
 #            print("make_method", name, type(self), type(rhs))
 #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
 #                assert(self.size == rhs.size)
-            new_ndarray = self.array_binop(rhs, name, optext, inplace, reverse, imports=imports)
+            new_ndarray = self.array_binop(rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype)
             t1=timer()
             dprint(4, "BIN METHOD: time",(t1-t0)*1000)
             return new_ndarray
@@ -3047,7 +3069,7 @@ array_binop_funcs = {"__add__":op_info(" + "),
                      "__mul__":op_info(" * "),
                      "__sub__":op_info(" - "),
                      "__floordiv__":op_info(" // "),
-                     "__truediv__":op_info(" / "),
+                     "__truediv__":op_info(" / ", dtype="float"),
                      "__mod__":op_info(" % "),
                      "__pow__":op_info(" ** "),
                      "__gt__":op_info(" > ", dtype=np.bool_),
@@ -3061,9 +3083,16 @@ for (abf,code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
-array_binop_rfuncs = {"__radd__":" + ", "__rmul__":" * ", "__rsub__":" - ", "__rtruediv__":" / ", "__rfloordiv__": " // ", "__rmod__":" % ","__rpow__":" ** "}
+array_binop_rfuncs = {"__radd__":op_info(" + "), 
+                      "__rmul__":op_info(" * "), 
+                      "__rsub__":op_info(" - "), 
+                      "__rtruediv__":op_info(" / ", dtype="float"), 
+                      "__rfloordiv__":op_info( " // "), 
+                      "__rmod__":op_info(" % "),
+                      "__rpow__":op_info(" ** "),
+                    }
 for (abf,code) in array_binop_rfuncs.items():
-    new_func = make_method(abf,code,reverse=True)
+    new_func = make_method(abf,code.code, dtype=code.dtype, reverse=True)
     setattr(ndarray, abf, new_func)
 
 array_inplace_binop_funcs = {"__iadd__":" += ","__isub__":" -= ","__imul__":" *= ","__itruediv__":" /= ","__ifloordiv__":" //= ","__imod__":" %= ","__ipow__":" **= "}
@@ -3074,16 +3103,16 @@ for (abf,code) in array_inplace_binop_funcs.items():
 array_unaryop_funcs = {"__abs__":op_info(" numpy.abs", imports=["numpy"]),
                        "abs":op_info(" numpy.abs", imports=["numpy"]),
                        "square":op_info(" numpy.square", imports=["numpy"]),
-                       "sqrt":op_info(" numpy.sqrt", imports=["numpy"]),
-                       "sin":op_info(" numpy.sin", imports=["numpy"]),
-                       "cos":op_info(" numpy.cos", imports=["numpy"]),
-                       "tan":op_info(" numpy.tan", imports=["numpy"]),
-                       "arcsin":op_info(" numpy.arcsin", imports=["numpy"]),
-                       "arccos":op_info(" numpy.arccos", imports=["numpy"]),
-                       "arctan":op_info(" numpy.arctan", imports=["numpy"]),
+                       "sqrt":op_info(" numpy.sqrt", imports=["numpy"], dtype="float"),
+                       "sin":op_info(" numpy.sin", imports=["numpy"], dtype="float"),
+                       "cos":op_info(" numpy.cos", imports=["numpy"], dtype="float"),
+                       "tan":op_info(" numpy.tan", imports=["numpy"], dtype="float"),
+                       "arcsin":op_info(" numpy.arcsin", imports=["numpy"], dtype="float"),
+                       "arccos":op_info(" numpy.arccos", imports=["numpy"], dtype="float"),
+                       "arctan":op_info(" numpy.arctan", imports=["numpy"], dtype="float"),
                        "__neg__":op_info(" -"),
-                       "exp":op_info(" math.exp", imports=["math"]),
-                       "log":op_info(" math.log", imports=["math"]),
+                       "exp":op_info(" math.exp", imports=["math"], dtype="float"),
+                       "log":op_info(" math.log", imports=["math"], dtype="float"),
                        "isnan":op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_)}
 
 for (abf,code) in array_unaryop_funcs.items():
