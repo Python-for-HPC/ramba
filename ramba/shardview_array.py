@@ -146,28 +146,30 @@ def base_to_index(sv, base):
     am = _axis_map(sv)
     return tuple([s +(0 if am[i]<0 else offset[am[i]]) for i,s in enumerate(_size(sv))])
 
-def index_to_base(sv, index):
+def index_to_base(sv, index, end=False):
     assert(len(index)==len_size(sv))
     offset = [index[i]-s for i,s in enumerate(_start(sv))]
     invmap = -np.ones(len_base_offset(sv),dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: invmap[v]=i
-    return tuple([bo + (0 if invmap[i]<0 else offset[invmap[i]]) for i,bo in enumerate(_base_offset(sv))])
+    bcastval = 1 if end else 0
+    return tuple([bo + (bcastval if invmap[i]<0 else offset[invmap[i]]) for i,bo in enumerate(_base_offset(sv))])
 
 @numba.njit(cache=True)
-def index_to_base_as_array(sv, index):
+def index_to_base_as_array(sv, index, end=False):
     assert(len(index)==len_size(sv))
     offset = [index[i]-s for i,s in enumerate(_start(sv))]
     invmap = -np.ones(len_base_offset(sv),dtype=ramba_dist_dtype)
     for i,v in enumerate(_axis_map(sv)):
         if v>=0: invmap[v]=i
     bo = _base_offset(sv)
-    return np.array([bo[i] + (0 if invmap[i]<0 else offset[invmap[i]]) for i in range(len(bo))])
+    bcastval = 1 if end else 0
+    return np.array([bo[i] + (bcastval if invmap[i]<0 else offset[invmap[i]]) for i in range(len(bo))])
 
 def slice_to_local(sv, sl):
     assert(len(sl)==len_size(sv))
     s = index_to_base(sv, [x.start for x in sl])
-    e = index_to_base(sv, [x.stop for x in sl])
+    e = index_to_base(sv, [x.stop for x in sl], end=True)
     e = [x if x!=0 else None for x in e]   # special case to let border computation work with neg offset
     return tuple( [slice(s[i],e[i]) for i in range(len(s))] )
 
@@ -285,6 +287,7 @@ def array_to_view(sv, arr):
     sl = tuple(sl)
     shp = tuple(shp)
     #print ("axis map, size arr, expected:",sv._axis_map,arr.shape,shp)
+    if shp!=arr.shape:  print("ERR",shp,arr.shape)  ## !!!!!!!
     assert (shp==arr.shape)
     arr2 = arr[sl]
     if not isinstance(arr2, (np.ndarray)):
