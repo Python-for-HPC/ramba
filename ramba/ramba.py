@@ -2481,7 +2481,9 @@ class ndarray:
     def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
         t0=timer()
         if inplace:
-            deferred_op.add_op(["", self, optext, rhs], self, imports=imports)
+            sz, selfview, rhsview = ndarray.broadcast(self,rhs)
+            assert (self.size == sz)
+            deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
             t1=timer()
             dprint(4, "BINARY_OP:",optext, "time",(t1-t0)*1000)
             return self
@@ -3044,7 +3046,8 @@ def numpy_broadcast_size(a, b):
 def make_method(name, optext, inplace=False, unary=False, reduction=False, reverse=False, imports=[], dtype=None):
     if unary:
         def _method(self, **kwargs):
-            retval = self.array_unaryop(name, optext, reduction, imports=imports, dtype=dtype, **kwargs)
+            if "dtype" not in kwargs: kwargs["dtype"]=dtype
+            retval = self.array_unaryop(name, optext, reduction, imports=imports, **kwargs)
             return retval
     else:
         def _method(self, rhs):
