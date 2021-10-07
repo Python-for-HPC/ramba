@@ -179,7 +179,7 @@ class TestBasic:
             return c
         run_both(impl)
 
-    def test_where2(self):
+    def test_where3(self):
         # Test of "where" in which cond needs to be broadcast
         def impl(app):
             a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
@@ -188,6 +188,28 @@ class TestBasic:
             c = app.where(b > 233, a, e)
             return c
         run_both(impl)
+
+    def test_triu1(self):
+        # Test of "where" in which cond needs to be broadcast
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
+            return app.triu(a)
+        run_both(impl)
+
+    def test_triu2(self):
+        # Test of "where" in which cond needs to be broadcast
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
+            return app.triu(a, k=-2)
+        run_both(impl)
+
+    def test_triu3(self):
+        # Test of "where" in which cond needs to be broadcast
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (50, 50), dtype=int)
+            return app.triu(a, k=2)
+        run_both(impl)
+
 
 """
 class TestGeneric:

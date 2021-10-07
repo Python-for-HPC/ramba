@@ -146,7 +146,6 @@ if not USE_MPI:
     ray_first_init = ray_init()
 
 
-
 class FillerFunc:
     def __init__(self, func):
         self.func = func
@@ -162,6 +161,7 @@ class FillerFunc:
     def __eq__(self, other):
         return self.func.__code__.co_code == other.func.__code__.co_code
 
+
 @functools.lru_cache()
 def get_fm(func: FillerFunc, parallel):
     real_func = func.func
@@ -169,8 +169,9 @@ def get_fm(func: FillerFunc, parallel):
     assert(isinstance(real_func, types.FunctionType))
     return numba.njit(parallel=parallel)(real_func)
 
+
 class FunctionMetadata:
-    def __init__(self, func, dargs, dkwargs):
+    def __init__(self, func, dargs, dkwargs, no_global_cache=False):
         self.func = func
         self.dargs = dargs
         self.dkwargs = dkwargs
@@ -181,6 +182,7 @@ class FunctionMetadata:
         self.nfunc = {}
         self.npfunc = {}
         self.ngfunc = {}
+        self.no_global_cache = no_global_cache
         dprint(2, "FunctionMetadata finished")
 
     def __call__(self, *args, **kwargs):
@@ -196,7 +198,7 @@ class FunctionMetadata:
         try_again = True
         count = 0
         if not self.numba_pfunc:
-            if len(self.numba_args) == 0:
+            if len(self.numba_args) == 0 and not self.no_global_cache:
                 self.numba_pfunc = get_fm(FillerFunc(self.func), True)
                 self.numba_func = get_fm(FillerFunc(self.func), False)
             else:
@@ -992,10 +994,10 @@ class Filler:
 def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill", filler)
+    # FIX ME: What if njit(filler) fails during compile or runtime?
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
     if num_dim > 1:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
@@ -1004,24 +1006,23 @@ def get_do_fill(filler: FillerFunc, num_dim):
                     arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
                 A[i] = njfiller(arg)
 
-        return do_fill
+        return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
     else:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
                 A[i] = njfiller((i+starts[0],))
 
-        return do_fill
+        return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
 
 @functools.lru_cache()
 def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill_non_tuple", filler)
+    print("get_do_fill_non_tuple", filler, num_dim)
     njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
 
     if num_dim > 1:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
@@ -1030,15 +1031,41 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
                     arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
                 A[i] = njfiller(*arg)
 
-        return do_fill
+        return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
     else:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
                 A[i] = njfiller(i+starts[0])
 
-        return do_fill
+        return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
+
+@functools.lru_cache()
+def get_smap_index(filler: FillerFunc, num_dim):
+    filler = filler.func
+    dprint(2, "get_smap_index", filler)
+    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+
+    if num_dim > 1:
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, starts, *args):
+            for i in numba.pndindex(sz):
+                arg = sz
+                # Construct the global index.
+                for j in range(len(starts)):
+                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
+                A[i] = njfiller(arg, *fargs)
+
+        return do_fill
+    else:
+        @numba.njit #(parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, starts, *args):
+            for i in numba.prange(sz[0]):
+                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
+                A[i] = njfiller((i+starts[0],), *fargs)
+
+        return do_fill
 
 class RemoteState:
     def __init__(self, worker_num, common_state):
@@ -1134,6 +1161,14 @@ class RemoteState:
         new_bcontainer = lnd.bcontainer
         new_bcontainer[lnd.core_slice] = old_lnd.bcontainer[lnd.core_slice]
 
+    def triu(self, new_gid, old_gid, k, border, from_border, to_border):
+        old_lnd = self.numpy_map[old_gid]
+        lnd = LocalNdarray(new_gid, self, old_lnd.subspace, old_lnd.dim_lens, old_lnd.whole, border, old_lnd.whole_space, from_border, to_border, old_lnd.dtype)
+        self.numpy_map[new_gid] = lnd
+        new_bcontainer = lnd.bcontainer
+        starts = tuple(shardview.get_start(lnd.subspace))
+        new_bcontainer[lnd.core_slice] = np.triu(old_lnd.bcontainer[lnd.core_slice], k - (starts[1] - starts[0]))
+
     def setitem1(self, to_gid, from_gid):
         to_lnd = self.numpy_map[to_gid]
         from_lnd = self.numpy_map[from_gid]
@@ -1210,10 +1245,15 @@ class RemoteState:
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
-        #starts = tuple(first.subspace.start_index)
+        starts = tuple(shardview.get_start(first.subspace))
+
+#        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
+#        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
+#        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+#        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         for index in np.ndindex(first.dim_lens):
-            #index_arg = tuple(map(operator.add, index, starts))
-            index_arg = tuple(shardview.base_to_index(first.subspace,index))
+            index_arg = tuple(map(operator.add, index, starts))
+            #index_arg = tuple(shardview.base_to_index(first.subspace,index))
             fargs = [self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x for x in args]
             new_bcontainer[index] = func(index_arg, *fargs)
 
@@ -2481,7 +2521,7 @@ class ndarray:
     def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
         t0=timer()
         if inplace:
-            sz, selfview, rhsview = ndarray.broadcast(self,rhs)
+            sz, selfview, rhsview = ndarray.broadcast(self, rhs)
             assert (self.size == sz)
             deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
             t1=timer()
@@ -3124,7 +3164,7 @@ for (abf,code) in array_unaryop_funcs.items():
 
 array_simple_reductions = ["sum","prod","min","max"]
 for abf in array_simple_reductions:
-    new_func = make_method(abf, "np."+abf, imports=["numpy"],unary=True, reduction=True)
+    new_func = make_method(abf, "np."+abf, imports=["numpy"], unary=True, reduction=True)
     setattr(ndarray, abf, new_func)
 
 
@@ -3523,6 +3563,7 @@ def power(a, b):
 
 def where(cond, a, b):
     assert(isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray))
+    dprint(2,"where:", cond.shape, a.shape, b.shape)
 
     lb = max(a.local_border, b.local_border)
     ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
@@ -3530,6 +3571,9 @@ def where(cond, a, b):
     condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(cond, ab_bview)
     assert(conda_new_array_size == condb_new_array_size)
 
+    dprint(2,"newsize:", ab_new_array_size, ab_aview.distribution)
+    #new_ndarray = create_array_with_divisions(ab_new_array_size, ab_aview.distribution, local_border=lb)
+    #deferred_op.add_op(["", new_ndarray, " = ", ab_aview, " if ", cond, " else ", ab_bview], new_ndarray, imports=[])
     new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
     deferred_op.add_op(["", new_ndarray, " = ", conda_aview, " if ", conda_condview, " else ", condb_bview], new_ndarray, imports=[])
     return new_ndarray
@@ -3628,6 +3672,19 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
         return (res, step)
     else:
         return res
+
+#def triu_internal(index, m, k):
+#    return m if (index[1] - index[0] >= k) else 0
+
+def triu(m, k=0):
+    assert(len(m.shape) == 2)
+    #return smap_index(triu_internal, m, k)
+    deferred_op.do_ops()
+    new_ndarray = create_array_with_divisions(m.size, m.distribution, local_border=m.local_border)
+    remote_exec_all("triu", new_ndarray.gid, m.gid, k, new_ndarray.local_border,
+                            new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
+                            new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
+    return new_ndarray
 
 ##### Skeletons ######
 
