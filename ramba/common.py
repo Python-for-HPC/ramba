@@ -30,13 +30,17 @@ try:
     if (num_workers != -1 and rank==0): print("RAMBA_WORKERS setting ignored.")
     num_workers = nranks-1
     numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
+    #print ("MPI rank", rank, os.uname()[1])
+    USE_ZMQ=False
+    USE_BCAST=True
     
 except:
     USE_MPI=False
+    USE_ZMQ=True
 
 
-#USE_RAY_COMM=True
-USE_RAY_COMM=False
+#USE_RAY_CALLS=True
+USE_RAY_CALLS=False
 
 fast_partial_matmul = True
 fast_reduction = True

@@ -78,7 +78,8 @@ class Queue:
         >>> q = Queue(actor_options={"num_cpus": 1})
     """
 
-    def __init__(self, maxsize: int = 0, hint_ip=None) -> None:
+    # tag is ignored -- for compatibility with mpi version
+    def __init__(self, maxsize: int = 0, hint_ip=None, tag=0) -> None:
         self.maxsize = maxsize
         self.ip = get_my_ip(hint_ip)
         s = context.socket(zmq.PULL)

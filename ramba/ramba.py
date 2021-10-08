@@ -34,8 +34,12 @@ if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
 import cloudpickle
 import threading
-#import ramba.ramba_queue as ramba_queue
-import ramba.ramba_queue_zmq as ramba_queue
+if USE_ZMQ:
+    import ramba.ramba_queue_zmq as ramba_queue
+elif USE_MPI:
+    import ramba.ramba_queue_mpi as ramba_queue
+else:
+    import ramba.ramba_queue as ramba_queue
 #import ramba.shardview as shardview
 import ramba.shardview_array as shardview
 import ramba.numa as numa
@@ -851,7 +855,7 @@ class LocalNdarray:
 
     def get_partial_view(self, slice_index, shard, global_index=True, remap_view=True):
         local_slice = shardview.slice_to_local(shard,slice_index) if global_index else slice_index
-        #print("get_partial_view:",self.worker_num, slice_index, local_slice, shard, self.bcontainer.shape)
+        #print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape)
         arr = self.bcontainer[local_slice]
         if remap_view: arr = shardview.array_to_view(shard,arr)
         return arr
@@ -1087,11 +1091,11 @@ class RemoteState:
         return self.comm_queues
 
     def get_comm_queue(self):
-        if self.my_comm_queue is None: self.my_comm_queue = ramba_queue.Queue(hint_ip=hint_ip)
+        if self.my_comm_queue is None: self.my_comm_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=0)
         return self.my_comm_queue
 
     def get_control_queue(self):
-        if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip)
+        if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=1)
         return self.my_control_queue
 
     def destroy_array(self, gid):
@@ -2146,7 +2150,15 @@ class RemoteState:
         print_stuff = timing>2 and self.worker_num==0
         t0 = timer()
         while True:
-            _, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
+            msg = None
+            if USE_MPI and USE_BCAST and not USE_ZMQ:
+                msg = comm.bcast(msg, root=num_workers)
+                if msg[0]=='SINGLE':
+                    if msg[1]!=self.worker_num:  continue
+                    msg = None
+            if msg is None:
+                msg = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
+            _, method, rvid, args, kwargs = msg
             if method=="END":
                 break
             t1 = timer()
@@ -2185,24 +2197,32 @@ ALL_NODES=-1
 
 def _real_remote(nodeid, method, has_retval, args, kwargs):
     if nodeid==ALL_NODES:
-        if USE_RAY_COMM:
+        if USE_RAY_CALLS:
             rargs = [ ray.put(v) for v in args ]
             rkwargs = { k:ray.put(v) for k,v in kwargs.items() }
             return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(num_workers)]
         rvid = str(uuid.uuid4()) if has_retval else None
-        msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
-        if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
-        [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
+        if USE_ZMQ:
+            msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
+            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
+        else:
+            msg = ('RPC',method,rvid,args,kwargs)
+        if USE_MPI and USE_BCAST and not USE_ZMQ:
+            comm.bcast(msg, root=num_workers)
+        else:
+            [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
         return [rvid+str(i) for i in range(num_workers)] if has_retval else None
-    if USE_RAY_COMM:
+    if USE_RAY_CALLS:
         rop = getattr(remote_states[nodeid], method)
         return rop.remote(*args,**kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
+    if USE_MPI and USE_BCAST and not USE_ZMQ:
+        comm.bcast(('SINGLE', nodeid), root=num_workers)
     control_queues[nodeid].put( ('RPC',method,rvid,args,kwargs) )
     return rvid+str(nodeid) if has_retval else None
 
 def get_results(refs):
-    if USE_RAY_COMM:
+    if USE_RAY_CALLS:
         return ray.get(refs)
     if isinstance(refs, list):
         rv = [ get_results(v) for v in refs ]
@@ -2235,7 +2255,7 @@ def remote_call_all( method, *args, **kwargs):
     #return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ])
     return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
-if USE_RAY_COMM:
+if USE_RAY_CALLS:
     def func_dumps( f ):
         return f
     def func_loads( f ):
@@ -2251,6 +2271,7 @@ else:
 import atexit
 if USE_MPI:
     # MPI setup
+    # Queue tags: 0 = general comm, 1 = control, 2 = reply
     from mpi4py import MPI
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -2261,7 +2282,7 @@ if USE_MPI:
                 print("HERE -- already done")
                 return None
             done += [1]
-            rv_q = ramba_queue.Queue()
+            rv_q = ramba_queue.Queue(tag=2)
             comm_q = comm.allgather(0)
             con_q = comm.allgather(rv_q)
             return rv_q, comm_q, con_q
@@ -2293,7 +2314,7 @@ else:  # Ray setup
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
         comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
         [x.set_comm_queues.remote(comm_queues) for x in remote_states]
-        if not USE_RAY_COMM:
+        if not USE_RAY_CALLS:
             retval_queue = ramba_queue.Queue()
             [x.rpc_serve.remote(retval_queue) for x in remote_states]
 

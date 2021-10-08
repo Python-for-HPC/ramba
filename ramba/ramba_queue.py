@@ -55,7 +55,7 @@ class Queue:
         >>> q = Queue(actor_options={"num_cpus": 1})
     """
 
-    def __init__(self, maxsize: int = 0, hint_ip=None,
+    def __init__(self, maxsize: int = 0, hint_ip=None, tag=0,
                  actor_options: Optional[Dict] = None) -> None:
         actor_options = actor_options or {}
         self.maxsize = maxsize
