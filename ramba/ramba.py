@@ -1171,6 +1171,7 @@ class RemoteState:
         self.numpy_map[new_gid] = lnd
         new_bcontainer = lnd.bcontainer
         starts = tuple(shardview.get_start(lnd.subspace))
+        # We should have a Numba function here to parallelize.
         new_bcontainer[lnd.core_slice] = np.triu(old_lnd.bcontainer[lnd.core_slice], k - (starts[1] - starts[0]))
 
     def setitem1(self, to_gid, from_gid):
@@ -1933,7 +1934,7 @@ class RemoteState:
         dprint(4,"HERE - deferredops; arrays:", arrays.keys())
         subspace = shardview.clean_range(exec_dist[self.worker_num])  # our slice of work range
         # create array shards if needed
-        # TODO:  This has become very complicated and ugly.  Consider resturcuring, use class instead of tuple.
+        # TODO:  This has become very complicated and ugly.  Consider restructuring, use class instead of tuple.
         # info tuple is (size, distribution, local_border, from_border, to_border, dtype)
         # TODO:  Need to check array construction -- this code may break for views/slices; assumes first view of gid is the canonical, full array
         #[ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
@@ -3694,8 +3695,8 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
     else:
         return res
 
-#def triu_internal(index, m, k):
-#    return m if (index[1] - index[0] >= k) else 0
+def triu_internal(index, m, k):
+    return m if (index[1] - index[0] >= k) else 0
 
 def triu(m, k=0):
     assert(len(m.shape) == 2)
