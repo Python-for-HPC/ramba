@@ -2129,6 +2129,9 @@ class RemoteState:
         [ self.destroy_array(g) for g in delete_gids ]
 
         times.append(timer())
+        if not USE_ZMQ and USE_MPI:
+            ramba_queue.wait_sends()
+        times.append(timer())
         tnow = timer()
         if ntiming>=1 and self.worker_num==timing_debug_worker:
             times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
@@ -2150,15 +2153,7 @@ class RemoteState:
         print_stuff = timing>2 and self.worker_num==0
         t0 = timer()
         while True:
-            msg = None
-            if USE_MPI and USE_BCAST and not USE_ZMQ:
-                msg = comm.bcast(msg, root=num_workers)
-                if msg[0]=='SINGLE':
-                    if msg[1]!=self.worker_num:  continue
-                    msg = None
-            if msg is None:
-                msg = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
-            _, method, rvid, args, kwargs = msg
+            _, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
             if method=="END":
                 break
             t1 = timer()
@@ -2202,13 +2197,13 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             rkwargs = { k:ray.put(v) for k,v in kwargs.items() }
             return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(num_workers)]
         rvid = str(uuid.uuid4()) if has_retval else None
-        if USE_ZMQ:
+        if USE_ZMQ or not USE_BCAST:
             msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
-            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
+            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]) if isinstance(msg,list) else len(msg))
         else:
             msg = ('RPC',method,rvid,args,kwargs)
         if USE_MPI and USE_BCAST and not USE_ZMQ:
-            comm.bcast(msg, root=num_workers)
+            ramba_queue.bcast(msg)
         else:
             [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
         return [rvid+str(i) for i in range(num_workers)] if has_retval else None
@@ -2216,8 +2211,6 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
         rop = getattr(remote_states[nodeid], method)
         return rop.remote(*args,**kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
-    if USE_MPI and USE_BCAST and not USE_ZMQ:
-        comm.bcast(('SINGLE', nodeid), root=num_workers)
     control_queues[nodeid].put( ('RPC',method,rvid,args,kwargs) )
     return rvid+str(nodeid) if has_retval else None
 

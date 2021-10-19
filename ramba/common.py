@@ -31,12 +31,12 @@ try:
     num_workers = nranks-1
     numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
     #print ("MPI rank", rank, os.uname()[1])
-    USE_ZMQ=False
-    USE_BCAST=True
+    USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "0"))!=0
+    USE_BCAST= int(os.environ.get("RAMBA_USE_MPI_BCAST", "1"))!=0
     
 except:
     USE_MPI=False
-    USE_ZMQ=True
+    USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "1"))!=0
 
 
 #USE_RAY_CALLS=True
