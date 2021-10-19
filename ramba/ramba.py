@@ -730,10 +730,10 @@ class bdarray:
         self.nd_set.add(nd)
 
     @classmethod
-    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None):
+    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None, **kwargs):
         if gid is None: gid=uuid.uuid4()
         if gid not in cls.gid_map:
-            distribution = shardview.default_distribution(size) if distribution is None else libcopy.deepcopy(distribution)
+            distribution = shardview.default_distribution(size, **kwargs) if distribution is None else libcopy.deepcopy(distribution)
             # clear offsets (since this is a new array)
             for i in distribution:
                 tmp = shardview.get_base_offset(i)
@@ -2351,9 +2351,9 @@ def find_index(distribution, index):
             return i
 
 class ndarray:
-    def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False):
+    def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False, **kwargs):
         t0 = timer()
-        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype)
+        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs)  # extra options for distribution hints
         #self.gid = self.bdarray.gid
         self.size = size
         self.distribution = distribution if ((distribution is not None) and (gid is not None)) else self.bdarray.distribution
@@ -3359,7 +3359,7 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
     dprint(3, "divisions:", divisions)
     return new_ndarray
 
-def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True):
+def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
     #global arrays
     #global num_workers
     #num_dim = len(size)
@@ -3370,7 +3370,7 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
     #divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
     #numba_workqueue.do_scheduling_signed(num_dim, ffi.cast("int*", starts.ctypes.data), ffi.cast("int*", ends.ctypes.data), num_workers, ffi.cast("int*", divisions.ctypes.data), 0)
     ##dprint(3, "divisions:", divisions)
-    new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution)
+    new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
     if (isinstance(filler, str)):
         deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
     else:
@@ -3399,40 +3399,40 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
         new_ndarray.bdarray.flex_dist = False # distribution is fixed
     return new_ndarray
 
-def init_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True):
+def init_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
     if isinstance(size, int):
         size = (size,)
-    return create_array(size, filler, local_border=local_border, dtype=dtype, distribution=distribution, tuple_arg=tuple_arg)
+    return create_array(size, filler, local_border=local_border, dtype=dtype, distribution=distribution, tuple_arg=tuple_arg, **kwargs)
 
-def fromfunction(lfunc, size, dtype=None):
-    return init_array(size, lfunc, dtype=dtype, tuple_arg=False)
+def fromfunction(lfunc, size, dtype=None, **kwargs):
+    return init_array(size, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
 
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
-def empty(size, local_border=0, dtype=None, distribution=None):
-    return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution)
+def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
+    return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
 
 def empty_like(other_ndarray):
     return empty(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def zeros(size, local_border=0, dtype=None, distribution=None):
-    return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution)
+def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
+    return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
 
 def zeros_like(other_ndarray):
     return zeros(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def ones(size, local_border=0, dtype=None):
-    return init_array(size, "1", local_border=local_border, dtype=dtype)
+def ones(size, local_border=0, dtype=None, **kwargs):
+    return init_array(size, "1", local_border=local_border, dtype=dtype, **kwargs)
 
 def ones_like(other_ndarray):
     return ones(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def full(size, v, local_border=0):
-    return init_array(size, str(v), local_border=local_border)
+def full(size, v, local_border=0, **kwargs):
+    return init_array(size, str(v), local_border=local_border, **kwargs)
 
-def eye(N, M=None, dtype=float32, local_border=0):
+def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
     if M is None:
         M = N
-    return init_array((N,M), lambda x: 1 if x[0] == x[1] else 0, local_border=local_border, dtype=dtype)
+    return init_array((N,M), lambda x: 1 if x[0] == x[1] else 0, local_border=local_border, dtype=dtype, **kwargs)
 
 def copy(arr, local_border=0):
     new_ndarray = create_array_with_divisions(arr.size, arr.distribution, local_border=local_border)
@@ -3455,9 +3455,9 @@ def asarray(x):
     assert(isinstance(x, ndarray))
     return x.asarray()
 
-def fromarray(x, local_border=0):
+def fromarray(x, local_border=0, **kwargs):
     size = x.shape
-    new_ndarray = create_array(size, None, local_border=local_border, dtype=x.dtype)
+    new_ndarray = create_array(size, None, local_border=local_border, dtype=x.dtype, **kwargs)
     distribution = new_ndarray.distribution
     [remote_exec(i, "push_array", new_ndarray.gid,
                                   distribution[i],
@@ -3496,7 +3496,7 @@ def _compute_remote_ranges(out_distribution, out_mapping):
                     to_ret[node_num].append((other_array.gid, i, bi, map_out_combined))
     return from_ret, to_ret
 
-def concatenate(arrayseq, axis=0, out=None):
+def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
     first_dtype = arrayseq[0].dtype
@@ -3518,7 +3518,7 @@ def concatenate(arrayseq, axis=0, out=None):
     dprint(2, "concatenate out_shape:", out_shape, first_dtype)
     assert(found_ndarray)
     if out is None:
-        out = empty(out_shape, dtype=first_dtype)
+        out = empty(out_shape, dtype=first_dtype, **kwargs)
         dprint(2, "Create concatenate output:", out.gid, out_shape, out.dtype)
     else:
         assert(isinstance(out, ndarray))
