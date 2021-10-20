@@ -17,29 +17,29 @@ def seed(x):
     #[ramba.remote_states[i].seed.remote(x+i) for i in range(len(ramba.remote_states))]
     ramba.remote_exec_all("seed",x)
 
-def random(size=None):
+def random(size=None, **kwargs):
     if size is None:
         return np.random.random()
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.random(dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True))
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
 
-def randn(*args):
+def randn(*args, **kwargs):
     if len(args) == 0:
         return np.random.randn()
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.randn(*dim_lens)
-        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True))
+        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
 
-def uniform(low=0.0, high=1.0, size=None):
+def uniform(low=0.0, high=1.0, size=None, **kwargs):
     if size is None:
         return np.random.uniform(low=low, high=high)
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.uniform(low, high, size=dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True))
+        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
 
 class RandomState:
     def __init__(self, *args):
