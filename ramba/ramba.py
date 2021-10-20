@@ -2143,7 +2143,7 @@ class RemoteState:
         return
 
     def seed(self, x):
-        np.random.seed(x)
+        np.random.seed(x+self.worker_num)
 
     def get_comm_stats(self):
         return [x.get_stats() for x in self.comm_queues]
