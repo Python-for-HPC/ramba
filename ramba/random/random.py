@@ -15,7 +15,7 @@ import numpy as np
 
 def seed(x):
     #[ramba.remote_states[i].seed.remote(x+i) for i in range(len(ramba.remote_states))]
-    ramba.exec_all("seed",x)
+    ramba.remote_exec_all("seed",x)
 
 def random(size=None):
     if size is None:
