@@ -741,13 +741,18 @@ def compute_regular_schedule_internal(size, dims_do_not_distribute):
         chunks_here = total_workers // best[index]
         last = -1
 
+        dprint(3, "crsi_div:", "best", best, "main_divs", main_divs, "index", index, "min_worker", min_worker, "max_worker", max_worker, "size", size, "chunks_here", chunks_here, "total_workers", total_workers)
         for i in range(min_worker, max_worker + 1, chunks_here):
+            num_left = size[index] - last
+            this_div = num_left // ((max_worker + 1 - i) // chunks_here)
             for j in range(chunks_here):
                 divisions[i+j,0,index] = last + 1
-                divisions[i+j,1,index] = last + main_divs[index]
+                divisions[i+j,1,index] = last + this_div
+                #divisions[i+j,1,index] = last + main_divs[index]
                 if divisions[i+j,1,index] > size[index]:
                     divisions[i+j,1,index] = size[index]
-            last += main_divs[index]
+            last += this_div
+            #last += main_divs[index]
             crsi_div(divisions, best, main_divs, index + 1, i, i + chunks_here - 1, size)
 
     crsi_div(divisions, best, main_divs, 0, 0, num_workers-1, np.array(size) - 1)
