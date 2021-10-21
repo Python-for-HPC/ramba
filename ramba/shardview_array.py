@@ -488,8 +488,12 @@ def distribution_to_divisions(dist):
         ret[i][1] = _stop(d)-1
     return ret
 
-def default_distribution(size, dims_do_not_distribute=[]):
+def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
     num_dim = len(size)
+    if isinstance(dist_dims, int):  dist_dims=[dist_dims]
+    if isinstance(dist_dims, list):
+        assert(dims_do_not_distribute is None or len(dims_do_not_distribute)==0)
+        dims_do_not_distribute=[i for i in range(num_dim) if i not in dist_dims]
     starts = np.zeros(num_dim, dtype=np.int64)
     ends = np.array(list(size), dtype=np.int64)
     # the ends are inclusive, not one past the last index

@@ -730,10 +730,10 @@ class bdarray:
         self.nd_set.add(nd)
 
     @classmethod
-    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None):
+    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None, **kwargs):
         if gid is None: gid=uuid.uuid4()
         if gid not in cls.gid_map:
-            distribution = shardview.default_distribution(size) if distribution is None else libcopy.deepcopy(distribution)
+            distribution = shardview.default_distribution(size, **kwargs) if distribution is None else libcopy.deepcopy(distribution)
             # clear offsets (since this is a new array)
             for i in distribution:
                 tmp = shardview.get_base_offset(i)
@@ -2130,6 +2130,9 @@ class RemoteState:
         [ self.destroy_array(g) for g in delete_gids ]
 
         times.append(timer())
+        if not USE_ZMQ and USE_MPI:
+            ramba_queue.wait_sends()
+        times.append(timer())
         tnow = timer()
         if ntiming>=1 and self.worker_num==timing_debug_worker:
             times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
@@ -2141,7 +2144,7 @@ class RemoteState:
         return
 
     def seed(self, x):
-        np.random.seed(x)
+        np.random.seed(x+self.worker_num)
 
     def get_comm_stats(self):
         return [x.get_stats() for x in self.comm_queues]
@@ -2151,15 +2154,7 @@ class RemoteState:
         print_stuff = timing>2 and self.worker_num==0
         t0 = timer()
         while True:
-            msg = None
-            if USE_MPI and USE_BCAST and not USE_ZMQ:
-                msg = comm.bcast(msg, root=num_workers)
-                if msg[0]=='SINGLE':
-                    if msg[1]!=self.worker_num:  continue
-                    msg = None
-            if msg is None:
-                msg = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
-            _, method, rvid, args, kwargs = msg
+            _, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
             if method=="END":
                 break
             t1 = timer()
@@ -2203,13 +2198,13 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             rkwargs = { k:ray.put(v) for k,v in kwargs.items() }
             return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(num_workers)]
         rvid = str(uuid.uuid4()) if has_retval else None
-        if USE_ZMQ:
+        if USE_ZMQ or not USE_BCAST:
             msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
-            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]))
+            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]) if isinstance(msg,list) else len(msg))
         else:
             msg = ('RPC',method,rvid,args,kwargs)
         if USE_MPI and USE_BCAST and not USE_ZMQ:
-            comm.bcast(msg, root=num_workers)
+            ramba_queue.bcast(msg)
         else:
             [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
         return [rvid+str(i) for i in range(num_workers)] if has_retval else None
@@ -2217,8 +2212,6 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
         rop = getattr(remote_states[nodeid], method)
         return rop.remote(*args,**kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
-    if USE_MPI and USE_BCAST and not USE_ZMQ:
-        comm.bcast(('SINGLE', nodeid), root=num_workers)
     control_queues[nodeid].put( ('RPC',method,rvid,args,kwargs) )
     return rvid+str(nodeid) if has_retval else None
 
@@ -2359,9 +2352,9 @@ def find_index(distribution, index):
             return i
 
 class ndarray:
-    def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False):
+    def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False, **kwargs):
         t0 = timer()
-        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype)
+        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs)  # extra options for distribution hints
         #self.gid = self.bdarray.gid
         self.size = size
         self.distribution = distribution if ((distribution is not None) and (gid is not None)) else self.bdarray.distribution
@@ -3367,7 +3360,7 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
     dprint(3, "divisions:", divisions)
     return new_ndarray
 
-def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True):
+def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
     #global arrays
     #global num_workers
     #num_dim = len(size)
@@ -3378,7 +3371,7 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
     #divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
     #numba_workqueue.do_scheduling_signed(num_dim, ffi.cast("int*", starts.ctypes.data), ffi.cast("int*", ends.ctypes.data), num_workers, ffi.cast("int*", divisions.ctypes.data), 0)
     ##dprint(3, "divisions:", divisions)
-    new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution)
+    new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
     if (isinstance(filler, str)):
         deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
     else:
@@ -3407,40 +3400,40 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
         new_ndarray.bdarray.flex_dist = False # distribution is fixed
     return new_ndarray
 
-def init_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True):
+def init_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
     if isinstance(size, int):
         size = (size,)
-    return create_array(size, filler, local_border=local_border, dtype=dtype, distribution=distribution, tuple_arg=tuple_arg)
+    return create_array(size, filler, local_border=local_border, dtype=dtype, distribution=distribution, tuple_arg=tuple_arg, **kwargs)
 
-def fromfunction(lfunc, size, dtype=None):
-    return init_array(size, lfunc, dtype=dtype, tuple_arg=False)
+def fromfunction(lfunc, size, dtype=None, **kwargs):
+    return init_array(size, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
 
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
-def empty(size, local_border=0, dtype=None, distribution=None):
-    return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution)
+def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
+    return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
 
 def empty_like(other_ndarray):
     return empty(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def zeros(size, local_border=0, dtype=None, distribution=None):
-    return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution)
+def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
+    return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
 
 def zeros_like(other_ndarray):
     return zeros(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def ones(size, local_border=0, dtype=None):
-    return init_array(size, "1", local_border=local_border, dtype=dtype)
+def ones(size, local_border=0, dtype=None, **kwargs):
+    return init_array(size, "1", local_border=local_border, dtype=dtype, **kwargs)
 
 def ones_like(other_ndarray):
     return ones(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
 
-def full(size, v, local_border=0):
-    return init_array(size, str(v), local_border=local_border)
+def full(size, v, local_border=0, **kwargs):
+    return init_array(size, str(v), local_border=local_border, **kwargs)
 
-def eye(N, M=None, dtype=float32, local_border=0):
+def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
     if M is None:
         M = N
-    return init_array((N,M), lambda x: 1 if x[0] == x[1] else 0, local_border=local_border, dtype=dtype)
+    return init_array((N,M), lambda x: 1 if x[0] == x[1] else 0, local_border=local_border, dtype=dtype, **kwargs)
 
 def copy(arr, local_border=0):
     new_ndarray = create_array_with_divisions(arr.size, arr.distribution, local_border=local_border)
@@ -3463,9 +3456,9 @@ def asarray(x):
     assert(isinstance(x, ndarray))
     return x.asarray()
 
-def fromarray(x, local_border=0):
+def fromarray(x, local_border=0, **kwargs):
     size = x.shape
-    new_ndarray = create_array(size, None, local_border=local_border, dtype=x.dtype)
+    new_ndarray = create_array(size, None, local_border=local_border, dtype=x.dtype, **kwargs)
     distribution = new_ndarray.distribution
     [remote_exec(i, "push_array", new_ndarray.gid,
                                   distribution[i],
@@ -3504,7 +3497,7 @@ def _compute_remote_ranges(out_distribution, out_mapping):
                     to_ret[node_num].append((other_array.gid, i, bi, map_out_combined))
     return from_ret, to_ret
 
-def concatenate(arrayseq, axis=0, out=None):
+def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
     first_dtype = arrayseq[0].dtype
@@ -3526,7 +3519,7 @@ def concatenate(arrayseq, axis=0, out=None):
     dprint(2, "concatenate out_shape:", out_shape, first_dtype)
     assert(found_ndarray)
     if out is None:
-        out = empty(out_shape, dtype=first_dtype)
+        out = empty(out_shape, dtype=first_dtype, **kwargs)
         dprint(2, "Create concatenate output:", out.gid, out_shape, out.dtype)
     else:
         assert(isinstance(out, ndarray))
