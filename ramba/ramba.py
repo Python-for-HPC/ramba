@@ -1433,12 +1433,14 @@ class RemoteState:
                 print("b_distribution:", b_distribution, "\n", shardview.distribution_to_divisions(b_distribution))
                 assert(0)
 
+            exec_start_time = timer()
             if not nothing_to_do:
                 if bextend:
                     cslice_struct = (slice(adiv[0,0], adiv[1,0]+1),)
                 else:
                     cslice_struct = (slice(adiv[0,0], adiv[1,0]+1), slice(0, out_gid[1]))
                 clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+            exec_end_time = timer()
 
             start_reduction_time = timer()
             if fast_reduction:
@@ -1476,7 +1478,7 @@ class RemoteState:
                 partial_numpy = 0
 
             end_worker_matmul = timer()
-            return (self.worker_num, end_worker_matmul - start_worker_matmul, end_worker_matmul - start_reduction_time, 0, 0, 0, 0, [], [], [], [], partial_numpy)
+            return (self.worker_num, end_worker_matmul - start_worker_matmul, 0, end_worker_matmul - start_reduction_time, 0, 0, exec_end_time - exec_start_time, [], [], [], [], partial_numpy)
         else:
             assert(0)
 
@@ -2908,8 +2910,7 @@ def matmul(a, b, reduction=False, out=None):
             add_time("matmul_c_not_dist_a_b_dist_match", matmul_end_time - pre_matmul_start_time)
             add_sub_time("matmul_c_not_dist_a_b_dist_match", "pre", pre_matmul_end_time - pre_matmul_start_time)
             add_sub_time("matmul_c_not_dist_a_b_dist_match", "launch", launch_total)
-            add_sub_time("matmul_c_not_dist_a_b_dist_match", "compute_comm", max([x[2] for x in worker_timings]))
-            add_sub_time("matmul_c_not_dist_a_b_dist_match", "comm", max([x[3] for x in worker_timings]))
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "reduction", max([x[3] for x in worker_timings]))
             add_sub_time("matmul_c_not_dist_a_b_dist_match", "exec", max([x[6] for x in worker_timings]))
 
             if aextend:
