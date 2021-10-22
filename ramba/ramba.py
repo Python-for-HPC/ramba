@@ -49,6 +49,7 @@ import math
 import traceback
 import numba.cpython.unsafe.tuple as UT
 import atexit
+import ramba.random as random
 
 
 try:
@@ -3360,7 +3361,7 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
     dprint(3, "divisions:", divisions)
     return new_ndarray
 
-def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
+def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, filler_prepickled=False, **kwargs):
     #global arrays
     #global num_workers
     #num_dim = len(size)
@@ -3375,20 +3376,11 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
     if (isinstance(filler, str)):
         deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
     else:
-        #[remote_states[i].create_array.remote(new_ndarray.gid,
-        #                                  new_ndarray.distribution[i],
-        #                                  size,
-        #                                  filler,
-        #                                  local_border,
-        #                                  dtype,
-        #                                  new_ndarray.distribution,
-        #                                  new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
-        #                                  new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
-        #    for i in range(num_workers)]
+        filler = filler if filler_prepickled else func_dumps(filler)
         [remote_exec(i, "create_array", new_ndarray.gid,
                                         new_ndarray.distribution[i],
                                         size,
-                                        func_dumps(filler),
+                                        filler,
                                         local_border,
                                         dtype,
                                         new_ndarray.distribution,
