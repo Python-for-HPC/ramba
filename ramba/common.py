@@ -42,7 +42,6 @@ except:
 #USE_RAY_CALLS=True
 USE_RAY_CALLS=False
 
-fast_partial_matmul = True
 fast_reduction = True
 
 float32 = np.float32

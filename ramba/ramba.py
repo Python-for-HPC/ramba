@@ -1419,67 +1419,64 @@ class RemoteState:
             clocal = FakeLocal(out_gid, self.worker_num)
             cdiv = shardview.to_division(clocal.whole_space[self.worker_num])
             partial_numpy = clocal.bcontainer
-            if fast_partial_matmul:
-                #print("pre alocal:", self.worker_num, a_distribution[self.worker_num], type(a_distribution[self.worker_num]), a_distribution[self.worker_num].to_base_slice())
-                #alocal = a.get_partial_view(shardview.to_base_slice(a_distribution[self.worker_num]), a_distribution[self.worker_num], global_index=False)
-                alocal = a.get_view(a_distribution[self.worker_num])
-                #print("pre blocal:", self.worker_num, b_distribution[self.worker_num], type(b_distribution[self.worker_num]), b_distribution[self.worker_num].to_base_slice())
-                #blocal = b.get_partial_view(shardview.to_base_slice(b_distribution[self.worker_num]), b_distribution[self.worker_num], global_index=False)
-                #blocal = b.get_view(b_distribution[self.worker_num])
-                blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
-                nothing_to_do = all(x == 0 for x in alocal.shape) or all(x == 0 for x in blocal.shape)
-                if not nothing_to_do and alocal.shape[1] != blocal.shape[0]:
-                    print("mismatch", self.worker_num, alocal.shape, blocal.shape)
-                    print("a_distribution:", a_distribution, "\n", shardview.distribution_to_divisions(a_distribution))
-                    print("b_distribution:", b_distribution, "\n", shardview.distribution_to_divisions(b_distribution))
-                    assert(0)
+            #print("pre alocal:", self.worker_num, a_distribution[self.worker_num], type(a_distribution[self.worker_num]), a_distribution[self.worker_num].to_base_slice())
+            #alocal = a.get_partial_view(shardview.to_base_slice(a_distribution[self.worker_num]), a_distribution[self.worker_num], global_index=False)
+            alocal = a.get_view(a_distribution[self.worker_num])
+            #print("pre blocal:", self.worker_num, b_distribution[self.worker_num], type(b_distribution[self.worker_num]), b_distribution[self.worker_num].to_base_slice())
+            #blocal = b.get_partial_view(shardview.to_base_slice(b_distribution[self.worker_num]), b_distribution[self.worker_num], global_index=False)
+            #blocal = b.get_view(b_distribution[self.worker_num])
+            blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
+            nothing_to_do = all(x == 0 for x in alocal.shape) or all(x == 0 for x in blocal.shape)
+            if not nothing_to_do and alocal.shape[1] != blocal.shape[0]:
+                print("mismatch", self.worker_num, alocal.shape, blocal.shape)
+                print("a_distribution:", a_distribution, "\n", shardview.distribution_to_divisions(a_distribution))
+                print("b_distribution:", b_distribution, "\n", shardview.distribution_to_divisions(b_distribution))
+                assert(0)
 
-                if not nothing_to_do:
-                    if bextend:
-                        cslice_struct = (slice(adiv[0,0], adiv[1,0]+1),)
+            if not nothing_to_do:
+                if bextend:
+                    cslice_struct = (slice(adiv[0,0], adiv[1,0]+1),)
+                else:
+                    cslice_struct = (slice(adiv[0,0], adiv[1,0]+1), slice(0, out_gid[1]))
+                clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+
+            start_reduction_time = timer()
+            if fast_reduction:
+                # Distributed and Parallel Reduction
+                max_worker = num_workers
+                while max_worker > 1:
+                    # midpoint is the index of the first worker that needs to send
+                    midpoint = (max_worker + 1) // 2
+                    # this worker will send
+                    if self.worker_num >= midpoint:
+                        send_to = self.worker_num - midpoint
+                        #print("parreduction", max_worker, self.worker_num, "sending to", send_to)
+                        self.comm_queues[send_to].put((a_send_recv, partial_numpy))
+                        break
                     else:
-                        cslice_struct = (slice(adiv[0,0], adiv[1,0]+1), slice(0, out_gid[1]))
-                    clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+                        # If the remaining workers is odd and this worker is the last one then it won't receive
+                        # any communication or needs to do any compute but just goes to the next iteration where
+                        # it will send.
+                        if not (max_worker % 2 == 1 and self.worker_num == midpoint - 1):
+                            #print("parreduction", max_worker, self.worker_num, "receiving")
+                            try:
+                                incoming_uuid, incoming_partial = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0] == a_send_recv, timeout = 5)
+                            except:
+                                print("some exception!", sys.exc_info()[0])
+                                assert(0)
+                            partial_numpy += incoming_partial
 
-                start_reduction_time = timer()
-                if fast_reduction:
-                    # Distributed and Parallel Reduction
-                    max_worker = num_workers
-                    while max_worker > 1:
-                        # midpoint is the index of the first worker that needs to send
-                        midpoint = (max_worker + 1) // 2
-                        # this worker will send
-                        if self.worker_num >= midpoint:
-                            send_to = self.worker_num - midpoint
-                            #print("parreduction", max_worker, self.worker_num, "sending to", send_to)
-                            self.comm_queues[send_to].put((a_send_recv, partial_numpy))
-                            break
-                        else:
-                            # If the remaining workers is odd and this worker is the last one then it won't receive
-                            # any communication or needs to do any compute but just goes to the next iteration where
-                            # it will send.
-                            if not (max_worker % 2 == 1 and self.worker_num == midpoint - 1):
-                                #print("parreduction", max_worker, self.worker_num, "receiving")
-                                try:
-                                    incoming_uuid, incoming_partial = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0] == a_send_recv, timeout = 5)
-                                except:
-                                    print("some exception!", sys.exc_info()[0])
-                                    assert(0)
-                                partial_numpy += incoming_partial
+                    max_worker = midpoint
 
-                        max_worker = midpoint
+                if self.worker_num == 0:
+                    #final_res = self.numpy_map[out_size]
+                    #final_res.bcontainer[:] = partial_numpy
+                    final_res = self.get_view(out_size, out_distribution[self.worker_num])
+                    final_res[:] = partial_numpy
+                partial_numpy = 0
 
-                    if self.worker_num == 0:
-                        #final_res = self.numpy_map[out_size]
-                        #final_res.bcontainer[:] = partial_numpy
-                        final_res = self.get_view(out_size, out_distribution[self.worker_num])
-                        final_res[:] = partial_numpy
-                    partial_numpy = 0
-
-                end_worker_matmul = timer()
-                return (self.worker_num, end_worker_matmul - start_worker_matmul, end_worker_matmul - start_reduction_time, 0, 0, 0, 0, [], [], [], [], partial_numpy)
-            else:
-                cslice = clocal.bcontainer[out_size]
+            end_worker_matmul = timer()
+            return (self.worker_num, end_worker_matmul - start_worker_matmul, end_worker_matmul - start_reduction_time, 0, 0, 0, 0, [], [], [], [], partial_numpy)
         else:
             assert(0)
 
@@ -2705,7 +2702,57 @@ def dot(a, b, out=None):
         print("dot for matrices higher than 2 dimensions not currently supported.")
         assert(0)
 
-total_matmul_time = 0
+# --------------- Global variables to hold timings of parts of Ramba -------------
+# The dict value {0:(0,0)} is explained as follows:
+# The first 0 is an identifier.  If it is 0 then it corresponds to the overall time for
+# that key entry.  Other key values indicate sub-parts of that time.
+# In the (0,0) tuple, the first zero is a counter of how many times have been recorded
+# and the second 0 is the total time.
+time_dict = {"matmul_b_c_not_dist":{0:(0,0)},
+             "matmul_c_not_dist_a_b_dist_match":{0:(0,0)},
+             "matmul_c_not_dist_a_b_dist_non_match":{0:(0,0)},
+             "matmul_general":{0:(0,0)},
+            }
+
+def reset_timing():
+    for k,v in time_dict.items():
+        time_dict[k] = {0:(0,0)}
+
+def get_timing(details=False):
+    if details:
+        return time_dict
+    else:
+        return {k:time_dict[k][0] for k in time_dict.keys()}
+
+def get_timing_str(details=False):
+    timings = get_timing(details=details)
+    res = ""
+    if details:
+        for k, v in timings.items():
+            res += k + ": " + str(v[0][1]) + "s(" + str(v[0][0]) + ")\n"
+            for tk, tv in v.items():
+                if tk != 0:
+                    res += "    " + tk + ": " + str(tv[1]) + "s(" + str(tv[0]) + ")\n"
+    else:
+        for k, v in timings.items():
+            res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
+    return res
+
+def add_time(time_name, val):
+    tindex = time_dict[time_name]
+    assert(isinstance(tindex, dict))
+    cur_val = tindex[0]
+    assert(isinstance(cur_val, tuple))
+    tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
+
+def add_sub_time(time_name, sub_name, val):
+    tindex = time_dict[time_name]
+    if sub_name not in tindex:
+        tindex[sub_name] = (0,0)
+    cur_val = tindex[sub_name]
+    tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
+
+# --------------- Global variables to hold timings of parts of Ramba -------------
 
 def matmul(a, b, reduction=False, out=None):
     dprint(2, "starting matmul")
@@ -2777,19 +2824,16 @@ def matmul(a, b, reduction=False, out=None):
             workers = []
             matmul_workers = []
 
-            if fast_partial_matmul:
-                reduction_slicing_start_time = timer()
-                reduction_slicing_end_time = timer()
-                launch_start_time = timer()
-                matmul_workers = remote_async_call_all("matmul",
-                                    out_shape, out_ndarray.gid, out_ndarray.distribution,
-                                    a.gid, a.size, a.distribution,
-                                    blocal, 0, 0,
-                                    bextend, a_send_recv, b_send_recv)
-                launch_end_time = timer()
-                launch_total = launch_end_time - launch_start_time
-            else:
-                assert(0)
+            reduction_slicing_start_time = timer()
+            reduction_slicing_end_time = timer()
+            launch_start_time = timer()
+            matmul_workers = remote_async_call_all("matmul",
+                                out_shape, out_ndarray.gid, out_ndarray.distribution,
+                                a.gid, a.size, a.distribution,
+                                blocal, 0, 0,
+                                bextend, a_send_recv, b_send_recv)
+            launch_end_time = timer()
+            launch_total = launch_end_time - launch_start_time
 
             worker_timings = get_results(matmul_workers)
             post_get_end_time = timer()
@@ -2811,6 +2855,13 @@ def matmul(a, b, reduction=False, out=None):
                 worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
                 tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
+            add_time("matmul_b_c_not_dist", matmul_end_time - pre_matmul_start_time)
+            add_sub_time("matmul_b_c_not_dist", "pre", pre_matmul_end_time - pre_matmul_start_time)
+            add_sub_time("matmul_b_c_not_dist", "launch", launch_total)
+            add_sub_time("matmul_b_c_not_dist", "compute_comm", max([x[2] for x in worker_timings]))
+            add_sub_time("matmul_b_c_not_dist", "comm", max([x[3] for x in worker_timings]))
+            add_sub_time("matmul_b_c_not_dist", "exec", max([x[6] for x in worker_timings]))
+
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
             else:
@@ -2824,95 +2875,47 @@ def matmul(a, b, reduction=False, out=None):
             workers = []
             matmul_workers = []
 
-            if fast_partial_matmul:
-                reduction_slicing_start_time = timer()
-                reduction_slicing_end_time = timer()
-                launch_start_time = timer()
-                matmul_workers = remote_async_call_all("matmul",
-                                    out_shape, out_ndarray.gid, out_ndarray.distribution,
-                                    a.gid, a.size, a.distribution,
-                                    b.gid, b.size, b.distribution, bextend,
-                                    a_send_recv, b_send_recv)
-                launch_end_time = timer()
-                launch_total = launch_end_time - launch_start_time
-                worker_timings = get_results(matmul_workers)
-                post_get_end_time = timer()
-                if not fast_reduction:
-                    reduce_start_time = timer()
-                    redres = functools.reduce(operator.add, [x[11] for x in worker_timings])
-                    reduce_end_time = timer()
-                    out_ndarray[:] = fromarray(redres)
-                    fromarray_end_time = timer()
-
-                    if ntiming >= 1:
-                        sync()
-                    sync_end_time = timer()
-                    tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
-
-                matmul_end_time = timer()
-                tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, "slicing_time", 0, "launch_time", launch_total, "get_results_time", post_get_end_time - launch_end_time)
-                for worker_data in worker_timings:
-                    worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                    tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
-
-                if aextend:
-                    return reshape(out_ndarray, (out_shape[1],))
-                else:
-                    return out_ndarray
-            else:
-                launch_total = 0
-                reduction_slicing_start_time = timer()
-                for i in range(adivs_shape[0]):
-                    aslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1), slice(adivs[i,0,1], adivs[i,1,1]+1))
-                    aslice = a[aslice_struct]
-                    if bextend:
-                        bslice_struct = (slice(adivs[i,0,1], adivs[i,1,1]+1),)
-                        bslice = b[bslice_struct]
-                        cslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1),)
-                    else:
-                        bslice_struct = (slice(adivs[i,0,1], adivs[i,1,1]+1), slice(0, out_shape[1]))
-                        bslice = b[bslice_struct]
-                        cslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1), slice(0, out_shape[1]))
-                    dprint(2, "matmul part:", i, aslice_struct, bslice_struct, cslice_struct)
-
-                    launch_start_time = timer()
-                    matmul_workers.append(remote_async_call(i, "matmul",
-                                        out_shape, cslice_struct, 0,
-                                        aslice.gid, aslice.size, aslice.distribution,
-                                        bslice.gid, bslice.size, bslice.distribution,
-                                        bextend, a_send_recv, b_send_recv))
-                    launch_end_time = timer()
-                    launch_total += launch_end_time - launch_start_time
-
-                reduction_slicing_end_time = timer()
-
-                worker_timings = get_results(matmul_workers)
-                post_get_end_time = timer()
-                listify_start_time = timer()
-                numba_typed_list_partials = numba.typed.List()
-                [numba_typed_list_partials.append(x[11]) for x in worker_timings]
-                listify_end_time = timer()
-                npreduced = reduce_list(numba_typed_list_partials)
-                reduced_end_time = timer()
-                out_ndarray[:] = fromarray(npreduced)
+            reduction_slicing_start_time = timer()
+            reduction_slicing_end_time = timer()
+            launch_start_time = timer()
+            matmul_workers = remote_async_call_all("matmul",
+                                out_shape, out_ndarray.gid, out_ndarray.distribution,
+                                a.gid, a.size, a.distribution,
+                                b.gid, b.size, b.distribution, bextend,
+                                a_send_recv, b_send_recv)
+            launch_end_time = timer()
+            launch_total = launch_end_time - launch_start_time
+            worker_timings = get_results(matmul_workers)
+            post_get_end_time = timer()
+            if not fast_reduction:
+                reduce_start_time = timer()
+                redres = functools.reduce(operator.add, [x[11] for x in worker_timings])
+                reduce_end_time = timer()
+                out_ndarray[:] = fromarray(redres)
                 fromarray_end_time = timer()
-                tprint(2, "partial_reduce_times:", listify_end_time - listify_start_time, reduced_end_time - listify_end_time, fromarray_end_time - reduced_end_time)
-                #out_ndarray[:] = fromarray(functools.reduce(operator.add, [x[11] for x in worker_timings]))
 
                 if ntiming >= 1:
                     sync()
+                sync_end_time = timer()
+                tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
 
-                matmul_end_time = timer()
-                tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
-                for worker_data in worker_timings:
-                    worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                    tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+            matmul_end_time = timer()
+            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, "slicing_time", 0, "launch_time", launch_total, "get_results_time", post_get_end_time - launch_end_time)
+            for worker_data in worker_timings:
+                worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
+                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
-                if aextend:
-                    return reshape(out_ndarray, (out_shape[1],))
-                else:
-                    return out_ndarray
+            add_time("matmul_c_not_dist_a_b_dist_match", matmul_end_time - pre_matmul_start_time)
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "pre", pre_matmul_end_time - pre_matmul_start_time)
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "launch", launch_total)
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "compute_comm", max([x[2] for x in worker_timings]))
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "comm", max([x[3] for x in worker_timings]))
+            add_sub_time("matmul_c_not_dist_a_b_dist_match", "exec", max([x[6] for x in worker_timings]))
 
+            if aextend:
+                return reshape(out_ndarray, (out_shape[1],))
+            else:
+                return out_ndarray
         else:
             #print("not simple case:", out_shape, adivs, adivs[:,:,1], bdivs, bdivs[:,:,0], np.array_equal(adivs[:,:,1], bdivs[:,:,0]))
             dprint(2, "matmul b matrix is distributed but a is not distributed across 2nd dimension nor b across inner dimension")
@@ -2979,6 +2982,8 @@ def matmul(a, b, reduction=False, out=None):
                 worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
                 tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
+            add_time("matmul_c_not_dist_a_b_dist_non_match", matmul_end_time - pre_matmul_start_time)
+
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
             else:
@@ -3008,11 +3013,14 @@ def matmul(a, b, reduction=False, out=None):
     #                                b.gid, b.size, b.distribution, bextend,
     #                                a_send_recv, b_send_recv)
 
+    launch_start_time = timer()
     matmul_workers = remote_async_call_all("matmul",
                                     out_ndarray.gid, out_ndarray.size, out_ndarray.distribution,
                                     a.gid, a.size, a.distribution,
                                     b.gid, b.size, b.distribution, bextend,
                                     a_send_recv, b_send_recv)
+    launch_end_time = timer()
+    launch_total = launch_end_time - launch_start_time
 
     if reduction:
         return matmul_workers
@@ -3026,8 +3034,12 @@ def matmul(a, b, reduction=False, out=None):
             worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
             tprint(3, "matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
 
-        global total_matmul_time
-        total_matmul_time += matmul_end_time - matmul_start_time
+        add_time("matmul_general", matmul_end_time - pre_matmul_start_time)
+        add_sub_time("matmul_general", "pre", pre_matmul_end_time - pre_matmul_start_time)
+        add_sub_time("matmul_general", "launch", launch_total)
+        add_sub_time("matmul_general", "compute_comm", max([x[2] for x in worker_timings]))
+        add_sub_time("matmul_general", "comm", max([x[3] for x in worker_timings]))
+        add_sub_time("matmul_general", "exec", max([x[6] for x in worker_timings]))
 
         if aextend:
             return reshape(out_ndarray, (out_shape[1],))
@@ -3035,8 +3047,7 @@ def matmul(a, b, reduction=False, out=None):
             return out_ndarray
 
 def matmul_summary():
-    global total_matmul_time
-    print("Total matmul time:", total_matmul_time)
+    print(get_timing_str())
 
 if ntiming > 0:
     print("registering matmul_summary")
