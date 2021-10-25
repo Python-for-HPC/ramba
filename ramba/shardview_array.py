@@ -681,12 +681,13 @@ def make_uni_dist_from_shape(num_workers, node, shape):
 
 
 def compute_regular_schedule(size, divisions, dims_do_not_distribute=[]):
-    divisions[:] = compute_regular_schedule_internal(size, tuple(dims_do_not_distribute))
+    divisions[:] = compute_regular_schedule_internal(num_workers, size, tuple(dims_do_not_distribute))
 
 @functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(size, dims_do_not_distribute):
+def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute, mode="surface"):
     num_dim = len(size)
     divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
+    # Get the combinations of the prime factorization of the number of workers.
     the_factors = dim_factor_dict[num_dim]
     best = None
     best_value = math.inf
@@ -718,13 +719,53 @@ def compute_regular_schedule_internal(size, dims_do_not_distribute):
             if factored[i] > size[i]:
                not_possible = True
                break
-            _, _, largest[i], smallest[i] = get_div_sizes(size[i], factored[i])
+            if mode == "ratio":
+                _, _, largest[i], smallest[i] = get_div_sizes(size[i], factored[i])
         if not_possible:
             continue
-        ratio = np.prod(largest) / np.prod(smallest)
-        if ratio < best_value:
-            best_value = ratio
-            best = factored
+
+        if mode == "ratio":
+            ratio = np.prod(largest) / np.prod(smallest)
+            if ratio < best_value:
+                best_value = ratio
+                best = factored
+        elif mode == "surface":
+            # We are trying to minimize the size of the portions of the blocks that are touching.
+            # For 2D, this is the blocks' perimeters.  For 3D, it is surface area, etc.
+            # We're really interested in the internal sharing between blocks but we
+            # note that I + E = W where I is the interior shared border, E is the
+            # exterior unshared border and W is the surface area of all the blocks.
+            # We can just compute W since E is a constant given the input array size.
+            # Moreover, since all the blocks are about the same, we can just compute
+            # for one block and don't have to explicitly count duplicate edges or
+            # faces that are symmetric because multiplying by a constant won't change
+            # the relative order of the possible partitions.
+
+            surface_area = 0
+            # List of the dimensions of each block on average.
+            blockSize = [size[i]/factored[i] for i in range(len(factored))]
+
+            for i in range(num_dim):
+                # Saves the average length of the block for the current dimension.
+                temp = blockSize[i]
+                # Ignores the current dimension so that the surface area of the
+                # N-dimensional face (edge for 2D, face for 3D, etc.) can be calculated.
+                blockSize[i] = 1
+                # Adds the calculated size of piece of the block to what has been
+                # calculated so far. At the end of the loop, the whole representation
+                # of a block surface area will be known.
+                surface_area += np.prod(blockSize)
+                # Restore the length of the current dimension for future iterations.
+                blockSize[i] = temp
+
+            # If the N-dimensional surface area of this factorization is the best
+            # thus far then remember it.
+            if surface_area < best_value:
+                best_value = surface_area
+                best = factored
+
+    if mode == "surface":
+        dprint(3, "Best:", best, "Smallest surface area:", best_value)
 
     assert(best is not None)
     divshape = divisions.shape
