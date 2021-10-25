@@ -12,7 +12,6 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 import os
 import numba
-from cffi import FFI
 import functools
 import numpy as np
 import math
@@ -287,11 +286,8 @@ def default_distribution(size):
     if do_not_distribute(size):
         make_uni_dist(divisions, 0, starts, ends)
     else:
-        if regular_schedule:
-            compute_regular_schedule(size, divisions)
-            dprint(3, "compute_regular output:", size, divisions)
-        else:
-            numba_workqueue.do_scheduling_signed(num_dim, ffi.cast("int*", starts.ctypes.data), ffi.cast("int*", ends.ctypes.data), num_workers, ffi.cast("int*", divisions.ctypes.data), 0)
+        compute_regular_schedule(size, divisions)
+        dprint(3, "compute_regular output:", size, divisions)
     return divisions_to_distribution(divisions)
 
 def block_intersection(a, b):
@@ -449,137 +445,3 @@ def make_uni_dist_from_shape(num_workers, node, shape):
     ends -= 1
     make_uni_dist(divisions, node, starts, ends)
     return divisions
-
-
-
-def compute_regular_schedule(size, divisions):
-    divisions[:] = compute_regular_schedule_internal(size)
-
-@functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(size):
-    num_dim = len(size)
-    divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
-    the_factors = dim_factor_dict[num_dim]
-    best = None
-    best_value = math.inf
-
-    largest = [0] * num_dim
-    smallest = [0] * num_dim
-
-    def get_div_sizes(dim_len, num_div):
-        low = dim_len // num_div
-        if dim_len % num_div == 0:
-            return low, low, low, low
-
-        rem = dim_len - (low * (num_div-1))
-        if rem >= num_div:
-            main = low + 1
-            rem = dim_len - (main * (num_div-1))
-        else:
-            main = low
-        if rem == 0:
-            rem = main
-        return main, rem, max(main, rem), min(main, rem)
-
-    for factored in the_factors:
-        for i in range(num_dim):
-            _, _, largest[i], smallest[i] = get_div_sizes(size[i], factored[i])
-        ratio = np.prod(largest) / np.prod(smallest)
-        if ratio < best_value:
-            best_value = ratio
-            best = factored
-
-    assert(best is not None)
-    divshape = divisions.shape
-    assert(divshape[2] == len(best))
-    main_divs = [0] * num_dim
-    for j in range(num_dim):
-        main_divs[j], _, _, _ = get_div_sizes(size[j], best[j])
-
-    def crsi_div(divisions, best, main_divs, index, min_worker, max_worker, size):
-        if index >= len(best):
-            return
-
-        total_workers = max_worker - min_worker + 1
-        chunks_here = total_workers // best[index]
-        last = -1
-
-        dprint(3, "crsi_div:", "best", best, "main_divs", main_divs, "index", index, "min_worker", min_worker, "max_worker", max_worker, "size", size, "chunks_here", chunks_here, "total_workers", total_workers)
-        for i in range(min_worker, max_worker + 1, chunks_here):
-            num_left = size[index] - last
-            this_div = num_left // ((max_worker + 1 - i) // chunks_here)
-            for j in range(chunks_here):
-                divisions[i+j,0,index] = last + 1
-                divisions[i+j,1,index] = last + this_div
-                #divisions[i+j,1,index] = last + main_divs[index]
-                if divisions[i+j,1,index] > size[index]:
-                    divisions[i+j,1,index] = size[index]
-            last += this_div
-            #last += main_divs[index]
-            crsi_div(divisions, best, main_divs, index + 1, i, i + chunks_here - 1, size)
-
-    crsi_div(divisions, best, main_divs, 0, 0, num_workers-1, np.array(size) - 1)
-    return divisions
-
-def exps_to_factor(factors, exps):
-    rest = 1
-    for i in range(len(factors)):
-        rest *= (factors[i] ** exps[i])
-    return rest
-
-def gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, index, part_exps):
-    if index >= len(exps):
-        rest = exps_to_factor(factors, part_exps)
-        new_thus = thus_far + [rest]
-        gen_ind_factors(fset, factors, list(map(operator.sub, exps, part_exps)), remaining_len - 1, new_thus)
-    else:
-        for i in range(exps[index]+1):
-            part_exps[index] = i
-            gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, index + 1, part_exps)
-
-def gen_ind_factors(fset, factors, exps, remaining_len, thus_far):
-    if remaining_len == 1:
-        rest = exps_to_factor(factors, exps)
-        complete_factors = thus_far + [rest]
-        fset.add(tuple(complete_factors))
-    else:
-        gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, 0, [0]*len(exps))
-
-def gen_dim_factor_dict(factors, exps):
-    dim_factor = {1:set(), 2:set(), 3:set(), 4:set()}
-
-    gen_ind_factors(dim_factor[1], factors, exps, 1, [])
-    gen_ind_factors(dim_factor[2], factors, exps, 2, [])
-    gen_ind_factors(dim_factor[3], factors, exps, 3, [])
-    gen_ind_factors(dim_factor[4], factors, exps, 4, [])
-
-    return dim_factor
-
-def gen_prime_factors(n):
-    factors = []
-    exps = []
-
-    def one_prime(n, p):
-        if n % p == 0:
-            factors.append(p)
-            exps.append(1)
-            n = n // p
-
-            while n % p == 0:
-                n = n // p
-                exps[-1] += 1
-        return n
-
-    n = one_prime(n, 2)
-
-    for i in range(3, int(math.sqrt(n)) + 1, 2):
-        n = one_prime(n, i)
-
-    if n != 1:
-        factors.append(n)
-        exps.append(1)
-
-    return factors, exps
-
-num_worker_factors, num_worker_exps = gen_prime_factors(num_workers)
-dim_factor_dict = gen_dim_factor_dict(num_worker_factors, num_worker_exps)

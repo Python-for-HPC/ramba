@@ -26,7 +26,6 @@ import sys
 import parser
 import uuid
 import weakref
-from cffi import FFI
 import operator
 import copy as libcopy
 import pickle as pickle
@@ -50,6 +49,7 @@ import traceback
 import numba.cpython.unsafe.tuple as UT
 import atexit
 import ramba.random as random
+import socket
 
 
 try:
@@ -83,23 +83,6 @@ if gpu_present:
     import dpctl.dptensor.numpy_usm_shared as gnp
 else:
     import numpy as gnp
-
-ffi = FFI()
-# num_dim, starts, ends, num_divisions, sched, debug
-ffi.cdef ("""
-void do_scheduling_signed(unsigned, int *, int*, unsigned, int *, int);
-""")
-numba_path = os.path.dirname(numba.__file__)
-numba_path += "/np/ufunc"
-workqueue_name = None
-for file in os.listdir(numba_path):
-    if file.startswith("workqueue.cpython"):
-        workqueue_name = file
-assert(workqueue_name is not None)
-numba_path += "/" + workqueue_name
-dprint(3, "numba_path:", numba_path)
-numba_workqueue = ffi.dlopen(numba_path)
-dprint(3, "numba_workqueue:", numba_workqueue, type(numba_workqueue))
 
 from numba import prange
 
@@ -1076,7 +1059,7 @@ class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
         z = numa.set_affinity(worker_num, numa_zones)
-        dprint(1,"Worker:",worker_num, os.uname()[1],num_workers, z, num_threads, ndebug, ntiming, timing)
+        dprint(1,"Worker:",worker_num, socket.gethostname(), num_workers, z, num_threads, ndebug, ntiming, timing)
         self.numpy_map = {}
         self.worker_num = worker_num
         # ensure numba is imported in remote contexts
@@ -1439,7 +1422,9 @@ class RemoteState:
                     cslice_struct = (slice(adiv[0,0], adiv[1,0]+1),)
                 else:
                     cslice_struct = (slice(adiv[0,0], adiv[1,0]+1), slice(0, out_gid[1]))
-                clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+                clocal.bcontainer[cslice_struct] = alocal @ blocal
+                #clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+#                print("special dot:", alocal.shape, blocal.shape)
             exec_end_time = timer()
 
             start_reduction_time = timer()
@@ -1601,11 +1586,15 @@ class RemoteState:
                         if bextend:
                             ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
                             bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal]
-                            d += np.dot(ashifted, bshifted)
+                            d += ashifted @ bshifted
+                            #d += np.dot(ashifted, bshifted)
+#                            print("general dot:", ashifted.shape, bshifted.shape)
                         else:
                             ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
                             bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal,:]
-                            d += np.dot(ashifted, bshifted)
+                            d += ashifted @ bshifted
+                            #d += np.dot(ashifted, bshifted)
+#                            print("general dot:", ashifted.shape, bshifted.shape)
                     except:
                         print(self.worker_num, sys.exc_info()[0])
                         print("shifted shapes exception:", adataarray.shape, bdataarray.shape, ashifted.shape, bshifted.shape, "kstart", kstart, "kend", kend, "ktotal", ktotal, adata[0][0,1], bdata[0][0,0], adata[0][0,1]-kstart, bdata[0][0,0]-kstart)
@@ -2413,6 +2402,7 @@ class ndarray:
     #    rev_base_offsets = [np.flip(x.base_offset) for x in self.distribution]
     #    return ndarray((self.size[1], self.size[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
+    """
     def __del__(self):
         #ndarray_gids[self.gid][0]-=1
         dprint(2, "Deleting ndarray",self.gid, self)
@@ -2420,6 +2410,7 @@ class ndarray:
         #    if ndarray_gids[self.gid][1]:  # check remote constructed flag
         #        deferred_op.del_remote_array(self.gid)
         #    del ndarray_gids[self.gid]
+    """
 
     def __str__(self):
         return str(self.gid) + " " + str(self.size) + " " + str(self.local_border)
@@ -2757,7 +2748,7 @@ def add_sub_time(time_name, sub_name, val):
 # --------------- Global variables to hold timings of parts of Ramba -------------
 
 def matmul(a, b, reduction=False, out=None):
-    dprint(2, "starting matmul")
+    dprint(1, "starting matmul", a.shape, b.shape)
     pre_matmul_start_time = timer()
     ashape = a.shape
     bshape = b.shape
@@ -2793,7 +2784,7 @@ def matmul(a, b, reduction=False, out=None):
         assert(out.shape == out_shape)
         out_ndarray = out
     else:
-        out_ndarray = empty(out_shape)
+        out_ndarray = empty(out_shape, dtype=np.result_type(a.dtype, b.dtype))
 
     pre_matmul_end_time = timer()
     tprint(2, "pre_matmul_total_time:", pre_matmul_end_time - pre_matmul_start_time, ashape, bshape)
@@ -3374,16 +3365,6 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
     return new_ndarray
 
 def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, filler_prepickled=False, **kwargs):
-    #global arrays
-    #global num_workers
-    #num_dim = len(size)
-    #starts = np.zeros(num_dim, dtype=np.int64)
-    #ends = np.array(list(size), dtype=np.int64)
-    ## the ends are inclusive, not one past the last index
-    #ends -= 1
-    #divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
-    #numba_workqueue.do_scheduling_signed(num_dim, ffi.cast("int*", starts.ctypes.data), ffi.cast("int*", ends.ctypes.data), num_workers, ffi.cast("int*", divisions.ctypes.data), 0)
-    ##dprint(3, "divisions:", divisions)
     new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
     if (isinstance(filler, str)):
         deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
@@ -3645,7 +3626,7 @@ def reshape(arr, newshape):
 
 def reshape_copy(arr, newshape):
     assert(np.prod(arr.size) == np.prod(newshape))
-    new_arr = empty(newshape)
+    new_arr = empty(newshape, dtype=arr.dtype)
 
     deferred_op.do_ops()
     dprint(2, "reshape_copy", arr.size, newshape, shardview.distribution_to_divisions(arr.distribution), shardview.distribution_to_divisions(new_arr.distribution))
