@@ -1055,6 +1055,25 @@ def get_smap_index(filler: FillerFunc, num_dim):
 
         return do_fill
 
+def rec_buf_summary(rec_buf):
+    total = 0
+    depth = 0
+    num_compiled = 0
+    for rec in rec_buf:
+        if rec[1].is_start:
+            num_compiled += 1
+            if depth == 0:
+                start = rec[0]
+                #print("rec_buf_summary starting", start)
+            depth += 1
+        elif rec[1].is_end:
+            depth -= 1
+            if depth == 0:
+                total += rec[0] - start
+                #print("rec_buf_summary ending", rec[0], rec[0] - start, total)
+
+    return (num_compiled, total)
+
 class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
@@ -1068,6 +1087,10 @@ class RemoteState:
         self.my_comm_queue = None #ramba_queue.Queue()
         self.my_control_queue = None #ramba_queue.Queue()
         self.tlast=timer()
+
+        if numba.version_info.short >= (0, 53):
+            self.compile_recorder = numba.core.event.RecordingListener()
+            numba.core.event.register("numba:compile", self.compile_recorder)
 
     def set_comm_queues(self, comm_queues):
         self.comm_queues = comm_queues
@@ -2138,6 +2161,16 @@ class RemoteState:
     def get_comm_stats(self):
         return [x.get_stats() for x in self.comm_queues]
 
+    def reset_compile_stats(self):
+        if numba.version_info.short >= (0, 53):
+            self.compile_recorder.buffer = []
+
+    def get_compile_stats(self):
+        if numba.version_info.short >= (0, 53):
+            return rec_buf_summary(self.compile_recorder.buffer)
+        else:
+            return 0
+
     def rpc_serve(self, rvq):
         #z = numa.set_affinity(self.worker_num, numa_zones)
         print_stuff = timing>2 and self.worker_num==0
@@ -2707,11 +2740,24 @@ time_dict = {"matmul_b_c_not_dist":{0:(0,0)},
              "matmul_general":{0:(0,0)},
             }
 
+if numba.version_info.short >= (0, 53):
+    global compile_recorder
+    compile_recorder = numba.core.event.RecordingListener()
+    numba.core.event.register("numba:compile", compile_recorder)
+
 def reset_timing():
     for k,v in time_dict.items():
         time_dict[k] = {0:(0,0)}
+    if numba.version_info.short >= (0, 53):
+        compile_recorder.buffer = []
+    remote_exec_all("reset_compile_stats")
 
 def get_timing(details=False):
+    if numba.version_info.short >= (0, 53):
+        driver_summary = rec_buf_summary(compile_recorder.buffer)
+        stats = remote_call_all("get_compile_stats")
+        remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+        time_dict["numba_compile_time"] = {0:tuple(map(operator.add, driver_summary, remote_maximum))}
     if details:
         return time_dict
     else:
