@@ -222,10 +222,10 @@ class FunctionMetadata:
                                     self.numba_func = numba.njit(**self.numba_args)(self.func)
                             if not try_again:
                                 self.ngfunc[atypes] = False
-                                dprint(1, "Numba GPU ParallelAccelerator attempt failed.")
+                                dprint(1, "Numba GPU ParallelAccelerator attempt failed for", self.func)
                         except:
                             self.ngfunc[atypes] = False
-                            dprint(1, "Numba GPU ParallelAccelerator attempt failed.")
+                            dprint(1, "Numba GPU ParallelAccelerator attempt failed for", self.func)
 
         while try_again and count < 2:
             count += 1
@@ -252,10 +252,10 @@ class FunctionMetadata:
                             self.numba_func = numba.njit(**self.numba_args)(self.func)
                     if not try_again:
                         self.npfunc[atypes] = False
-                        dprint(1, "Numba ParallelAccelerator attempt failed.")
+                        dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
                 except:
                     self.npfunc[atypes] = False
-                    dprint(1, "Numba ParallelAccelerator attempt failed.")
+                    dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
 
         if self.nfunc.get(atypes, True):
             try:
@@ -266,10 +266,10 @@ class FunctionMetadata:
             except numba.core.errors.TypingError as te:
                 print("Ramba TypingError:", te, type(te))
                 self.npfunc[atypes] = False
-                dprint(1, "Numba attempt failed.")
+                dprint(1, "Numba attempt failed for", self.func, atypes)
             except:
                 self.nfunc[atypes] = False
-                dprint(1, "Numba attempt failed.")
+                dprint(1, "Numba attempt failed for", self.func, atypes)
                 raise
 
         return self.func(*args, **kwargs)
@@ -1091,6 +1091,8 @@ class RemoteState:
         if numba.version_info.short >= (0, 53):
             self.compile_recorder = numba.core.event.RecordingListener()
             numba.core.event.register("numba:compile", self.compile_recorder)
+        self.deferred_ops_time = 0
+        self.deferred_ops_count = 0
 
     def set_comm_queues(self, comm_queues):
         self.comm_queues = comm_queues
@@ -1943,6 +1945,7 @@ class RemoteState:
         sys.stdout.flush()
 
     def run_deferred_ops( self, uuid, arrays, delete_gids, pickledvars, exec_dist, fname, code, imports):
+        times = [timer()]
         dprint(4,"HERE - deferredops; arrays:", arrays.keys())
         subspace = shardview.clean_range(exec_dist[self.worker_num])  # our slice of work range
         # create array shards if needed
@@ -1950,7 +1953,6 @@ class RemoteState:
         # info tuple is (size, distribution, local_border, from_border, to_border, dtype)
         # TODO:  Need to check array construction -- this code may break for views/slices; assumes first view of gid is the canonical, full array
         #[ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
-        times = [timer()]
         for (g,(l,bdist,pad,_)) in arrays.items():
             if g in self.numpy_map:
                 continue
@@ -2144,8 +2146,10 @@ class RemoteState:
         times.append(timer())
         if not USE_ZMQ and USE_MPI:
             ramba_queue.wait_sends()
-        times.append(timer())
         tnow = timer()
+        times.append(tnow)
+        self.deferred_ops_time += (tnow - times[0])
+        self.deferred_ops_count += 1
         if ntiming>=1 and self.worker_num==timing_debug_worker:
             times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
             tprint (1, "Deferred execution", (tnow-self.tlast)*1000,times, int(overlap_time*1000000)/1000, int(getview_time*1000000)/1000, int(arrview_time*1000000)/1000, int(copy_time*1000000)/1000)
@@ -2160,6 +2164,13 @@ class RemoteState:
 
     def get_comm_stats(self):
         return [x.get_stats() for x in self.comm_queues]
+
+    def reset_def_ops_stats(self):
+        self.deferred_ops_time = 0
+        self.deferred_ops_count = 0
+
+    def get_def_ops_stats(self):
+        return (self.deferred_ops_count, self.deferred_ops_time)
 
     def reset_compile_stats(self):
         if numba.version_info.short >= (0, 53):
@@ -2554,7 +2565,8 @@ class ndarray:
 
     def astype(self, dtype):
         new_ndarray = create_array_with_divisions(self.size, self.distribution, dtype=dtype)
-        deferred_op.add_op(["", new_ndarray, " = np.array(", self, ").astype(", dtype, ").item()"], new_ndarray)
+        deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
+        #deferred_op.add_op(["", new_ndarray, " = np.array(", self, ").astype(", dtype, ").item()"], new_ndarray)
         return new_ndarray
 
     def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
@@ -2751,6 +2763,7 @@ def reset_timing():
     if numba.version_info.short >= (0, 53):
         compile_recorder.buffer = []
     remote_exec_all("reset_compile_stats")
+    remote_exec_all("reset_def_ops_stats")
 
 def get_timing(details=False):
     if numba.version_info.short >= (0, 53):
@@ -2758,6 +2771,11 @@ def get_timing(details=False):
         stats = remote_call_all("get_compile_stats")
         remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
         time_dict["numba_compile_time"] = {0:tuple(map(operator.add, driver_summary, remote_maximum))}
+
+    stats = remote_call_all("get_def_ops_stats")
+    remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+    time_dict["remote_deferred_ops"] = {0:remote_maximum}
+
     if details:
         return time_dict
     else:
