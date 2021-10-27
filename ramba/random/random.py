@@ -31,7 +31,8 @@ def randn(*args, **kwargs):
     else:
         def impl(bcontainer, dim_lens, starts):
             bcontainer[:] = np.random.randn(*dim_lens)
-        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
+        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=False), **kwargs)
+        #return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
 
 def uniform(low=0.0, high=1.0, size=None, **kwargs):
     if size is None:
