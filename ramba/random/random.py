@@ -12,35 +12,82 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 import ramba
 import numpy as np
+import numba
 
 def seed(x):
-    #[ramba.remote_states[i].seed.remote(x+i) for i in range(len(ramba.remote_states))]
-    ramba.remote_exec_all("seed",x)
+    ramba.remote_exec_all("seed", x)
+
+class Generator:
+    def random(size=None, dtype=np.float64, out=None, **kwargs):
+        if size is None:
+            rng = np.random.default_rng()
+            assert(out is None)
+            return rng.random(size, dtype=dtype, out=out)
+        else:
+            kwargs["dtype"] = dtype
+            # We don't handle this case yet.
+            assert(out is None)
+            #def impl(bcontainer, dim_lens, starts):
+            #    rng = np.random.default_rng()
+            #    rng.random(size=dim_lens, out=bcontainer)
+            #return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=False), **kwargs)
+            def impl(bcontainer, dim_lens, starts):
+                for i in numba.pndindex(dim_lens):
+                    bcontainer[i] = np.random.random()
+            return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=True), **kwargs)
+
+    def normal(loc=0.0, scale=1.0, size=None, dtype=np.float64, out=None, **kwargs):
+        if size is None:
+            rng = np.random.default_rng()
+            assert(out is None)
+            return rng.normal(loc=loc, scale=scale, size=size)
+        else:
+            kwargs["dtype"] = dtype
+            # We don't handle this case yet.
+            assert(out is None)
+            def impl(dim_lens, starts):
+                rng = np.random.default_rng()
+                return rng.normal(loc=loc, scale=scale, size=dim_lens)
+            return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_NEW, do_compile=False), **kwargs)
+
+def default_rng():
+    return Generator()
 
 def random(size=None, **kwargs):
     if size is None:
         return np.random.random()
     else:
+        #def impl(dim_lens, starts):
+        #    return np.random.random(dim_lens)
+        #return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_NEW, do_compile=True), **kwargs)
         def impl(bcontainer, dim_lens, starts):
-            bcontainer[:] = np.random.random(dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
+            for i in numba.pndindex(dim_lens):
+                bcontainer[i] = np.random.random()
+        return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=True), **kwargs)
 
 def randn(*args, **kwargs):
     if len(args) == 0:
         return np.random.randn()
     else:
+        #def impl(dim_lens, starts):
+        #    return np.random.randn(*dim_lens)
+        #return ramba.init_array(args, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_NEW, do_compile=False), **kwargs)
+        ##return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
         def impl(bcontainer, dim_lens, starts):
-            bcontainer[:] = np.random.randn(*dim_lens)
-        return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=False), **kwargs)
-        #return ramba.init_array(args, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
+            for i in numba.pndindex(dim_lens):
+                bcontainer[i] = np.random.randn()
+        return ramba.init_array(args, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=True), **kwargs)
 
 def uniform(low=0.0, high=1.0, size=None, **kwargs):
     if size is None:
         return np.random.uniform(low=low, high=high)
     else:
+        #def impl(bcontainer, dim_lens, starts):
+        #    bcontainer[:] = np.random.uniform(low, high, size=dim_lens)
         def impl(bcontainer, dim_lens, starts):
-            bcontainer[:] = np.random.uniform(low, high, size=dim_lens)
-        return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=True), **kwargs)
+            for i in numba.pndindex(dim_lens):
+                bcontainer[i] = np.random.uniform(low, high)
+        return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=True), **kwargs)
 
 class RandomState:
     def __init__(self, *args):

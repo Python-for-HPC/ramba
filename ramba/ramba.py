@@ -134,6 +134,26 @@ if not USE_MPI:
     ray_first_init = ray_init()
 
 
+def in_driver():
+    if not USE_MPI:
+        return ray_first_init
+    else:
+        comm = mpi4py.MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        return rank==num_workers
+
+
+class Filler:
+    PER_ELEMENT = 0
+    WHOLE_ARRAY_NEW = 1
+    WHOLE_ARRAY_INPLACE = 2
+
+    def __init__(self, func, mode=PER_ELEMENT, do_compile=False):
+        self.func = func
+        self.mode = mode
+        self.do_compile = do_compile
+
+
 class FillerFunc:
     def __init__(self, func):
         self.func = func
@@ -254,8 +274,10 @@ class FunctionMetadata:
                         self.npfunc[atypes] = False
                         dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
                 except:
+                    traceback.print_exc()
                     self.npfunc[atypes] = False
                     dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
+                    dprint(1, inspect.getsource(self.func))
 
         if self.nfunc.get(atypes, True):
             try:
@@ -747,7 +769,7 @@ def make_padded_shard(core, boundary):
     new_size = [cshape[i] + boundary[i] for i in range(len(cshape))]
 
 class LocalNdarray:
-    def __init__(self, gid, remote, subspace, dim_lens, whole, border, whole_space, from_border, to_border, dtype):
+    def __init__(self, gid, remote, subspace, dim_lens, whole, border, whole_space, from_border, to_border, dtype, creation_mode=Filler.PER_ELEMENT):
         self.gid = gid
         self.remote = remote
         self.subspace = subspace
@@ -765,10 +787,13 @@ class LocalNdarray:
         else:
             gnpargs = {}
 
-        if debug:
-            self.bcontainer = gnp.zeros(self.allocated_size, **gnpargs)
+        if border == 0 and creation_mode==Filler.WHOLE_ARRAY_NEW and not gpu_present:
+            self.bcontainer = None
         else:
-            self.bcontainer = gnp.empty(self.allocated_size, **gnpargs)
+            if debug:
+                self.bcontainer = gnp.zeros(self.allocated_size, **gnpargs)
+            else:
+                self.bcontainer = gnp.empty(self.allocated_size, **gnpargs)
 
     def init_like(self, gid):
         return LocalNdarray(gid, self.remote, self.subspace, self.dim_lens, self.whole, self.border, self.whole_space, self.from_border, self.to_border, self.dtype)
@@ -971,13 +996,6 @@ def reduce_list(x):
     return res
 
 
-class Filler:
-    def __init__(self, func, per_element=True, do_compile=False):
-        self.func = func
-        self.per_element = per_element
-        self.do_compile = do_compile
-
-
 @functools.lru_cache()
 def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
@@ -1116,22 +1134,27 @@ class RemoteState:
         num_dim = len(shardview.get_size(subspace))
         dim_lens = tuple(shardview.get_size(subspace))
         starts = tuple(shardview.get_start(subspace))
-        dprint(3, "num_dim:", num_dim, dim_lens, starts)
-        lnd = LocalNdarray(gid, self, subspace, dim_lens, whole, local_border, whole_space, from_border, to_border, dtype)
-        self.numpy_map[gid] = lnd
-        new_bcontainer = lnd.bcontainer
+        dprint(3, "num_dim:", num_dim, dim_lens, type(dim_lens), dim_lens[0], type(dim_lens[0]), starts)
+        # Per-element fillers is the default.  This can be updated through passing a Filler object as filler.
+        # If there is no filler then setting this mode will assure that LocalNdarray allocates the array.
+        mode = Filler.PER_ELEMENT
+
         if filler:
             filler = func_loads(filler)
         if filler:
-            per_element = True
+            #per_element = True
             do_compile = True
             if isinstance(filler, Filler):
-                per_element = filler.per_element
+                mode = filler.mode
                 do_compile = filler.do_compile
                 filler = filler.func
-            dprint(3, "Has filler", per_element, do_compile, filler_tuple_arg)
+            dprint(3, "Has filler", mode, do_compile, filler_tuple_arg)
 
-            if per_element:
+        lnd = LocalNdarray(gid, self, subspace, dim_lens, whole, local_border, whole_space, from_border, to_border, dtype, creation_mode=mode)
+        self.numpy_map[gid] = lnd
+        new_bcontainer = lnd.bcontainer
+        if filler:
+            if mode == Filler.PER_ELEMENT:
                 def do_per_element_non_compiled(new_bcontainer, dim_lens, starts):
                     for i in np.ndindex(dim_lens):
                         # Construct the global index.
@@ -1155,10 +1178,25 @@ class RemoteState:
                         do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
                 else:
                     do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
-            else:
+            elif mode == Filler.WHOLE_ARRAY_NEW:
                 if do_compile:
                     try:
-                        njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
+                        njfiller = filler if isinstance(filler, numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
+                        filler_res = njfiller(dim_lens, starts)
+                    except:
+                        dprint(1, "Some exception running filler.", sys.exc_info()[0])
+                        traceback.print_exc()
+                        filler_res = filler(dim_lens, starts)
+                else:
+                    filler_res = filler(dim_lens, starts)
+                if lnd.bcontainer is None:
+                    lnd.bcontainer = filler_res
+                else:
+                    lnd.bcontainer[:] = filler_res
+            elif mode == Filler.WHOLE_ARRAY_INPLACE:
+                if do_compile:
+                    try:
+                        njfiller = filler if isinstance(filler, numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
                         njfiller(new_bcontainer, dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
@@ -1166,6 +1204,8 @@ class RemoteState:
                         filler(new_bcontainer, dim_lens, starts)
                 else:
                     filler(new_bcontainer, dim_lens, starts)
+            else:
+                assert(0)
 
     def copy(self, new_gid, old_gid, border, from_border, to_border):
         old_lnd = self.numpy_map[old_gid]
@@ -2752,7 +2792,7 @@ time_dict = {"matmul_b_c_not_dist":{0:(0,0)},
              "matmul_general":{0:(0,0)},
             }
 
-if numba.version_info.short >= (0, 53):
+if in_driver() and numba.version_info.short >= (0, 53):
     global compile_recorder
     compile_recorder = numba.core.event.RecordingListener()
     numba.core.event.register("numba:compile", compile_recorder)
