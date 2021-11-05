@@ -51,6 +51,13 @@ def pickle(item: Any) -> Any:
     rv[0] = rv0
     return rv
 
+def unpickle(msg0):
+    #msg = cp.loads(msg0)
+    #msg = pick.loads(msg0)
+    msg = pick.loads(msg0[0],buffers=msg0[1:])
+    #msg = pyarrow.deserialize(msg0)
+    return msg
+
 class Queue:
     """A first-in, first-out queue implementation on Ray.
 
@@ -163,9 +170,9 @@ class Queue:
         s.send_multipart(msg,copy=False)
         #s.send_multipart(msg)
         #self.sent_data+=len(msg)
-        self.sent_data+=len(msg[0])
-        for d in msg[1:]:
-            self.sent_data+=len(d.raw())
+        #self.sent_data+=len(msg[0])
+        for d in msg:
+            self.sent_data+=len(d.raw()) if isinstance(d,pick.PickleBuffer) else len(d)
         if not raw:
             self.pickle_time+=t
 
@@ -204,6 +211,7 @@ class Queue:
             gfilter = lambda x: True,
             timeout: Optional[float] = None,
             print_times: Optional[bool] = False,
+            raw: Optional[bool] = False,
             msginfo = lambda x: "") -> Any:
         """Gets an item from the queue.
 
@@ -224,13 +232,14 @@ class Queue:
         t0 = time.time()
         pf = prefiltered[self]
         s = sockets[self]
-        for i in range(len(pf)):
-            if gfilter(pf[i]):
-                msg = pf[i]
-                del pf[i]
-                t1 = time.time()
-                if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000, msginfo(msg))
-                return msg
+        if not raw:
+            for i in range(len(pf)):
+                if gfilter(pf[i]):
+                    msg = pf[i]
+                    del pf[i]
+                    t1 = time.time()
+                    if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000, msginfo(msg))
+                    return msg
         while True:
             #msg0 = s.recv()
             msg0 = s.recv_multipart(copy=False)
@@ -245,18 +254,19 @@ class Queue:
             for d in msg0:
                 self.recv_data+=len(d)
             t1 = time.time()
-            #msg = cp.loads(msg0)
-            #msg = pick.loads(msg0)
-            msg = pick.loads(msg0[0],buffers=msg0[1:])
-            #msg = pyarrow.deserialize(msg0)
-            t2 = time.time()
-            self.unpickle_time+=t2-t1
-            if gfilter(msg):
-                #if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
-                if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms", msginfo(msg))
-                return msg
+            if not raw:
+                msg = unpickle(msg0)
+                t2 = time.time()
+                self.unpickle_time+=t2-t1
+                if gfilter(msg):
+                    #if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
+                    if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms", msginfo(msg))
+                    return msg
+                else:
+                    pf.append(msg)
             else:
-                pf.append(msg)
+                if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  raw message")
+                return msg0
 
         '''
         if not block:

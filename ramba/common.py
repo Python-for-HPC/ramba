@@ -19,6 +19,7 @@ import math
 import operator
 
 distribute_min_size = 100
+NUM_WORKERS_FOR_BCAST=100
 
 try:
     from mpi4py import MPI
@@ -34,15 +35,16 @@ try:
     numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
     #print ("MPI rank", rank, os.uname()[1])
     USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "0"))!=0
-    USE_BCAST= int(os.environ.get("RAMBA_USE_MPI_BCAST", "1"))!=0
-    
+    default_bcast = None if USE_ZMQ else "1"
 except:
     USE_MPI=False
     USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "1"))!=0
+    default_bcast=None
 
 
 #USE_RAY_CALLS=True
-USE_RAY_CALLS=False
+#USE_RAY_CALLS=False
+USE_RAY_CALLS= int(os.environ.get("RAMBA_USE_RAY_CALLS", "0"))!=0
 
 fast_reduction = True
 
@@ -94,6 +96,10 @@ if not USE_MPI: num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number
 num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
 hint_ip     = os.environ.get('RAMBA_IP_HINT', None)    # IP address used to hint which interface to bind queues
 if not USE_MPI: numa_zones  = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
+
+if default_bcast is None:
+    default_bcast = "1" if num_workers>NUM_WORKERS_FOR_BCAST else "0"
+USE_BCAST= int(os.environ.get("RAMBA_USE_BCAST", default_bcast))!=0
 
 # RAMBA_BIG_DATA environment variable MUST be set to 1 if the application will use arrays
 # larger than 2**32 in size.

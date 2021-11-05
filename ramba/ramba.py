@@ -1092,6 +1092,33 @@ def rec_buf_summary(rec_buf):
 
     return (num_compiled, total)
 
+
+# The following support functions are for ZMQ with BCAST -- this helps create a 2 level control and response tree
+def workers_by_node(comm_queues):
+    w = {}
+    for i,q in enumerate(comm_queues):
+        if q.ip not in w:
+            w[q.ip] = []
+        w[q.ip].append(i)
+    return w
+
+def get_children(i, comm_queues):
+    if not USE_RAY_CALLS and USE_ZMQ and USE_BCAST:
+        w = workers_by_node(comm_queues)
+        nw = w[ comm_queues[i].ip ]
+        aggr = nw[0]
+        nw = nw[1:]
+        return aggr==i, nw
+    return False, []
+
+def get_aggregators(comm_queues):
+    if not USE_RAY_CALLS and USE_ZMQ and USE_BCAST:
+        w = workers_by_node(comm_queues)
+        aggregators = [ x[0] for _,x in w.items() ]
+        return aggregators
+    return []
+
+
 class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
@@ -1104,6 +1131,8 @@ class RemoteState:
         numba.set_num_threads(num_threads)
         self.my_comm_queue = None #ramba_queue.Queue()
         self.my_control_queue = None #ramba_queue.Queue()
+        self.my_rvq = None
+        self.up_rvq = None
         self.tlast=timer()
 
         if numba.version_info.short >= (0, 53):
@@ -1112,9 +1141,12 @@ class RemoteState:
         self.deferred_ops_time = 0
         self.deferred_ops_count = 0
 
-    def set_comm_queues(self, comm_queues):
+    def set_comm_queues(self, comm_queues, control_queues):
         self.comm_queues = comm_queues
         self.comm_queues[self.worker_num] = self.my_comm_queue
+        self.control_queues = control_queues
+        self.control_queues[self.worker_num] = self.my_control_queue
+        self.is_aggregator, self.children = get_children( self.worker_num, self.comm_queues )
         return self.comm_queues
 
     def get_comm_queue(self):
@@ -1124,6 +1156,9 @@ class RemoteState:
     def get_control_queue(self):
         if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=1)
         return self.my_control_queue
+
+    def set_up_rvq(self, rvq):
+        self.up_rvq = rvq
 
     def destroy_array(self, gid):
         #if gid in self.numpy_map:
@@ -2225,9 +2260,22 @@ class RemoteState:
     def rpc_serve(self, rvq):
         #z = numa.set_affinity(self.worker_num, numa_zones)
         print_stuff = timing>2 and self.worker_num==0
+        self.up_rvq = rvq
+        if self.is_aggregator:
+            if self.my_rvq is None:
+                self.my_rvq = ramba_queue.Queue(hint_ip=hint_ip, tag=2)
+            msg = ramba_queue.pickle( ('RPC','set_up_rvq',None,[self.my_rvq],{}) )
+            [self.control_queues[i].put(msg, raw=True) for i in self.children]
         t0 = timer()
         while True:
-            _, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC', print_times=print_stuff)
+            if self.is_aggregator:
+                msg = self.my_control_queue.get(raw=True, print_times=print_stuff)
+                rpctype, method, rvid, args, kwargs = ramba_queue.unpickle(msg)
+                if rpctype=='RPC':
+                    [self.control_queues[i].put( msg, raw=True ) for i in self.children]
+            else:
+                rpctype, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC' or x[0]=='RPC1', print_times=print_stuff)
+            
             if method=="END":
                 break
             t1 = timer()
@@ -2240,10 +2288,18 @@ class RemoteState:
                 break
             t2 = timer()
             if rvid is not None:
-                rvq.put( (rvid+str(self.worker_num), retval) )
+                if rpctype=='RPC':
+                    self.up_rvq.put( (rvid+str(self.worker_num), retval) )
+                else:
+                    rvq.put( (rvid+str(self.worker_num), retval) )
             t3 = timer()
-            if print_stuff: print("Command ", method, (t1-t0)*1000, (t2-t1)*1000, (t3-t2)*1000)
-            t0 = t3
+            if self.is_aggregator and rvid is not None and rpctype=='RPC':
+                for _ in self.children:
+                    msg = self.my_rvq.get( raw=True )
+                    self.up_rvq.put( msg, raw=True )
+            t4 = timer()
+            if print_stuff: print("Command ", method, "get", (t1-t0)*1000, "exec", (t2-t1)*1000, "ret", (t3-t2)*1000, "fwd", (t4-t3)*1000)
+            t0 = t4
 
     def mgrid(self, out_gid, out_size, out_distribution):
         divs = shardview.distribution_to_divisions(out_distribution)[self.worker_num]
@@ -2278,6 +2334,8 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             msg = ('RPC',method,rvid,args,kwargs)
         if USE_MPI and USE_BCAST and not USE_ZMQ:
             ramba_queue.bcast(msg)
+        elif USE_ZMQ and USE_BCAST:
+            [control_queues[i].put( msg, raw=True ) for i in aggregators]
         else:
             [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
         return [rvid+str(i) for i in range(num_workers)] if has_retval else None
@@ -2285,7 +2343,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
         rop = getattr(remote_states[nodeid], method)
         return rop.remote(*args,**kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
-    control_queues[nodeid].put( ('RPC',method,rvid,args,kwargs) )
+    control_queues[nodeid].put( ('RPC1',method,rvid,args,kwargs) )
     return rvid+str(nodeid) if has_retval else None
 
 def get_results(refs):
@@ -2350,22 +2408,23 @@ if USE_MPI:
                 return None
             done += [1]
             rv_q = ramba_queue.Queue(tag=2)
-            comm_q = comm.allgather(0)
+            comm_q = comm.allgather(0)[:-1] #ignore our own invalid one
             con_q = comm.allgather(rv_q)
-            return rv_q, comm_q, con_q
+            aggr = get_aggregators(comm_q)
+            return rv_q, comm_q, con_q, aggr
         x = do_init()
         if x is not None:
-            retval_queue, comm_queues, control_queues = x
+            retval_queue, comm_queues, control_queues, aggregators = x
             atexit.register(remote_exec_all,'END')
 
     else:   # workers -- should never leave this section!
         RS = RemoteState(rank, get_common_state())
         con_q = RS.get_control_queue()
         comm_q = RS.get_comm_queue()
-        comm_queues = comm.allgather(comm_q)
+        comm_queues = comm.allgather(comm_q)[:-1]  #ignore invalid one for controller
         control_queues = comm.allgather(con_q)
         rv_q = control_queues[num_workers]
-        RS.set_comm_queues(comm_queues)
+        RS.set_comm_queues(comm_queues,control_queues)
         RS.rpc_serve(rv_q)
         sys.exit()
 
@@ -2380,7 +2439,8 @@ else:  # Ray setup
         remote_states = [RemoteState.options(placement_group=pg).remote(x, get_common_state()) for x in range(num_workers)]
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
         comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
-        [x.set_comm_queues.remote(comm_queues) for x in remote_states]
+        aggregators = get_aggregators(comm_queues)
+        [x.set_comm_queues.remote(comm_queues,control_queues) for x in remote_states]
         if not USE_RAY_CALLS:
             retval_queue = ramba_queue.Queue()
             [x.rpc_serve.remote(retval_queue) for x in remote_states]
@@ -2388,6 +2448,7 @@ else:  # Ray setup
 
 
 def print_comm_stats():
+    if not USE_ZMQ: return
     stats = remote_call_all("get_comm_stats")
     totals = {}
     pickle_times = {}
