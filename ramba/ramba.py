@@ -105,11 +105,11 @@ if not USE_MPI:
     istmt = "from ray import {}".format(",".join(ray_imports))
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
-    
+
     def ray_init():
         if ray.is_initialized():
             return False
-    
+
         ray_address = os.getenv("ray_address")
         ray_redis_pass = os.getenv("ray_redis_password")
         if ray_address==None:
@@ -130,7 +130,7 @@ if not USE_MPI:
         if cores < num_workers:
             num_workers = int(cores)
         return True
-    
+
     ray_first_init = ray_init()
 
 
@@ -392,7 +392,7 @@ def stencil(*args, **kwargs):
 if not USE_MPI:
     def remote(*args, **kwargs):
         dprint(2, "remote:", args, kwargs)
-    
+
         def make_wrapper(func, args, kwargs):
             dprint(2, "remote make_wrapper:", args, kwargs)
             if len(args) > 0:
@@ -402,9 +402,9 @@ if not USE_MPI:
                     raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
                 if not isinstance(kwargs[kwa], dict):
                     raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-    
+
             #ray_init()  # should already have been initied
-    
+
             if isinstance(func, type):
                 dprint(2, "remote args:", args, kwargs)
                 dprint(2, "remote func is type")
@@ -433,22 +433,21 @@ if not USE_MPI:
                     rfunc = ray.remote(ldict[fname])
                     dprint(2, "remote rfunc:", rfunc, type(rfunc))
                 return rfunc
-    
+
         if len(args) > 0:
             dprint(2, "remote args0 type:", args[0], type(args[0]))
             func = args[0]
             return make_wrapper(func, (), {})
-    
+
         def rdec(func):
             dprint(2, "remote rdec:", func, type(func))
             return make_wrapper(func, args, kwargs)
-    
+
         return rdec
-    
-    
+
     remote_exec = False
     egmf_cache = {}
-    
+
     """This function will facilitate the new deobjectified function code (in text
     form) being transferred to the remote.  Thus, the exec of that code into
     existence happens on the remote."""
@@ -456,36 +455,36 @@ if not USE_MPI:
         global egmf_cache
         if func_name not in egmf_cache:
             dprint(2, "func_name not in cache", numba_args)
-    
+
             ldict = {}
             gdict = {}
             exec(func_as_str, gdict, ldict)
             ret_func = ldict[deobj_func_name]
             egmf_cache[func_name] = FunctionMetadata(ret_func, (), numba_args)
-    
+
         func = egmf_cache[func_name]
         return func(*args, **kwargs)
-    
+
     def jit(*args, **kwargs):
         dprint(2, "jit:", args, kwargs)
         outer_globals = inspect.currentframe().f_back.f_globals
         outer_locals = inspect.currentframe().f_back.f_locals
-    
+
         def make_deobj_func(fname, inst_vars, other_args, fsrc_tokens):
             indent_line = fsrc_tokens[0]
             indent = indent_line[:-len(indent_line.lstrip())]
             in_nested = False
-    
+
             # Form a comma-separated string of all the class instance variables in the deobjectified function.
             joined_inst_vars = ",".join(inst_vars.values())
-    
+
             fsrc_with_return_fix = []
             # Fix existing return statements to also return new instance variable values.
             for line in fsrc_tokens:
                 cur_indent = len(line) - len(line.lstrip())
                 if in_nested and cur_indent == nested_indent:
                     in_nested = False
-    
+
                 if line.lstrip().startswith("def"):
                     in_nested = True
                     nested_indent = cur_indent
@@ -507,12 +506,12 @@ if not USE_MPI:
             last_line = indent + "return "
             last_line += "((None)," + joined_inst_vars + ")"
             fsrc_with_return_fix.append(last_line)
-    
+
             # Join all the function source lines into one string.
             fsrc_rest = "\n".join(fsrc_with_return_fix)
             dprint(2, "fsrc_rest:")
             dprint(2, fsrc_rest)
-    
+
             # Sort by decreasing length so that shorter replacements don't cause larger
             # replacements to be missed.
             sorted_inst_vars = sorted(inst_vars, key=lambda k: len(inst_vars[k]), reverse=True)
@@ -521,14 +520,14 @@ if not USE_MPI:
                 fsrc_rest = fsrc_rest.replace("self." + siv, inst_vars[siv])
             dprint(2, "fsrc_rest post_replace:")
             dprint(2, fsrc_rest)
-    
+
             deobj_func_name = "ramba_deobj_func_" + fname.replace(".","_")
             deobj_func = "def " + deobj_func_name + "(" + joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args + "):\n"
             if debug:
                 deobj_func += indent + "print(\"Running deobj func\")\n"
             deobj_func += fsrc_rest + "\n"
             return deobj_func, deobj_func_name
-    
+
         def exec_deobj_func(func_as_str, deobj_func_name, kwargs):
             ldict = {} #outer_locals
             gdict = outer_globals
@@ -541,7 +540,7 @@ if not USE_MPI:
             dprint(2, ret_func.__module__)
             # Wrap the target function with FunctionMetadata to handle Numba compilation.
             return FunctionMetadata(ret_func, (), kwargs)
-    
+
         def make_wrapper(func, args, kwargs):
             dprint(2, "jit make_wrapper:", args, kwargs)
             if len(args) > 0:
@@ -551,11 +550,11 @@ if not USE_MPI:
                     raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
                 if not isinstance(kwargs[kwa], dict):
                     raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
-    
+
             ray_init()
-    
+
             numba_args = kwargs.get('numba', {})
-    
+
             if inspect.isfunction(func):
                 fname = func.__name__
                 fqname = func.__qualname__
@@ -584,7 +583,7 @@ if not USE_MPI:
                         field = tlist[i+2][1]
                         inst_vars[field] = "ramba_deobjectified_field_"+field
                 dprint(2, "inst_vars:", inst_vars)
-    
+
                 whole_func = fsrc_tokens[1:]
                 indent_len = len(whole_func[0]) - len(whole_func[0].lstrip())
                 whole_func = "\n".join(x[indent_len:] for x in whole_func)
@@ -602,7 +601,7 @@ if not USE_MPI:
                     # This creates the deobj_func from text and wraps it in FunctionMetadata
                     # so that Numba is invoked.
                     deobj_func = exec_deobj_func(deobj_func_txt, deobj_func_name, kwargs)
-    
+
                 new_func = "def " + fname + "(self" + ("," if len(other_args) > 0 else "") + other_args + "):\n"
     #            new_func += "    print(\"Running new_func.\")\n"
                 if debug:
@@ -639,17 +638,17 @@ if not USE_MPI:
             else:
                 dprint(2, "Object of type", func, "is not handled by ramba.jit.")
                 assert(0)
-    
+
         if len(args) > 0:
             dprint(2, "jit::args0 type:", args[0], type(args[0]))
             if isinstance(args[0], types.FunctionType):
                 func = args[0]
                 return make_wrapper(func, (), {})
-    
+
         def rdec(func):
             dprint(2, "jit::rdec:", func, type(func))
             return make_wrapper(func, args, kwargs)
-    
+
         return rdec
 
 
@@ -668,7 +667,7 @@ if not USE_MPI:
             self.count = count
             self.lock = threading.Lock()
             self.cndvar = threading.Condition(lock=self.lock)
-    
+
         def barrier(self):
             self.cndvar.acquire()
             self.current += 1
@@ -683,12 +682,12 @@ if not USE_MPI:
                     print("cndvar.wait exception", exp, type(exp))
                     pass
             self.cndvar.release()
-    
+
     try:
         ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
     except:
         ramba_spmd_barrier = BarrierActor.options(name="RambaSpmdBarrier", max_concurrency=num_workers).remote(num_workers)
-    
+
     def barrier():
         ray.get(ramba_spmd_barrier.barrier.remote())
 
@@ -2485,6 +2484,8 @@ def find_index(distribution, index):
         else:
             return i
 
+HANDLED_FUNCTIONS = {}
+
 class ndarray:
     def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False, **kwargs):
         t0 = timer()
@@ -2831,6 +2832,36 @@ class ndarray:
 
     #def __len__(self):
     #    return self.size[0]
+
+    def __array_function__(self, func, types, args, kwargs):
+        dprint(2, "__array_function__", func, types, args, kwargs, func in HANDLED_FUNCTIONS)
+        new_args = []
+        if func not in HANDLED_FUNCTIONS:
+            return NotImplemented
+        for atype, arg in zip(types, args):
+            if atype == np.ndarray:
+
+            elif atype == ndarray:
+                new_args.append(arg)
+            else:
+                return NotImplemented
+        return HANDLED_FUNCTIONS[func](*new_args, **kwargs)
+
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        dprint(2, "__array_ufunc__", ufunc, method, len(inputs), kwargs)
+        real_args = []
+        if method != "__call__":
+            return NotImplemented
+        for arg in inputs:
+            if isinstance(arg, np.ndarray):
+                real_args.append(fromarray(arg))
+            elif isinstance(arg, ndarray):
+                real_args.append(arg)
+            else:
+                return NotImplemented
+        attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__")
+        dprint(2, "attrres:", attrres, type(attrres), real_args)
+        return attrres(*real_args[1:], **kwargs)
 
 def dot(a, b, out=None):
     ashape = a.shape
@@ -3310,11 +3341,11 @@ for (abf,code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
-array_binop_rfuncs = {"__radd__":op_info(" + "), 
-                      "__rmul__":op_info(" * "), 
-                      "__rsub__":op_info(" - "), 
-                      "__rtruediv__":op_info(" / ", dtype="float"), 
-                      "__rfloordiv__":op_info( " // "), 
+array_binop_rfuncs = {"__radd__":op_info(" + "),
+                      "__rmul__":op_info(" * "),
+                      "__rsub__":op_info(" - "),
+                      "__rtruediv__":op_info(" / ", dtype="float"),
+                      "__rfloordiv__":op_info( " // "),
                       "__rmod__":op_info(" % "),
                       "__rpow__":op_info(" ** "),
                     }
@@ -3693,6 +3724,13 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
         for i in range(num_workers)]
     return out
 
+def implements(numpy_function):
+    numpy_function = "np." + numpy_function
+    def decorator(func):
+        HANDLED_FUNCTIONS[eval(numpy_function)] = func
+        return func
+    return decorator
+
 mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean", "sin", "cos", "tan", "arcsin", "arccos", "arctan"]
 for mfunc in mod_to_array:
     mcode =  "def " + mfunc + "(the_array, *args, **kwargs):\n"
@@ -3701,6 +3739,7 @@ for mfunc in mod_to_array:
     mcode += "    else:\n"
     mcode += "        return np." + mfunc + "(the_array, *args, **kwargs)\n"
     exec(mcode)
+    implements(mfunc)(eval(mfunc))
 
 #def isnan(the_array, *args, **kwargs):
 #    if isinstance(the_array, ndarray):
