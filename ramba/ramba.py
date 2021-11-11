@@ -2859,7 +2859,10 @@ class ndarray:
                 real_args.append(arg)
             else:
                 return NotImplemented
-        attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__")
+        attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__", None)
+        if attrres is None:
+            attrres = getattr(real_args[0], ufunc.__name__, None)
+        assert(attrres is not None)
         dprint(2, "attrres:", attrres, type(attrres), real_args)
         return attrres(*real_args[1:], **kwargs)
 
