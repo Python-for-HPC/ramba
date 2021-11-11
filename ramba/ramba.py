@@ -2840,7 +2840,7 @@ class ndarray:
             return NotImplemented
         for atype, arg in zip(types, args):
             if atype == np.ndarray:
-
+                new_args.append(fromarray(arg))
             elif atype == ndarray:
                 new_args.append(arg)
             else:
