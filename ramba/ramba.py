@@ -2535,10 +2535,21 @@ class ndarray:
     def dtype(self):
         return self.bdarray.dtype
 
+    def transpose(self, *args):
+        ndims = len(self.size)
+        if len(args) == 0:
+            return self.remapped_axis([ndims-i-1 for i in range(ndims)])
+        else:
+            if len(args) > 1:
+                axes = args
+            elif len(args) == 1 and isinstance(args[0], tuple):
+                axes = args[0]
+            assert(all(index >= 0 and index < ndims for index in axes))
+            return self.remapped_axis(axes)
+
     @property
     def T(self):
-        ndims = len(self.size)
-        return self.remapped_axis([ndims-i-1 for i in range(ndims)])
+        return self.transpose()
 
     #@property
     #def T(self):
@@ -3656,6 +3667,9 @@ def fromarray(x, local_border=0, **kwargs):
         for i in range(num_workers)]
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+
+def transpose(a, *args):
+    return a.transpose(*args)
 
 def _compute_remote_ranges(out_distribution, out_mapping):
     divisions = shardview.distribution_to_divisions(out_distribution)

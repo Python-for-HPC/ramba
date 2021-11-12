@@ -210,6 +210,29 @@ class TestBasic:
             return app.triu(a, k=2)
         run_both(impl)
 
+    def test_transpose_default_2(self):
+        def impl(app):
+            a = app.fromfunction(lambda i,j: i + j, (10, 20), dtype=int)
+            return a.transpose()
+        run_both(impl)
+
+    def test_transpose_default_3(self):
+        def impl(app):
+            a = app.fromfunction(lambda i,j,k: i + j + k, (5, 10, 20), dtype=int)
+            return a.transpose()
+        run_both(impl)
+
+    def test_transpose_tuple_3(self):
+        def impl(app):
+            a = app.fromfunction(lambda i,j,k: i + j + k, (5, 10, 20), dtype=int)
+            return a.transpose((1,2,0))
+        run_both(impl)
+
+    def test_transpose_separate_3(self):
+        def impl(app):
+            a = app.fromfunction(lambda i,j,k: i + j + k, (5, 10, 20), dtype=int)
+            return a.transpose(1,2,0)
+        run_both(impl)
 
 """
 class TestGeneric:
