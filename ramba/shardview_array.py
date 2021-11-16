@@ -468,8 +468,6 @@ def division_to_shape(divs):
 
 #@numba.njit(cache=True)
 def global_to_divisions(dist):
-    print("global_to_divisions:", dist)
-    #return np.array([ [_index_start(d), _stop(d)-1] for d in dist ])
     ret = np.empty((2,dist.shape[1]),dtype=ramba_dist_dtype)
     ret[0] = _index_start(dist)
     ret[1] = _stop(dist)-1

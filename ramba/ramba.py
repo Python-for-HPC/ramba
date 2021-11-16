@@ -50,6 +50,7 @@ import numba.cpython.unsafe.tuple as UT
 import atexit
 import ramba.random as random
 import socket
+import numbers
 
 
 try:
@@ -277,7 +278,10 @@ class FunctionMetadata:
                     traceback.print_exc()
                     self.npfunc[atypes] = False
                     dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
-                    dprint(1, inspect.getsource(self.func))
+                    try:
+                        dprint(1, inspect.getsource(self.func))
+                    except:
+                        pass
 
         if self.nfunc.get(atypes, True):
             try:
@@ -738,18 +742,22 @@ class bdarray:
     def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None, **kwargs):
         if gid is None: gid=uuid.uuid4()
         if gid not in cls.gid_map:
-            distribution = shardview.default_distribution(size, **kwargs) if distribution is None else libcopy.deepcopy(distribution)
-            # clear offsets (since this is a new array)
-            for i in distribution:
-                tmp = shardview.get_base_offset(i)
-                tmp*=0
             if dtype is None: dtype=np.float64 # default
+            if size == ():
+                distribution = np.ndarray(size, dtype=dtype)
+            else:
+                distribution = shardview.default_distribution(size, **kwargs) if distribution is None else libcopy.deepcopy(distribution)
+                # clear offsets (since this is a new array)
+                for i in distribution:
+                    tmp = shardview.get_base_offset(i)
+                    tmp*=0
             bd = cls(size, distribution, gid, pad, flexible_dist, dtype)
         else: bd = cls.gid_map[gid]
         bd.add_nd(nd)
         dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
-        dprint(3, "Distribution:", bd.distribution)
-        dprint(4, "Divisions:", shardview.distribution_to_divisions(bd.distribution) )
+        dprint(3, "Distribution:", bd.distribution, size)
+        if len(size) != 0 and not isinstance(bd.distribution, np.ndarray):
+            dprint(4, "Divisions:", shardview.distribution_to_divisions(bd.distribution) )
         return bd
 
     @classmethod
@@ -2494,7 +2502,6 @@ class ndarray:
         self.size = size
         self.distribution = distribution if ((distribution is not None) and (gid is not None)) else self.bdarray.distribution
         self.local_border = local_border
-        #self._dtype = dtype
         self.getitem_cache = {}
         # TODO: move to_border, from_border out of ndarray; put into bdarray, or just compute when needed to construct Local_NDarray on remotes
         if local_border > 0:
@@ -2533,7 +2540,7 @@ class ndarray:
 
     @property
     def dtype(self):
-        return self.bdarray.dtype
+        return np.dtype(self.bdarray.dtype)
 
     def transpose(self, *args):
         ndims = len(self.size)
@@ -2544,6 +2551,7 @@ class ndarray:
                 axes = args
             elif len(args) == 1 and isinstance(args[0], tuple):
                 axes = args[0]
+            # Not sufficient...should check for duplicates (i.e., all axes used exactly once)
             assert(all(index >= 0 and index < ndims for index in axes))
             return self.remapped_axis(axes)
 
@@ -2580,6 +2588,9 @@ class ndarray:
         return ndarray(newsize, self.gid, newdist, readonly=self.readonly)
 
     def asarray(self):
+        if self.size == ():
+            return self.distribution
+
         deferred_op.do_ops()
         ret = np.empty(self.size, dtype=self.dtype)
         #dist_shape = self.distribution.shape
@@ -2664,12 +2675,18 @@ class ndarray:
     @classmethod
     def broadcast(cls, a, b):
         new_array_size = numpy_broadcast_size(a, b)
-        if not isinstance(a, ndarray) or new_array_size == a.size:
+        # Check for 0d case first.  If so then return the internal value (stored in distribution).
+        if isinstance(a, ndarray) and a.shape == ():
+           aview = a.distribution
+        elif not isinstance(a, ndarray) or new_array_size == a.size:
            aview = a
         else:
            aview = a.broadcast_to(new_array_size)
 
-        if not isinstance(b, ndarray) or new_array_size == b.size:
+        # Check for 0d case first.  If so then return the internal value (stored in distribution).
+        if isinstance(b, ndarray) and b.shape == ():
+           bview = b.distribution
+        elif not isinstance(b, ndarray) or new_array_size == b.size:
            bview = b
         else:
            bview = b.broadcast_to(new_array_size)
@@ -2687,6 +2704,11 @@ class ndarray:
         if inplace:
             sz, selfview, rhsview = ndarray.broadcast(self, rhs)
             assert (self.size == sz)
+
+            if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
+                getattr(selfview, op)(rhsview)
+                return self
+
             deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
             t1=timer()
             dprint(4, "BINARY_OP:",optext, "time",(t1-t0)*1000)
@@ -2694,7 +2716,6 @@ class ndarray:
         else:
             lb = max(self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0)
             new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
-            #print("array_binop:", new_array_size)
             if hasattr(rhs,"dtype"):
                 rhs_dtype=rhs.dtype
             else:
@@ -2707,7 +2728,12 @@ class ndarray:
             elif dtype=="float":
                 dtype=np.float32 if rhs_dtype==np.float32 and self.dtype==np.float32 else np.float64
 
-            new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb, dtype=dtype)
+            if isinstance(selfview, ndarray):
+                new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb, dtype=dtype)
+            elif isinstance(rhsview, ndarray):
+                new_ndarray = create_array_with_divisions(new_array_size, rhsview.distribution, local_border=lb, dtype=dtype)
+            else:
+                return getattr(selfview, op)(rhsview)
 
             if reverse:
                 deferred_op.add_op(["", new_ndarray, " = ", rhsview, optext, selfview], new_ndarray, imports=imports)
@@ -3288,8 +3314,12 @@ def numpy_broadcast_size(a, b):
     rev_ashape = a.shape[::-1]
     if isinstance(b, ndarray):
         rev_bshape = b.shape[::-1]
+    elif isinstance(b, numbers.Number):
+        rev_bshape = ()
     else:
         rev_bshape = (1,)
+
+    print("numpy_broadcast_size:", rev_ashape, rev_bshape)
 
     # make sure that ashape is not shorter than bshape
     if len(rev_bshape) > len(rev_ashape):
@@ -3459,7 +3489,7 @@ class deferred_op:
                 for i,v in enumerate(dcopy): #deep copy distribution, but keep reference same as other arrays may be pointing to the same one
                     d[i] = v
         times.append(timer())
-        # substitute var_name with  var_name[index] for ndarrays
+        # substitute var_name with var_name[index] for ndarrays
         for (k,v) in live_gids.items():
             for (vn,ai) in v[0]:
                 for i in range(len(self.codelines)):
@@ -3552,12 +3582,15 @@ class deferred_op:
         # TODO: Need to check for aliasing
         # add vars
         for i,x in enumerate(operands):
-            if isinstance(x,ndarray):
-                bd = bdarray.get_by_gid(x.gid)
-                oplist[1+2*i] = cls.ramba_deferred_ops.add_gid(x.gid, x.get_details(), bd.distribution, bd.pad, bd.flex_dist and not bd.remote_constructed)
-                # check if already remote_constructed
-                if bd.remote_constructed:
-                    cls.ramba_deferred_ops.preconstructed_gids[x.gid]=oplist[1+2*i]
+            if isinstance(x, ndarray):
+                if x.size == (): # 0d check
+                    oplist[1+2*i] = cls.ramba_deferred_ops.add_var(x.distribution)
+                else:
+                    bd = bdarray.get_by_gid(x.gid)
+                    oplist[1+2*i] = cls.ramba_deferred_ops.add_gid(x.gid, x.get_details(), bd.distribution, bd.pad, bd.flex_dist and not bd.remote_constructed)
+                    # check if already remote_constructed
+                    if bd.remote_constructed:
+                        cls.ramba_deferred_ops.preconstructed_gids[x.gid]=oplist[1+2*i]
             else:
                 oplist[1+2*i] = cls.ramba_deferred_ops.add_var(x)
         # add codeline to list
@@ -3576,6 +3609,13 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
 
 def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, filler_prepickled=False, **kwargs):
     new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
+    if size == ():
+        if (isinstance(filler, str)):
+            new_ndarray.distribution = np.array(eval(filler), dtype=new_ndarray.dtype)
+        elif isinstance(filler, numbers.Number):
+            new_ndarray.distribution = np.array(filler, dtype=new_ndarray.dtype)
+        return new_ndarray
+
     if (isinstance(filler, str)):
         deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
     else:
@@ -3651,9 +3691,14 @@ def asarray(x):
     assert(isinstance(x, ndarray))
     return x.asarray()
 
-def fromarray(x, local_border=0, **kwargs):
+def fromarray(x, local_border=0, dtype=None, **kwargs):
+    if isinstance(x, numbers.Number):
+        return create_array((), filler=x, dtype=dtype, **kwargs)
+
     size = x.shape
-    new_ndarray = create_array(size, None, local_border=local_border, dtype=x.dtype, **kwargs)
+    if dtype is None:
+        dtype = x.dtype
+    new_ndarray = create_array(size, None, local_border=local_border, dtype=dtype, **kwargs)
     distribution = new_ndarray.distribution
     [remote_exec(i, "push_array", new_ndarray.gid,
                                   distribution[i],
@@ -3667,6 +3712,9 @@ def fromarray(x, local_border=0, **kwargs):
         for i in range(num_workers)]
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+
+def array(*args):
+    return fromarray(*args)
 
 def transpose(a, *args):
     return a.transpose(*args)
@@ -3798,6 +3846,16 @@ def where(cond, a, b):
     new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
     deferred_op.add_op(["", new_ndarray, " = ", conda_aview, " if ", conda_condview, " else ", condb_bview], new_ndarray, imports=[])
     return new_ndarray
+
+@implements("result_type")
+def result_type(*args):
+    new_args = []
+    for arg in args:
+        if isinstance(arg, ndarray):
+            new_args.append(arg.dtype)
+        else:
+            new_args.append(arg)
+    return np.result_type(*new_args)
 
 def sync():
     sync_start_time = timer()
