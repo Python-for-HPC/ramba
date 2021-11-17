@@ -2118,6 +2118,11 @@ class RemoteState:
 
         times.append(timer())
         othervars = {v: pickle.loads(val) for (v,val) in pickledvars}
+        # Convert 0d arrays to scalars since 0d support may otherwise be spotty in Numba.
+        for k,v in othervars.items():
+            if isinstance(v, np.ndarray) and v.shape == (): #0d array
+                # convert to scalar
+                othervars[k] = v.item()
 
         times.append(timer())
         # Receive data from other workers
@@ -2219,7 +2224,14 @@ class RemoteState:
         for i,r in enumerate(ranges):
             arrvars = rangedvars[i]
             if not shardview.is_empty(r):
+                for k,v in arrvars.items():
+                    dprint(4, "inputs:", k, v, type(v))
+                for k,v in othervars.items():
+                    dprint(4, "others:", k, v, type(v))
+
                 func( **arrvars, **othervars )
+                for k,v in arrvars.items():
+                    dprint(4, "results:", k, v, type(v))
         times.append(timer())
 
         # delete arrays no longer needed
@@ -2693,10 +2705,19 @@ class ndarray:
 
         return (new_array_size, aview, bview)
 
-    def astype(self, dtype):
-        new_ndarray = create_array_with_divisions(self.size, self.distribution, dtype=dtype)
-        deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
-        #deferred_op.add_op(["", new_ndarray, " = np.array(", self, ").astype(", dtype, ").item()"], new_ndarray)
+    def astype(self, dtype, copy=True):
+        dprint(3, "astype:", self.dtype, type(self.dtype), dtype, type(dtype), copy)
+        if dtype == self.dtype:
+            if copy:
+                return copy(self)
+            else:
+                return self
+
+        if copy:
+            new_ndarray = create_array_with_divisions(self.size, self.distribution, dtype=dtype)
+            deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
+        else:
+            raise ValueError("Non-copy version of astype not implemented.")
         return new_ndarray
 
     def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
@@ -2872,17 +2893,22 @@ class ndarray:
 
     def __array_function__(self, func, types, args, kwargs):
         dprint(2, "__array_function__", func, types, args, kwargs, func in HANDLED_FUNCTIONS)
+        for arg in args:
+             dprint(4, "arg:", arg, type(arg))
         new_args = []
         if func not in HANDLED_FUNCTIONS:
             return NotImplemented
-        for atype, arg in zip(types, args):
-            if atype == np.ndarray:
+        hf = HANDLED_FUNCTIONS[func]
+        if hf[1]:
+            new_args.append(self)
+        for arg in args:
+            if isinstance(arg, np.ndarray):
                 new_args.append(fromarray(arg))
-            elif atype == ndarray:
+            elif isinstance(arg, ndarray):
                 new_args.append(arg)
             else:
                 return NotImplemented
-        return HANDLED_FUNCTIONS[func](*new_args, **kwargs)
+        return hf[0](*new_args, **kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         dprint(2, "__array_ufunc__", ufunc, method, len(inputs), kwargs)
@@ -3694,6 +3720,8 @@ def asarray(x):
 def fromarray(x, local_border=0, dtype=None, **kwargs):
     if isinstance(x, numbers.Number):
         return create_array((), filler=x, dtype=dtype, **kwargs)
+    if isinstance(x, np.ndarray) and x.shape == (): # 0d array
+        return create_array((), filler=x, dtype=dtype, **kwargs)
 
     size = x.shape
     if dtype is None:
@@ -3789,10 +3817,10 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
         for i in range(num_workers)]
     return out
 
-def implements(numpy_function):
+def implements(numpy_function, uses_self):
     numpy_function = "np." + numpy_function
     def decorator(func):
-        HANDLED_FUNCTIONS[eval(numpy_function)] = func
+        HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
         return func
     return decorator
 
@@ -3804,7 +3832,7 @@ for mfunc in mod_to_array:
     mcode += "    else:\n"
     mcode += "        return np." + mfunc + "(the_array, *args, **kwargs)\n"
     exec(mcode)
-    implements(mfunc)(eval(mfunc))
+    implements(mfunc, False)(eval(mfunc))
 
 #def isnan(the_array, *args, **kwargs):
 #    if isinstance(the_array, ndarray):
@@ -3830,9 +3858,10 @@ def power(a, b):
     else:
         return np.power(a,b)
 
+@implements("where", False)
 def where(cond, a, b):
     assert(isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray))
-    dprint(2,"where:", cond.shape, a.shape, b.shape)
+    dprint(2,"where:", cond.shape, a.shape, b.shape, cond, a, b)
 
     lb = max(a.local_border, b.local_border)
     ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
@@ -3840,14 +3869,13 @@ def where(cond, a, b):
     condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(cond, ab_bview)
     assert(conda_new_array_size == condb_new_array_size)
 
-    dprint(2,"newsize:", ab_new_array_size, ab_aview.distribution)
-    #new_ndarray = create_array_with_divisions(ab_new_array_size, ab_aview.distribution, local_border=lb)
-    #deferred_op.add_op(["", new_ndarray, " = ", ab_aview, " if ", cond, " else ", ab_bview], new_ndarray, imports=[])
-    new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
+    dprint(2,"newsize:", ab_new_array_size)
+    new_ndarray = empty(conda_new_array_size, dtype=a.dtype, local_border=lb)
+    #new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
     deferred_op.add_op(["", new_ndarray, " = ", conda_aview, " if ", conda_condview, " else ", condb_bview], new_ndarray, imports=[])
     return new_ndarray
 
-@implements("result_type")
+@implements("result_type", False)
 def result_type(*args):
     new_args = []
     for arg in args:
