@@ -871,9 +871,9 @@ class LocalNdarray:
 
     def get_partial_view(self, slice_index, shard, global_index=True, remap_view=True):
         local_slice = shardview.slice_to_local(shard,slice_index) if global_index else slice_index
-        #print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape)
         arr = self.bcontainer[local_slice]
         if remap_view: arr = shardview.array_to_view(shard,arr)
+        #print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
         return arr
 
     def get_view(self, shard):
@@ -1216,7 +1216,8 @@ class RemoteState:
                         do_fill(new_bcontainer, dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
-                        traceback.print_exc()
+                        if ndebug >= 2:
+                            traceback.print_exc()
                         do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
                 else:
                     do_per_element_non_compiled(new_bcontainer, dim_lens, starts)
@@ -1359,6 +1360,7 @@ class RemoteState:
         reducer=func_loads(reducer)
         first = self.numpy_map[first_gid]
         result = None
+        assert(len(args) == 1)
         for index in np.ndindex(first.dim_lens):
             fargs = [self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x for x in args]
             if result is None:
@@ -2911,23 +2913,26 @@ class ndarray:
         return hf[0](*new_args, **kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        dprint(2, "__array_ufunc__", ufunc, method, len(inputs), kwargs)
+        dprint(2, "__array_ufunc__", ufunc, type(ufunc), method, len(inputs), kwargs)
         real_args = []
-        if method != "__call__":
+        if method == "__call__":
+            for arg in inputs:
+                if isinstance(arg, np.ndarray):
+                    real_args.append(fromarray(arg))
+                elif isinstance(arg, ndarray):
+                    real_args.append(arg)
+                else:
+                    return NotImplemented
+            attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__", None)
+            if attrres is None:
+                attrres = getattr(real_args[0], ufunc.__name__, None)
+            assert(attrres is not None)
+            dprint(2, "attrres:", attrres, type(attrres), real_args)
+            return attrres(*real_args[1:], **kwargs)
+        elif method == "reduce":
+            return sreduce(lambda x: x, ufunc, *inputs)
+        else:
             return NotImplemented
-        for arg in inputs:
-            if isinstance(arg, np.ndarray):
-                real_args.append(fromarray(arg))
-            elif isinstance(arg, ndarray):
-                real_args.append(arg)
-            else:
-                return NotImplemented
-        attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__", None)
-        if attrres is None:
-            attrres = getattr(real_args[0], ufunc.__name__, None)
-        assert(attrres is not None)
-        dprint(2, "attrres:", attrres, type(attrres), real_args)
-        return attrres(*real_args[1:], **kwargs)
 
 def dot(a, b, out=None):
     ashape = a.shape
