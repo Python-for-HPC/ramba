@@ -107,42 +107,6 @@ if not USE_MPI:
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
 
-    def ray_init():
-        if ray.is_initialized():
-            return False
-
-        ray_address = os.getenv("ray_address")
-        ray_redis_pass = os.getenv("ray_redis_password")
-        if ray_address==None:
-            ray_address = "auto"
-        if ray_redis_pass==None:
-            ray_redis_pass = ""
-        try:
-            ray.init(address=ray_address, _redis_password=ray_redis_pass)
-        except:
-            print("Failed to connect to existing cluster; starting local Ray")
-            ray.init(_redis_password=str(uuid.uuid4()))
-        assert ray.is_initialized() == True
-        import time
-        time.sleep(1)
-        cores = ray.available_resources()['CPU']
-        dprint(2, "Ray initialized;  available cores:", cores)
-        global num_workers
-        if cores < num_workers:
-            num_workers = int(cores)
-        return True
-
-    ray_first_init = ray_init()
-
-
-def in_driver():
-    if not USE_MPI:
-        return ray_first_init
-    else:
-        comm = mpi4py.MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        return rank==num_workers
-
 
 class Filler:
     PER_ELEMENT = 0
