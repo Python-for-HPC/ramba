@@ -41,6 +41,14 @@ try:
     # number of threads per worker
     num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
 
+    # number of nodes
+    import socket
+    nodename = socket.gethostname()
+    #print(nodename, rank)
+    allnodes = set(comm.allgather(nodename))
+    #if rank==0: print(allnodes)
+    num_nodes = len(allnodes)
+
     def in_driver():
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
