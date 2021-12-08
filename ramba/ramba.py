@@ -2921,9 +2921,18 @@ class ndarray:
                     real_args.append(fromarray(arg))
                 elif isinstance(arg, ndarray):
                     real_args.append(arg)
+                elif isinstance(arg, numbers.Number):
+                    real_args.append(arg)
                 else:
+                    print (type(arg))
                     return NotImplemented
-            attrres = getattr(real_args[0], "__" + ufunc.__name__ + "__", None)
+            isreversed = not isinstance(inputs[0], ndarray)
+            mapname = ufunc_map[ufunc.__name__]
+            if isreversed:  mapname = 'r'+mapname
+
+            attrres = getattr(real_args[0], "__" + mapname + "__", None)
+            if attrres is None:
+                attrres = getattr(real_args[0], mapname, None)
             if attrres is None:
                 attrres = getattr(real_args[0], ufunc.__name__, None)
             assert(attrres is not None)
@@ -2933,6 +2942,8 @@ class ndarray:
             return sreduce(lambda x: x, ufunc, *inputs)
         else:
             return NotImplemented
+
+ufunc_map = { 'multiply': 'mul', 'add': 'add', 'subtract':'sub', 'divide':'div', 'truedivide':'truediv' }
 
 def dot(a, b, out=None):
     ashape = a.shape
