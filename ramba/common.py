@@ -41,6 +41,11 @@ try:
     # number of threads per worker
     num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
 
+    def in_driver():
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        return rank==num_workers
+
 except:
     USE_MPI=False
     USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "1"))!=0
@@ -442,21 +447,14 @@ if not USE_MPI:
     ray_first_init = ray_init()
     numa_zones = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
 
+    def in_driver():
+        return ray_first_init
 
 hint_ip = os.environ.get('RAMBA_IP_HINT', None)    # IP address used to hint which interface to bind queues
 
 
 def workers_per_node():
     return num_workers // num_nodes
-
-
-def in_driver():
-    if not USE_MPI:
-        return ray_first_init
-    else:
-        comm = mpi4py.MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        return rank==num_workers
 
 
 if default_bcast is None:
