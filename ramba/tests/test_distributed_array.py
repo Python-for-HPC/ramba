@@ -53,15 +53,118 @@ class TestBroadcast:
         r_l = r.asarray()
         assert(np.array_equal(rnp, r_l))
 
-def run_both(func):
-    ramba_res = func(ramba)
+
+def run_both(func, *args):
+    ramba_res = func(ramba, *args)
     ramba.sync()
-    np_res = func(np)
+    np_res = func(np, *args)
     if isinstance(np_res, np.ndarray):
         ramba_local = ramba_res.asarray()
         assert(np.array_equal(np_res, ramba_local))
     else:
         assert(np_res == ramba_res)
+
+
+class TestOps:
+    ops = ["+", "-", "*", "/", "//"]
+    def test1(self):  # regular distributed + distributed
+        def impl(app, op):
+            a = app.ones((100,100))
+            b = app.ones((100,100))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test2(self): # non-distributed + non-distributed
+        def impl(app, op):
+            a = app.ones((5,5))
+            b = app.ones((5,5))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test3(self):  # ramba distributed + numpy
+        def impl(app, op):
+            a = app.ones((100,100))
+            b = np.ones((100,100))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test4(self):  # numpy + ramba distributed
+        def impl(app, op):
+            a = np.ones((100,100))
+            b = app.ones((100,100))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test5(self):
+        def impl(app, op): # ramba non-distributed + numpy
+            a = app.ones((5,5))
+            b = np.ones((5,5))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test6(self):
+        def impl(app, op): # numpy + ramba non-distributed
+            a = np.ones((5,5))
+            b = app.ones((5,5))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test7(self):
+        def impl(app, op): # ramba distributed + constant
+            a = app.ones((100,100))
+            b = 7.0
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test8(self):
+        def impl(app, op): # constant + ramba distributed
+            a = 7.0
+            b = app.ones((100,100))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test9(self):
+        def impl(app, op): # ramba non-distributed + constant
+            a = app.ones((5,5))
+            b = 7.0
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test10(self):
+        def impl(app, op): # constant + ramba non-distributed
+            a = 7.0
+            b = app.ones((5,5))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test11(self):
+        def impl(app, op): # ramba distributed array + numpy.float
+            a = app.ones((100,100))
+            b = np.ones(1)
+            return eval("a" + op + "b[0]")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test12(self):
+        def impl(app, op): # numpy.float + ramba distributed array
+            a = np.ones(1)
+            b = app.ones((100,100))
+            return eval("a[0]" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test13(self):
+        def impl(app, op): # ramba non-distributed array + numpy.float
+            a = app.ones((5,5))
+            b = np.ones(1)
+            return eval("a" + op + "b[0]")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test14(self):
+        def impl(app, op): # numpy.float + ramba non-distributed array
+            a = np.ones(1)
+            b = app.ones((5,5))
+            return eval("a[0]" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
 
 class TestBasic:
     def test1(self):
@@ -72,13 +175,6 @@ class TestBasic:
     def test2(self):
         def impl(app):
             return app.ones((5,5))
-        run_both(impl)
-
-    def test3(self):
-        def impl(app):
-            a = app.ones((100,100))
-            b = app.ones((100,100))
-            return a + b
         run_both(impl)
 
     def test4(self):
