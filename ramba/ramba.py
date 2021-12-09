@@ -2724,6 +2724,8 @@ class ndarray:
 
     def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
         t0=timer()
+        if isinstance(rhs, np.ndarray):
+            rhs = fromarray(rhs)
         if inplace:
             sz, selfview, rhsview = ndarray.broadcast(self, rhs)
             assert (self.size == sz)
@@ -2943,7 +2945,13 @@ class ndarray:
         else:
             return NotImplemented
 
-ufunc_map = { 'multiply': 'mul', 'add': 'add', 'subtract':'sub', 'divide':'div', 'truedivide':'truediv' }
+ufunc_map = { 'multiply': 'mul',
+              'add': 'add',
+              'subtract':'sub',
+              'divide':'div',
+              'true_divide':'truediv',
+              'floor_divide':'floordiv'
+            }
 
 def dot(a, b, out=None):
     ashape = a.shape
