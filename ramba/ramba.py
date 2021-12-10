@@ -52,6 +52,7 @@ import ramba.random as random
 import socket
 import numbers
 
+import ramba.fileio as fileio
 
 try:
     import dpctl
@@ -2332,6 +2333,12 @@ class RemoteState:
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
+    def load(self, gid, fname, ftype=None, **kwargs):
+        lnd = self.numpy_map[gid]
+        fldr = fileio.get_load_handler(fname, ftype)
+        fldr.read( fname, lnd.bcontainer, shardview.to_slice(lnd.subspace), **kwargs )
+
+
 if not USE_MPI:
     RemoteState = ray.remote(num_cpus = num_threads)(RemoteState)
 
@@ -3767,6 +3774,23 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
 
 def array(*args):
     return fromarray(*args)
+
+
+def load(fname, dtype=None, local=False, ftype=None,  **kwargs):
+    fldr = fileio.get_load_handler(fname, ftype)
+    shp, dt = fldr.getinfo(fname, **kwargs)
+    if dtype is None:
+        dtype = dt
+    if local:
+        print("efficient local file load has not yet been implemented")
+        tmp = fldr.readall(fname, **kwargs)
+        arr = fromarray(tmp, dtype=dtype)
+    else:
+        arr = empty(shp, dtype=dtype)
+        deferred_op.do_ops()
+        remote_exec_all( "load", arr.gid, fname, **kwargs)
+    return arr
+
 
 def transpose(a, *args):
     return a.transpose(*args)
