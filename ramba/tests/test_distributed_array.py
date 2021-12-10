@@ -225,6 +225,57 @@ class TestOps:
         [run_both(impl, x) for x in TestOps.ops]
 
 
+class TestDgemm:
+    def test_2Dx1D(self):
+        def impl(app, i, j):
+            X = app.fromfunction(lambda x,y: x + y, (i,j))
+            theta = app.fromfunction(lambda x: x, (j,), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        for i in range(4, 50):
+            for j in range(4, 20):
+                run_both(impl, i, j)
+
+    def test_2Dx2D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x,y: x + y, (i,j))
+            theta = app.fromfunction(lambda x,y: x + y, (j,k), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        for i in range(4, 20):
+            for j in range(4, 20):
+                for k in range(1, 10):
+                    run_both(impl, i, j, k)
+
+    def test_2Dx1DT(self):  # 2D x transposed 1D
+        def impl(app, i, j):
+            XnonT = app.fromfunction(lambda x,y: x + y, (j,i))
+            X = XnonT.T
+            theta = app.fromfunction(lambda x: x, (j,), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        for i in range(4, 50):
+            for j in range(4, 20):
+                run_both(impl, i, j)
+
+    def test_2DTx2DT(self): # transposed 2D x transposed 2D
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x,y: x + y, (j,i))
+            theta = app.fromfunction(lambda x,y: x + y, (k,j), dtype=X.dtype)
+            X = X.T
+            theta = theta.T
+            res = X @ theta
+            return res
+
+        for i in range(4, 20):
+            for j in range(4, 20):
+                for k in range(1, 10):
+                    run_both(impl, i, j, k)
+
+
 class TestBasic:
     def test1(self):
         def impl(app):
