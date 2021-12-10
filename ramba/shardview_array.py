@@ -30,7 +30,7 @@ if ramba_big_data:
 # the "shardview" is m*k array;  row 0 is size, row 1 is index_start, row 2 is axis map
 #   item[3,0] is l, the length of the base_offset;  items[3,1]... are the elements of base_offset
 # A distribution is an array of shardviews -- a n*m*k array, where n is number of nodes / remote workers
-#   item[i] is the m*k sharview corresponding to the portion on node/worker i
+#   item[i] is the m*k shardview corresponding to the portion on node/worker i
 
 @numba.njit(cache=True)
 def shardview(size, index_start=None, base_offset=None, axis_map=None):
