@@ -81,6 +81,13 @@ class TestOps:
             return eval("a" + op + "b")
         [run_both(impl, x) for x in TestOps.ops]
 
+    def test2_0d(self): # non-distributed + non-distributed
+        def impl(app, op):
+            a = app.ones(())
+            b = app.ones(())
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
     def test3(self):  # ramba distributed + numpy
         def impl(app, op):
             a = app.ones((100,100))
@@ -106,6 +113,20 @@ class TestOps:
         def impl(app, op): # numpy + ramba non-distributed
             a = np.ones((5,5))
             b = app.ones((5,5))
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test5_0d(self):
+        def impl(app, op): # ramba non-distributed + numpy
+            a = app.ones(())
+            b = np.ones(())
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test6_0d(self):
+        def impl(app, op): # numpy + ramba non-distributed
+            a = np.ones(())
+            b = app.ones(())
             return eval("a" + op + "b")
         [run_both(impl, x) for x in TestOps.ops]
 
@@ -137,6 +158,20 @@ class TestOps:
             return eval("a" + op + "b")
         [run_both(impl, x) for x in TestOps.ops]
 
+    def test9_0d(self):
+        def impl(app, op): # ramba non-distributed + constant
+            a = app.ones(())
+            b = 7.0
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test10_0d(self):
+        def impl(app, op): # constant + ramba non-distributed
+            a = 7.0
+            b = app.ones(())
+            return eval("a" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
     def test11(self):
         def impl(app, op): # ramba distributed array + numpy.float
             a = app.ones((100,100))
@@ -162,6 +197,20 @@ class TestOps:
         def impl(app, op): # numpy.float + ramba non-distributed array
             a = np.ones(1)
             b = app.ones((5,5))
+            return eval("a[0]" + op + "b")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test13_0d(self):
+        def impl(app, op): # ramba non-distributed array + numpy.float
+            a = app.array(13)
+            b = np.ones(1)
+            return eval("a" + op + "b[0]")
+        [run_both(impl, x) for x in TestOps.ops]
+
+    def test14_0d(self):
+        def impl(app, op): # numpy.float + ramba non-distributed array
+            a = np.ones(1)
+            b = app.array(13)
             return eval("a[0]" + op + "b")
         [run_both(impl, x) for x in TestOps.ops]
 
