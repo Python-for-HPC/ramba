@@ -102,7 +102,7 @@ class RandomState:
                 del kwargs["size"]
                 def impl(bcontainer, dim_lens, starts):
                     bcontainer[:] = getattr(rs, attr)(*args, size=dim_lens)
-                return ramba.init_array(size, ramba.Filler(impl, per_element=False, do_compile=False))
+                return ramba.init_array(size, ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=False))
             else:
                 return getattr(np.random.RandomState(), attr)(*args, **kwargs)
 
