@@ -12,7 +12,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 #import multiprocessing as mp
 #import threading
-
+import numpy as np
 
 
 loaders = {}
@@ -69,4 +69,32 @@ try:
     loader('hdf5', True, aliases=["h5ad"])
 except:
     print("No HDF5 support")
+
+try:
+    from PIL import Image
+
+    # TODO: should handle frames, depths other than 8-bit
+    def pil_getinfo(fname):
+        img = Image.open(fname)
+        h = img.height
+        w = img.width
+        c = len(img.getbands())
+        shape = (c, h, w)
+        dtype = np.uint8
+        return shape, dtype
+
+    def pil_read():   # distributed, partial loads not supported
+        pass
+
+    def pil_readall(fname):
+        img = Image.open(fname)
+        arr = np.array(img)
+        if arr.ndim>2:
+            arr = np.transpose(arr, (2,0,1)) # convert from HxWxC to CxHxW
+        return arr
+
+    loader('pil', False, aliases=['jpg','jpeg','png', 'tif', 'tiff'])
+
+except:
+    print("No PIL support")
 

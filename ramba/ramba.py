@@ -3778,14 +3778,14 @@ def array(*args):
 
 def load(fname, dtype=None, local=False, ftype=None,  **kwargs):
     fldr = fileio.get_load_handler(fname, ftype)
-    shp, dt = fldr.getinfo(fname, **kwargs)
-    if dtype is None:
-        dtype = dt
-    if local:
+    if local or not fldr.is_dist:
         print("efficient local file load has not yet been implemented")
         tmp = fldr.readall(fname, **kwargs)
+        if dtype is None: dtype = tmp.dtype
         arr = fromarray(tmp, dtype=dtype)
     else:
+        shp, dt = fldr.getinfo(fname, **kwargs)
+        if dtype is None: dtype = dt
         arr = empty(shp, dtype=dtype)
         deferred_op.do_ops()
         remote_exec_all( "load", arr.gid, fname, **kwargs)
