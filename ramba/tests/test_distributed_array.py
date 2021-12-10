@@ -379,6 +379,23 @@ class TestBasic:
             return a.transpose(1,2,0)
         run_both(impl)
 
+    def test_concatenate_1(self):
+        def impl(app):
+            shape = (20, 4)
+            a = app.fromfunction(lambda i,j: i + j, shape, dtype=int)
+            b = app.fromfunction(lambda i,j: i + j, shape, dtype=int)
+            return app.concatenate([a,b], axis=0)
+        run_both(impl)
+
+    def test_concatenate_2(self):
+        def impl(app):
+            shape = (20, 4)
+            a = app.fromfunction(lambda i,j: i + j, shape, dtype=int)
+            b = app.fromfunction(lambda i,j: i + j, shape, dtype=int)
+            return app.concatenate([a,b], axis=1)
+        run_both(impl)
+
+
 """
 class TestGeneric:
     def test6(self):
