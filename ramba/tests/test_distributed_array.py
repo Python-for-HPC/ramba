@@ -54,15 +54,25 @@ class TestBroadcast:
         assert(np.array_equal(rnp, r_l))
 
 
-def run_both(func, *args):
+def rb_comparer(np_res, ramba_res, array_comp):
+    if isinstance(np_res, tuple):
+        assert(isinstance(ramba_res, tuple))
+        assert(len(np_res) == len(ramba_res))
+        for i in range(len(np_res)):
+            rb_comparer(np_res[i], ramba_res[i], array_comp)
+    elif isinstance(np_res, np.ndarray):
+        assert(isinstance(ramba_res, ramba.ndarray))
+        ramba_local = ramba_res.asarray()
+        assert(array_comp(np_res, ramba_local))
+    else:
+        assert(np_res == ramba_res)
+
+
+def run_both(func, *args, array_comp=np.array_equal):
     ramba_res = func(ramba, *args)
     ramba.sync()
     np_res = func(np, *args)
-    if isinstance(np_res, np.ndarray):
-        ramba_local = ramba_res.asarray()
-        assert(np.array_equal(np_res, ramba_local))
-    else:
-        assert(np_res == ramba_res)
+    rb_comparer(np_res, ramba_res, array_comp)
 
 
 class TestOps:
@@ -394,6 +404,94 @@ class TestBasic:
             b = app.fromfunction(lambda i,j: i + j, shape, dtype=int)
             return app.concatenate([a,b], axis=1)
         run_both(impl)
+
+    def test_linspace_1(self):
+        def impl(app):
+            return app.linspace(1, 5, num=10)
+        run_both(impl, array_comp= np.allclose)
+
+    def test_linspace_2(self):
+        def impl(app):
+            return app.linspace(1, 5, num=200)
+        run_both(impl, array_comp= np.allclose)
+
+    def test_linspace_3(self):
+        def impl(app):
+            return app.linspace(1, 5, num=10, endpoint=False, retstep=True)[0]
+        run_both(impl, array_comp = np.allclose)
+
+    def test_linspace_4(self):
+        def impl(app):
+            return app.linspace(1, 5, num=200, endpoint=False, retstep=True)[0]
+        run_both(impl, array_comp = np.allclose)
+
+    def test_linspace_3_2(self):
+        def impl(app):
+            return app.linspace(1, 5, num=10, endpoint=False, retstep=True)[1]
+        run_both(impl)
+
+    def test_linspace_4_2(self):
+        def impl(app):
+            return app.linspace(1, 5, num=200, endpoint=False, retstep=True)[1]
+        run_both(impl)
+
+    def test_mgrid_1(self):
+        def impl(app):
+            S = 20
+            return app.mgrid[0:S, 0:S]
+        run_both(impl)
+
+    def test_mgrid_2(self):
+        def impl(app):
+            S = 20
+            m,_ = app.mgrid[0:S, 0:S]
+            return m
+        run_both(impl)
+
+    def test_mgrid_3(self):
+        def impl(app):
+            S = 5
+            return app.mgrid[0:S, 0:S]
+        run_both(impl)
+
+    def test_mgrid_4(self):
+        def impl(app):
+            S = 5
+            m,_ = app.mgrid[0:S, 0:S]
+            return m
+        run_both(impl)
+
+    def test_reshape_1(self):
+        shape = (50, 4)
+        a = ramba.fromfunction(lambda i,j: i + j, shape, dtype=int)
+        anp = np.fromfunction(lambda i,j: i + j, shape, dtype=int)
+        al = a.asarray()
+        assert(np.array_equal(anp, al))
+
+        b = a.reshape_copy((20,10))
+        bnp = anp.copy().reshape((20,10))
+        bl = b.asarray()
+        assert(np.array_equal(bnp, bl))
+
+    def test_reshape_2(self):
+        shape = (50, )
+        a = ramba.fromfunction(lambda i: i, shape, dtype=int)
+        anp = np.fromfunction(lambda i: i, shape, dtype=int)
+        al = a.asarray()
+        assert(np.array_equal(anp, al))
+
+        b = a.reshape((50,1))
+        bnp = anp.reshape((50,1))
+        bl = b.asarray()
+        assert(np.array_equal(bnp, bl))
+
+
+class TestRandom:
+    def test1(self):
+        shape = (1000, 10)
+        rs = ramba.random.RandomState(1337)
+        X1 = rs.normal(loc=5.0, size=shape)
+        ramba.sync()
 
 
 """
