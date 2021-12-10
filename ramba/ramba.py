@@ -702,12 +702,12 @@ if not USE_MPI:
 
 
 def distindex_internal(dist, dim, accum):
-    if dim >= len(dist.size):
+    if dim >= len(shardview.get_size(dist)):
         yield tuple(accum)
     else:
-#        print("distindex_internal else:", dim, accum, dist.index_start, dist.size, len(dist.size))
-        for i in range(dist.index_start[dim], dist.index_start[dim] + dist.size[dim]):
+        for i in range(shardview.get_start(dist)[dim], shardview.get_start(dist)[dim] + shardview.get_size(dist)[dim]):
             yield from distindex_internal(dist, dim + 1, accum + [i])
+
 
 def distindex(dist):
     yield from distindex_internal(dist, 0, [])
@@ -4038,7 +4038,7 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
         local_stop = start + ((starts[0] + dim_lens[0]) * step)
         bcontainer[:] = np.linspace(local_start, local_stop, num=dim_lens[0], endpoint=False, dtype=dtype)
 
-    res = init_array(num, Filler(impl, per_element=False, do_compile=False), dtype=dtype)
+    res = init_array(num, Filler(impl, mode=Filler.WHOLE_ARRAY_INPLACE, do_compile=False), dtype=dtype)
 
     if retstep:
         return (res, step)
