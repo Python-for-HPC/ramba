@@ -2760,12 +2760,20 @@ class ndarray:
             elif dtype=="float":
                 dtype=np.float32 if rhs_dtype==np.float32 and self.dtype==np.float32 else np.float64
 
-            if isinstance(selfview, ndarray):
-                new_ndarray = create_array_with_divisions(new_array_size, selfview.distribution, local_border=lb, dtype=dtype)
-            elif isinstance(rhsview, ndarray):
-                new_ndarray = create_array_with_divisions(new_array_size, rhsview.distribution, local_border=lb, dtype=dtype)
-            else:
-                return getattr(selfview, op)(rhsview)
+            if isinstance(new_array_size, tuple):
+                if len(new_array_size) > 0:
+                    new_ndarray = empty(new_array_size, local_border=lb, dtype=dtype)
+                else:
+                    res = getattr(selfview, op)(rhsview)
+                    if isinstance(res, np.ndarray):
+                        return fromarray(res)
+                    elif isinstance(res, numbers.Number) and new_array_size == ():
+                        return array(res)
+                    else:
+                        return res
+            else:  # must be scalar output
+                res = getattr(selfview, op)(rhsview)
+                return res
 
             if reverse:
                 deferred_op.add_op(["", new_ndarray, " = ", rhsview, optext, selfview], new_ndarray, imports=imports)
@@ -2937,7 +2945,9 @@ class ndarray:
                     return NotImplemented
             isreversed = not isinstance(inputs[0], ndarray)
             mapname = ufunc_map[ufunc.__name__]
-            if isreversed:  mapname = 'r'+mapname
+            if isreversed:
+                mapname = 'r' + mapname
+                real_args = real_args[::-1]
 
             attrres = getattr(real_args[0], "__" + mapname + "__", None)
             if attrres is None:
@@ -3376,7 +3386,12 @@ def numpy_broadcast_size(a, b):
     else:
         rev_bshape = (1,)
 
-    print("numpy_broadcast_size:", rev_ashape, rev_bshape)
+    # scalar output
+    if ((isinstance(a, numbers.Number) or rev_ashape == ()) and
+        (isinstance(b, numbers.Number) or rev_bshape == ())):
+        return None
+
+    dprint(3, "numpy_broadcast_size:", rev_ashape, rev_bshape)
 
     # make sure that ashape is not shorter than bshape
     if len(rev_bshape) > len(rev_ashape):
@@ -3671,6 +3686,8 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
             new_ndarray.distribution = np.array(eval(filler), dtype=new_ndarray.dtype)
         elif isinstance(filler, numbers.Number):
             new_ndarray.distribution = np.array(filler, dtype=new_ndarray.dtype)
+        elif isinstance(filler, np.ndarray) and filler.shape == ():
+            new_ndarray.distribution = filler.copy()
         return new_ndarray
 
     if (isinstance(filler, str)):
