@@ -275,6 +275,19 @@ class TestDgemm:
                 for k in range(1, 10):
                     run_both(impl, i, j, k)
 
+    def test_2Dx1D_slice(self):
+        def impl(app, i, j, k, l):
+            X = app.fromfunction(lambda x,y: x + y, (i,j))
+            theta = app.fromfunction(lambda x: x, (j,), dtype=X.dtype)
+            res = X[:,l:l+k] @ theta[l:l+k]
+            return res
+
+        for i in range(4, 50):
+            for j in range(4, 20):
+                for k in range(1,j):
+                    for l in range(j-k):
+                        run_both(impl, i, j, k, l)
+
 
 class TestBasic:
     def test1(self):

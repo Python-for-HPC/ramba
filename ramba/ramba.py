@@ -2944,7 +2944,10 @@ class ndarray:
                     print (type(arg))
                     return NotImplemented
             isreversed = not isinstance(inputs[0], ndarray)
-            mapname = ufunc_map[ufunc.__name__]
+            if ufunc.__name__ in ufunc_map:
+                mapname = ufunc_map[ufunc.__name__]
+            else:
+                mapname = ufunc.__name__
             if isreversed:
                 mapname = 'r' + mapname
                 real_args = real_args[::-1]
@@ -2962,8 +2965,9 @@ class ndarray:
         else:
             return NotImplemented
 
+# We only have to put functions here where the ufunc name is different from the
+# Python operation name.
 ufunc_map = { 'multiply': 'mul',
-              'add': 'add',
               'subtract':'sub',
               'divide':'div',
               'true_divide':'truediv',
