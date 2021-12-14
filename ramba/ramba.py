@@ -13,6 +13,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 from ramba.common import *
 
 import os
+
 if USE_MPI:
     import mpi4py
 else:
@@ -29,17 +30,19 @@ import weakref
 import operator
 import copy as libcopy
 import pickle as pickle
+
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
 import cloudpickle
 import threading
+
 if USE_ZMQ:
     import ramba.ramba_queue_zmq as ramba_queue
 elif USE_MPI:
     import ramba.ramba_queue_mpi as ramba_queue
 else:
     import ramba.ramba_queue as ramba_queue
-#import ramba.shardview as shardview
+# import ramba.shardview as shardview
 import ramba.shardview_array as shardview
 import ramba.numa as numa
 import asyncio
@@ -56,6 +59,7 @@ import ramba.fileio as fileio
 
 try:
     import dpctl
+
     dpctl_present = True
 except:
     dpctl_present = False
@@ -98,12 +102,12 @@ if not USE_MPI:
     # from the list because they have a bug.  This "if" can go away once the
     # fix for this issue this is in Ray mainline makes it into a Ray release.
     ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
-    if 'PYTHON_MODE' in ray_imports:
-        ray_imports.remove('PYTHON_MODE')
-    if 'dataget' in ray_imports:
-        ray_imports.remove('dataget')
-    if 'show_in_dashboard' in ray_imports:
-        ray_imports.remove('show_in_dashboard')
+    if "PYTHON_MODE" in ray_imports:
+        ray_imports.remove("PYTHON_MODE")
+    if "dataget" in ray_imports:
+        ray_imports.remove("dataget")
+    if "show_in_dashboard" in ray_imports:
+        ray_imports.remove("show_in_dashboard")
     istmt = "from ray import {}".format(",".join(ray_imports))
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
@@ -114,9 +118,9 @@ if not USE_MPI:
 
         ray_address = os.getenv("ray_address")
         ray_redis_pass = os.getenv("ray_redis_password")
-        if ray_address==None:
+        if ray_address == None:
             ray_address = "auto"
-        if ray_redis_pass==None:
+        if ray_redis_pass == None:
             ray_redis_pass = ""
         try:
             ray.init(address=ray_address, _redis_password=ray_redis_pass)
@@ -125,8 +129,9 @@ if not USE_MPI:
             ray.init(_redis_password=str(uuid.uuid4()))
         assert ray.is_initialized() == True
         import time
+
         time.sleep(1)
-        cores = ray.available_resources()['CPU']
+        cores = ray.available_resources()["CPU"]
         dprint(2, "Ray initialized;  available cores:", cores)
         global num_workers
         if cores < num_workers:
@@ -142,7 +147,7 @@ def in_driver():
     else:
         comm = mpi4py.MPI.COMM_WORLD
         rank = comm.Get_rank()
-        return rank==num_workers
+        return rank == num_workers
 
 
 class Filler:
@@ -176,7 +181,7 @@ class FillerFunc:
 def get_fm(func: FillerFunc, parallel):
     real_func = func.func
     dprint(2, "get_fm for function", real_func.__name__, "parallel =", parallel)
-    assert(isinstance(real_func, types.FunctionType))
+    assert isinstance(real_func, types.FunctionType)
     return numba.njit(parallel=parallel)(real_func)
 
 
@@ -185,7 +190,7 @@ class FunctionMetadata:
         self.func = func
         self.dargs = dargs
         self.dkwargs = dkwargs
-        self.numba_args = dkwargs.get('numba', {})
+        self.numba_args = dkwargs.get("numba", {})
         dprint(2, "FunctionMetadata __init__ numba_args:", self.numba_args, id(self))
         self.numba_func = None
         self.numba_pfunc = None
@@ -203,7 +208,14 @@ class FunctionMetadata:
         in npfunc or nfunc so that we don't try the failed case again.  If
         neither of those work then fall back to Python.
         """
-        dprint(2, "FunctionMetadata::__call__", self.func.__name__, args, kwargs, self.numba_args)
+        dprint(
+            2,
+            "FunctionMetadata::__call__",
+            self.func.__name__,
+            args,
+            kwargs,
+            self.numba_args,
+        )
         atypes = tuple([type(x) for x in args])
         try_again = True
         count = 0
@@ -212,7 +224,9 @@ class FunctionMetadata:
                 self.numba_pfunc = get_fm(FillerFunc(self.func), True)
                 self.numba_func = get_fm(FillerFunc(self.func), False)
             else:
-                self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(self.func)
+                self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(
+                    self.func
+                )
                 self.numba_func = numba.njit(**self.numba_args)(self.func)
 
         if gpu_present:
@@ -231,7 +245,10 @@ class FunctionMetadata:
                             tetxt = str(te)
                             tesplit = tetxt.splitlines()
                             for teline in tesplit:
-                                if "Untyped global name" in teline and "ramba.StencilMetadata" in teline:
+                                if (
+                                    "Untyped global name" in teline
+                                    and "ramba.StencilMetadata" in teline
+                                ):
                                     try_again = True
                                     # Name of global that is of type ramba.StencilMetadata
                                     tes = teline[21:].split()[0][:-2]
@@ -239,15 +256,31 @@ class FunctionMetadata:
                                     outer_locals = {}
                                     etes = eval(tes, outer_globals, outer_locals)
                                     etes.compile()  # Converts to a Numba StencilFunc
-                                    outer_globals[tes] = etes.sfunc # Rewrite the global to the Numba StencilFunc
-                                    self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(self.func)
-                                    self.numba_func = numba.njit(**self.numba_args)(self.func)
+                                    outer_globals[
+                                        tes
+                                    ] = (
+                                        etes.sfunc
+                                    )  # Rewrite the global to the Numba StencilFunc
+                                    self.numba_pfunc = numba.njit(
+                                        parallel=True, **self.numba_args
+                                    )(self.func)
+                                    self.numba_func = numba.njit(**self.numba_args)(
+                                        self.func
+                                    )
                             if not try_again:
                                 self.ngfunc[atypes] = False
-                                dprint(1, "Numba GPU ParallelAccelerator attempt failed for", self.func)
+                                dprint(
+                                    1,
+                                    "Numba GPU ParallelAccelerator attempt failed for",
+                                    self.func,
+                                )
                         except:
                             self.ngfunc[atypes] = False
-                            dprint(1, "Numba GPU ParallelAccelerator attempt failed for", self.func)
+                            dprint(
+                                1,
+                                "Numba GPU ParallelAccelerator attempt failed for",
+                                self.func,
+                            )
 
         while try_again and count < 2:
             count += 1
@@ -261,7 +294,10 @@ class FunctionMetadata:
                     tetxt = str(te)
                     tesplit = tetxt.splitlines()
                     for teline in tesplit:
-                        if "Untyped global name" in teline and "ramba.StencilMetadata" in teline:
+                        if (
+                            "Untyped global name" in teline
+                            and "ramba.StencilMetadata" in teline
+                        ):
                             try_again = True
                             # Name of global that is of type ramba.StencilMetadata
                             tes = teline[21:].split()[0][:-2]
@@ -269,16 +305,32 @@ class FunctionMetadata:
                             outer_locals = {}
                             etes = eval(tes, outer_globals, outer_locals)
                             etes.compile()  # Converts to a Numba StencilFunc
-                            outer_globals[tes] = etes.sfunc # Rewrite the global to the Numba StencilFunc
-                            self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(self.func)
+                            outer_globals[
+                                tes
+                            ] = (
+                                etes.sfunc
+                            )  # Rewrite the global to the Numba StencilFunc
+                            self.numba_pfunc = numba.njit(
+                                parallel=True, **self.numba_args
+                            )(self.func)
                             self.numba_func = numba.njit(**self.numba_args)(self.func)
                     if not try_again:
                         self.npfunc[atypes] = False
-                        dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
+                        dprint(
+                            1,
+                            "Numba ParallelAccelerator attempt failed for",
+                            self.func,
+                            atypes,
+                        )
                 except:
                     traceback.print_exc()
                     self.npfunc[atypes] = False
-                    dprint(1, "Numba ParallelAccelerator attempt failed for", self.func, atypes)
+                    dprint(
+                        1,
+                        "Numba ParallelAccelerator attempt failed for",
+                        self.func,
+                        atypes,
+                    )
                     try:
                         dprint(1, inspect.getsource(self.func))
                     except:
@@ -301,28 +353,30 @@ class FunctionMetadata:
 
         return self.func(*args, **kwargs)
 
+
 class StencilMetadata:
     stencilmap = {}
+
     def __init__(self, func, dargs, dkwargs):
         self.func = func
         self.dargs = dargs
         self.dkwargs = dkwargs
-        self.hashname = "stencilmeta_"+str(hash(func))
+        self.hashname = "stencilmeta_" + str(hash(func))
         self.sfunc = None
-        self.neighborhood=None
+        self.neighborhood = None
         dprint(2, "StencilMetadata finished")
 
     def compile_local(self):
-        numba_args = self.dkwargs.get('numba', {})
+        numba_args = self.dkwargs.get("numba", {})
         return numba.stencil(**numba_args)(self.func)
 
     def compile(self, override_args={}):
-        ldict={}
-        gdict=globals()
-        #if not self.sfunc:
+        ldict = {}
+        gdict = globals()
+        # if not self.sfunc:
         if self.hashname not in gdict:
             dprint(2, "Compiling stencil")
-            numba_args = self.dkwargs.get('numba', {})
+            numba_args = self.dkwargs.get("numba", {})
             dprint(2, "Default args:", numba_args)
             numba_args.update(override_args)
             dprint(2, "Override args:", numba_args)
@@ -330,23 +384,25 @@ class StencilMetadata:
             gdict[self.hashname] = self.sfunc
             # make wrapper to ensure stencil is called from a parallel njit region
             fsrc = inspect.getsource(self.func)
-            fsrc_tokens = fsrc.split('\n')
-            varlist = fsrc_tokens[1][fsrc_tokens[1].find("(")+1:fsrc_tokens[1].find(")")]
-            #code = "@numba.njit(parallel=True)\n"
-            code = "def "+self.hashname+"_wrap("+varlist+",out=None):\n"
+            fsrc_tokens = fsrc.split("\n")
+            varlist = fsrc_tokens[1][
+                fsrc_tokens[1].find("(") + 1 : fsrc_tokens[1].find(")")
+            ]
+            # code = "@numba.njit(parallel=True)\n"
+            code = "def " + self.hashname + "_wrap(" + varlist + ",out=None):\n"
             code += "    if out is not None:\n"
-            code += "        return "+self.hashname+"("+varlist+",out=out)\n"
+            code += "        return " + self.hashname + "(" + varlist + ",out=out)\n"
             code += "    else:\n"
-            code += "        return "+self.hashname+"("+varlist+")\n"
-            #print(code)
-            exec(code,gdict,ldict)
-            #self.sfunc_wrap = ldict[self.hashname+"_wrap"]
-            self.sfunc_wrap = FunctionMetadata(ldict[self.hashname+"_wrap"],[],{})
-            #self.sfunc_wrap = numba.njit(parallel=True)(ldict[self.hashname+"_wrap"])
-            gdict[self.hashname+"_wrap"] = self.sfunc_wrap
+            code += "        return " + self.hashname + "(" + varlist + ")\n"
+            # print(code)
+            exec(code, gdict, ldict)
+            # self.sfunc_wrap = ldict[self.hashname+"_wrap"]
+            self.sfunc_wrap = FunctionMetadata(ldict[self.hashname + "_wrap"], [], {})
+            # self.sfunc_wrap = numba.njit(parallel=True)(ldict[self.hashname+"_wrap"])
+            gdict[self.hashname + "_wrap"] = self.sfunc_wrap
         else:
             self.sfunc = gdict[self.hashname]
-            self.sfunc_wrap = gdict[self.hashname+"_wrap"]
+            self.sfunc_wrap = gdict[self.hashname + "_wrap"]
         return self.sfunc_wrap
 
     def __call__(self, *args, **kwargs):
@@ -361,20 +417,27 @@ class StencilMetadata:
         self.compile()
         return self.sfunc(*args, **kwargs)
 
+
 def stencil(*args, **kwargs):
     dprint(2, "stencil:", args, kwargs)
 
     def make_wrapper(func, args, kwargs):
         dprint(2, "stencil make_wrapper:", args, kwargs, func, type(func))
         if len(args) > 0:
-            raise ValueError("ramba.stencil only supports ray and numba dictionary keyword arguments.")
+            raise ValueError(
+                "ramba.stencil only supports ray and numba dictionary keyword arguments."
+            )
         for kwa in kwargs:
-            if kwa not in ['ray', 'numba']:
-                raise ValueError("ramba.stencil only supports ray and numba dictionary keyword arguments.")
+            if kwa not in ["ray", "numba"]:
+                raise ValueError(
+                    "ramba.stencil only supports ray and numba dictionary keyword arguments."
+                )
             if not isinstance(kwargs[kwa], dict):
-                raise ValueError("ramba.stencil only supports ray and numba dictionary keyword arguments.")
+                raise ValueError(
+                    "ramba.stencil only supports ray and numba dictionary keyword arguments."
+                )
 
-        assert(inspect.isfunction(func))
+        assert inspect.isfunction(func)
 
         sm = StencilMetadata(func, args, kwargs)
         return sm
@@ -391,30 +454,37 @@ def stencil(*args, **kwargs):
     return rdec
 
 
-#**************************************
+# **************************************
 # Main functions to support Ray+Numba *
-#**************************************
+# **************************************
 if not USE_MPI:
+
     def remote(*args, **kwargs):
         dprint(2, "remote:", args, kwargs)
 
         def make_wrapper(func, args, kwargs):
             dprint(2, "remote make_wrapper:", args, kwargs)
             if len(args) > 0:
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                raise ValueError(
+                    "ramba.remote only supports ray and numba dictionary keyword arguments."
+                )
             for kwa in kwargs:
-                if kwa not in ['ray', 'numba']:
-                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                if kwa not in ["ray", "numba"]:
+                    raise ValueError(
+                        "ramba.remote only supports ray and numba dictionary keyword arguments."
+                    )
                 if not isinstance(kwargs[kwa], dict):
-                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                    raise ValueError(
+                        "ramba.remote only supports ray and numba dictionary keyword arguments."
+                    )
 
-            #ray_init()  # should already have been initied
+            # ray_init()  # should already have been initied
 
             if isinstance(func, type):
                 dprint(2, "remote args:", args, kwargs)
                 dprint(2, "remote func is type")
-                if 'ray' in kwargs and len(kwargs['ray']) > 0:
-                    rtype = ray.remote(**(kwargs['ray']))(func)
+                if "ray" in kwargs and len(kwargs["ray"]) > 0:
+                    rtype = ray.remote(**(kwargs["ray"]))(func)
                     dprint(2, "remote rtype with args:", rtype, type(rtype))
                 else:
                     rtype = ray.remote(func)
@@ -425,14 +495,16 @@ if not USE_MPI:
                 # Use a unique name for each FunctionMetadata to avoid global name conflicts.
                 fmname = "FunctionMetadataFor" + fname
                 fm = FunctionMetadata(func, args, kwargs)
-                ftext = "def {fname}(*args, **kwargs):\n    return {fmname}(*args, **kwargs)\n".format(fname=fname, fmname=fmname)
+                ftext = "def {fname}(*args, **kwargs):\n    return {fmname}(*args, **kwargs)\n".format(
+                    fname=fname, fmname=fmname
+                )
                 ldict = {}
                 gdict = globals()
                 gdict[fmname] = fm
                 exec(ftext, gdict, ldict)
                 dprint(2, "remote make_wrapper ldict:", ldict)
-                if 'ray' in kwargs and len(kwargs['ray']) > 0:
-                    rfunc = ray.remote(**(kwargs['ray']))(ldict[fname])
+                if "ray" in kwargs and len(kwargs["ray"]) > 0:
+                    rfunc = ray.remote(**(kwargs["ray"]))(ldict[fname])
                     dprint(2, "remote rfunc with args:", rfunc, type(rfunc))
                 else:
                     rfunc = ray.remote(ldict[fname])
@@ -456,7 +528,10 @@ if not USE_MPI:
     """This function will facilitate the new deobjectified function code (in text
     form) being transferred to the remote.  Thus, the exec of that code into
     existence happens on the remote."""
-    def exec_generic_member_function(func_name, deobj_func_name, func_as_str, numba_args, *args, **kwargs):
+
+    def exec_generic_member_function(
+        func_name, deobj_func_name, func_as_str, numba_args, *args, **kwargs
+    ):
         global egmf_cache
         if func_name not in egmf_cache:
             dprint(2, "func_name not in cache", numba_args)
@@ -477,7 +552,7 @@ if not USE_MPI:
 
         def make_deobj_func(fname, inst_vars, other_args, fsrc_tokens):
             indent_line = fsrc_tokens[0]
-            indent = indent_line[:-len(indent_line.lstrip())]
+            indent = indent_line[: -len(indent_line.lstrip())]
             in_nested = False
 
             # Form a comma-separated string of all the class instance variables in the deobjectified function.
@@ -497,7 +572,7 @@ if not USE_MPI:
                     fsrc_with_return_fix.append(line)
                 elif line.lstrip().startswith("return") and not in_nested:
                     # New line will have same indentation as the original.
-                    new_line = line[:-len(line.lstrip())]
+                    new_line = line[: -len(line.lstrip())]
                     new_line += "return "
                     # Find everything that comes after "return " in the line.
                     post_return = line.lstrip()[7:]
@@ -519,28 +594,38 @@ if not USE_MPI:
 
             # Sort by decreasing length so that shorter replacements don't cause larger
             # replacements to be missed.
-            sorted_inst_vars = sorted(inst_vars, key=lambda k: len(inst_vars[k]), reverse=True)
+            sorted_inst_vars = sorted(
+                inst_vars, key=lambda k: len(inst_vars[k]), reverse=True
+            )
             dprint(2, "sorted_inst_vars:", sorted_inst_vars, type(sorted_inst_vars))
             for siv in sorted_inst_vars:
                 fsrc_rest = fsrc_rest.replace("self." + siv, inst_vars[siv])
             dprint(2, "fsrc_rest post_replace:")
             dprint(2, fsrc_rest)
 
-            deobj_func_name = "ramba_deobj_func_" + fname.replace(".","_")
-            deobj_func = "def " + deobj_func_name + "(" + joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args + "):\n"
+            deobj_func_name = "ramba_deobj_func_" + fname.replace(".", "_")
+            deobj_func = (
+                "def "
+                + deobj_func_name
+                + "("
+                + joined_inst_vars
+                + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "")
+                + other_args
+                + "):\n"
+            )
             if debug:
-                deobj_func += indent + "print(\"Running deobj func\")\n"
+                deobj_func += indent + 'print("Running deobj func")\n'
             deobj_func += fsrc_rest + "\n"
             return deobj_func, deobj_func_name
 
         def exec_deobj_func(func_as_str, deobj_func_name, kwargs):
-            ldict = {} #outer_locals
+            ldict = {}  # outer_locals
             gdict = outer_globals
-            dprint(2, "exec_deobj_func: "+str(gdict.keys()))
-            #dprint(2, "frames: "+str(inspect.getouterframes(inspect.currentframe())))
+            dprint(2, "exec_deobj_func: " + str(gdict.keys()))
+            # dprint(2, "frames: "+str(inspect.getouterframes(inspect.currentframe())))
             exec(func_as_str, gdict, ldict)
             ret_func = ldict[deobj_func_name]
-            dprint(2, "ldict: ",ldict.keys())
+            dprint(2, "ldict: ", ldict.keys())
             dprint(2, id(ret_func.__module__))
             dprint(2, ret_func.__module__)
             # Wrap the target function with FunctionMetadata to handle Numba compilation.
@@ -549,16 +634,22 @@ if not USE_MPI:
         def make_wrapper(func, args, kwargs):
             dprint(2, "jit make_wrapper:", args, kwargs)
             if len(args) > 0:
-                raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                raise ValueError(
+                    "ramba.remote only supports ray and numba dictionary keyword arguments."
+                )
             for kwa in kwargs:
-                if kwa not in ['ray', 'numba']:
-                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                if kwa not in ["ray", "numba"]:
+                    raise ValueError(
+                        "ramba.remote only supports ray and numba dictionary keyword arguments."
+                    )
                 if not isinstance(kwargs[kwa], dict):
-                    raise ValueError("ramba.remote only supports ray and numba dictionary keyword arguments.")
+                    raise ValueError(
+                        "ramba.remote only supports ray and numba dictionary keyword arguments."
+                    )
 
             ray_init()
 
-            numba_args = kwargs.get('numba', {})
+            numba_args = kwargs.get("numba", {})
 
             if inspect.isfunction(func):
                 fname = func.__name__
@@ -570,23 +661,23 @@ if not USE_MPI:
                 dprint(2, "fsrc:", fsrc)
                 dprint(2, "modname:", modname)
                 dprint(2, "fmod:", fmod)
-                fsrc_tokens = fsrc.split('\n')
+                fsrc_tokens = fsrc.split("\n")
                 dprint(2, "fsrc_tokens:", fsrc_tokens)
                 # Get the non-self arguments to the function....everything after "self" and before ")"
-                other_args = fsrc_tokens[1][fsrc_tokens[1].find("self")+4:]
-                if other_args.find(',') >= 0:
-                    other_args = other_args[other_args.find(',')+1:]
-                other_args = other_args[:other_args.find(')')]
+                other_args = fsrc_tokens[1][fsrc_tokens[1].find("self") + 4 :]
+                if other_args.find(",") >= 0:
+                    other_args = other_args[other_args.find(",") + 1 :]
+                other_args = other_args[: other_args.find(")")]
                 dprint(2, "other_args:", other_args)
-                bio_fscr = BytesIO(fsrc.encode('utf-8')).readline
+                bio_fscr = BytesIO(fsrc.encode("utf-8")).readline
                 tokens = tokenize.tokenize(bio_fscr)
                 inst_vars = {}
-                tlist = [(t, v) for t,v,_,_,_ in tokens]
+                tlist = [(t, v) for t, v, _, _, _ in tokens]
                 dprint(2, "token list:", tlist)
-                for i in range(len(tlist)-2):
-                    if (tlist[i][1] == "self" and tlist[i+1][1] == "."):
-                        field = tlist[i+2][1]
-                        inst_vars[field] = "ramba_deobjectified_field_"+field
+                for i in range(len(tlist) - 2):
+                    if tlist[i][1] == "self" and tlist[i + 1][1] == ".":
+                        field = tlist[i + 2][1]
+                        inst_vars[field] = "ramba_deobjectified_field_" + field
                 dprint(2, "inst_vars:", inst_vars)
 
                 whole_func = fsrc_tokens[1:]
@@ -599,35 +690,72 @@ if not USE_MPI:
                 stlist = parser.st2list(st)
                 dprint(2, "stlist:", stlist, type(stlist))
                 # Construct global helper function to do the work from the body of the incoming function.
-                deobj_func_txt, deobj_func_name = make_deobj_func(fqname, inst_vars, other_args, fsrc_tokens[2:])
+                deobj_func_txt, deobj_func_name = make_deobj_func(
+                    fqname, inst_vars, other_args, fsrc_tokens[2:]
+                )
                 dprint(2, "full deobj_func:")
                 dprint(2, deobj_func_txt)
                 if not remote_exec:
                     # This creates the deobj_func from text and wraps it in FunctionMetadata
                     # so that Numba is invoked.
-                    deobj_func = exec_deobj_func(deobj_func_txt, deobj_func_name, kwargs)
+                    deobj_func = exec_deobj_func(
+                        deobj_func_txt, deobj_func_name, kwargs
+                    )
 
-                new_func = "def " + fname + "(self" + ("," if len(other_args) > 0 else "") + other_args + "):\n"
-    #            new_func += "    print(\"Running new_func.\")\n"
+                new_func = (
+                    "def "
+                    + fname
+                    + "(self"
+                    + ("," if len(other_args) > 0 else "")
+                    + other_args
+                    + "):\n"
+                )
+                #            new_func += "    print(\"Running new_func.\")\n"
                 if debug:
                     for k in inst_vars:
-                        new_func += "    print(\"" + k + ":\", self." + k + ")\n"
+                        new_func += '    print("' + k + ':", self.' + k + ")\n"
                 new_func += "    rv = None\n"
                 new_func += "    try:\n"
                 joined_inst_vars = ",".join(["self." + x for x in inst_vars.keys()])
                 dprint(2, "joined_inst_vars:", joined_inst_vars)
-                inst_and_others = joined_inst_vars + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "") + other_args
-                ret_and_inst = "rv,"+joined_inst_vars
+                inst_and_others = (
+                    joined_inst_vars
+                    + ("," if len(joined_inst_vars) > 0 and len(other_args) > 0 else "")
+                    + other_args
+                )
+                ret_and_inst = "rv," + joined_inst_vars
                 if remote_exec:
-                    new_func += "        " + ret_and_inst + " = curmod.exec_generic_member_function(\"" + fname + "\",\"" + deobj_func_name + "\",\"\"\"" + deobj_func_txt + "\"\"\",\"" + str(numba_args) + "\"," + inst_and_others + ")\n"
+                    new_func += (
+                        "        "
+                        + ret_and_inst
+                        + ' = curmod.exec_generic_member_function("'
+                        + fname
+                        + '","'
+                        + deobj_func_name
+                        + '","""'
+                        + deobj_func_txt
+                        + '""","'
+                        + str(numba_args)
+                        + '",'
+                        + inst_and_others
+                        + ")\n"
+                    )
                 else:
-                    new_func += "        " + ret_and_inst + " = " + deobj_func_name +"(" + inst_and_others + ")\n"
+                    new_func += (
+                        "        "
+                        + ret_and_inst
+                        + " = "
+                        + deobj_func_name
+                        + "("
+                        + inst_and_others
+                        + ")\n"
+                    )
                 new_func += "    except AttributeError as ae:\n"
-                new_func += "        print(\"AttributeError:\", ae.args)\n"
+                new_func += '        print("AttributeError:", ae.args)\n'
                 new_func += "    except NameError as ae:\n"
-                new_func += "        print(\"NameError:\", ae.args)\n"
+                new_func += '        print("NameError:", ae.args)\n'
                 new_func += "    except:\n"
-                new_func += "        print(\"error calling deobj\", sys.exc_info()[0])\n"
+                new_func += '        print("error calling deobj", sys.exc_info()[0])\n'
                 new_func += "    return rv\n"
                 dprint(2, "new_func:", new_func)
                 ldict = {}
@@ -635,14 +763,21 @@ if not USE_MPI:
                 if remote_exec:
                     gdict["curmod"] = ramba_module
                 else:
-                    gdict[deobj_func_name] = deobj_func #numba.njit(deobj_func)
+                    gdict[deobj_func_name] = deobj_func  # numba.njit(deobj_func)
                 exec(new_func, gdict, ldict)
                 nfunc = ldict[fname]
-                dprint(2, "nfunc:", nfunc, type(nfunc), nfunc.__qualname__, nfunc.__module__)
+                dprint(
+                    2,
+                    "nfunc:",
+                    nfunc,
+                    type(nfunc),
+                    nfunc.__qualname__,
+                    nfunc.__module__,
+                )
                 return nfunc
             else:
                 dprint(2, "Object of type", func, "is not handled by ramba.jit.")
-                assert(0)
+                assert 0
 
         if len(args) > 0:
             dprint(2, "jit::args0 type:", args[0], type(args[0]))
@@ -657,14 +792,14 @@ if not USE_MPI:
         return rdec
 
 
-
-#*******************
+# *******************
 # Distributed Arrays
-#*******************
+# *******************
 
 ######### Barrier code ##############
 
 if not USE_MPI:
+
     @ray.remote(num_cpus=0)
     class BarrierActor:
         def __init__(self, count):
@@ -691,10 +826,13 @@ if not USE_MPI:
     try:
         ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
     except:
-        ramba_spmd_barrier = BarrierActor.options(name="RambaSpmdBarrier", max_concurrency=num_workers).remote(num_workers)
+        ramba_spmd_barrier = BarrierActor.options(
+            name="RambaSpmdBarrier", max_concurrency=num_workers
+        ).remote(num_workers)
 
     def barrier():
         ray.get(ramba_spmd_barrier.barrier.remote())
+
 
 ### TODO: Need non-Ray version for MPI
 
@@ -705,7 +843,10 @@ def distindex_internal(dist, dim, accum):
     if dim >= len(shardview.get_size(dist)):
         yield tuple(accum)
     else:
-        for i in range(shardview.get_start(dist)[dim], shardview.get_start(dist)[dim] + shardview.get_size(dist)[dim]):
+        for i in range(
+            shardview.get_start(dist)[dim],
+            shardview.get_start(dist)[dim] + shardview.get_size(dist)[dim],
+        ):
             yield from distindex_internal(dist, dim + 1, accum + [i])
 
 
@@ -718,7 +859,10 @@ def distindex(dist):
 # multiple ndarrays (arrays and slices) can refer to the same bdarray
 # bdarrays do not provide arithmetic operators, and should not be used directly
 class bdarray:
-    gid_map = weakref.WeakValueDictionary()  # global map from gid to weak references of bdarrays
+    gid_map = (
+        weakref.WeakValueDictionary()
+    )  # global map from gid to weak references of bdarrays
+
     def __init__(self, size, distribution, gid, pad, fdist, dtype):
         self.size = size
         self.gid = gid
@@ -727,12 +871,12 @@ class bdarray:
         self.nd_set = weakref.WeakSet()
         self.remote_constructed = False
         self.flex_dist = fdist
-        assert(gid not in self.gid_map)
+        assert gid not in self.gid_map
         self.gid_map[gid] = self
-        self.dtype=dtype
+        self.dtype = dtype
 
     def __del__(self):
-        dprint(2, "Deleting bdarray",self.gid, self, "refcount is", len(self.nd_set))
+        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set))
         if self.remote_constructed:  # check remote constructed flag
             deferred_op.del_remote_array(self.gid)
 
@@ -740,25 +884,44 @@ class bdarray:
         self.nd_set.add(nd)
 
     @classmethod
-    def assign_bdarray(cls, nd, size, gid=None, distribution=None, pad=0, flexible_dist=False, dtype=None, **kwargs):
-        if gid is None: gid=uuid.uuid4()
+    def assign_bdarray(
+        cls,
+        nd,
+        size,
+        gid=None,
+        distribution=None,
+        pad=0,
+        flexible_dist=False,
+        dtype=None,
+        **kwargs
+    ):
+        if gid is None:
+            gid = uuid.uuid4()
         if gid not in cls.gid_map:
-            if dtype is None: dtype=np.float64 # default
+            if dtype is None:
+                dtype = np.float64  # default
             if size == ():
                 distribution = np.ndarray(size, dtype=dtype)
             else:
-                distribution = shardview.default_distribution(size, **kwargs) if distribution is None else libcopy.deepcopy(distribution)
+                distribution = (
+                    shardview.default_distribution(size, **kwargs)
+                    if distribution is None
+                    else libcopy.deepcopy(distribution)
+                )
                 # clear offsets (since this is a new array)
                 for i in distribution:
                     tmp = shardview.get_base_offset(i)
-                    tmp*=0
+                    tmp *= 0
             bd = cls(size, distribution, gid, pad, flexible_dist, dtype)
-        else: bd = cls.gid_map[gid]
+        else:
+            bd = cls.gid_map[gid]
         bd.add_nd(nd)
         dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
         dprint(3, "Distribution:", bd.distribution, size)
         if len(size) != 0 and not isinstance(bd.distribution, np.ndarray):
-            dprint(4, "Divisions:", shardview.distribution_to_divisions(bd.distribution) )
+            dprint(
+                4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
+            )
         return bd
 
     @classmethod
@@ -773,11 +936,25 @@ class bdarray:
 # Hmm -- does not seem to be used
 def make_padded_shard(core, boundary):
     cshape = core.shape
-    assert(len(cshape) == len(boundary))
+    assert len(cshape) == len(boundary)
     new_size = [cshape[i] + boundary[i] for i in range(len(cshape))]
 
+
 class LocalNdarray:
-    def __init__(self, gid, remote, subspace, dim_lens, whole, border, whole_space, from_border, to_border, dtype, creation_mode=Filler.PER_ELEMENT):
+    def __init__(
+        self,
+        gid,
+        remote,
+        subspace,
+        dim_lens,
+        whole,
+        border,
+        whole_space,
+        from_border,
+        to_border,
+        dtype,
+        creation_mode=Filler.PER_ELEMENT,
+    ):
         self.gid = gid
         self.remote = remote
         self.subspace = subspace
@@ -785,17 +962,17 @@ class LocalNdarray:
         self.core_slice = tuple([slice(0, x) for x in dim_lens])
         self.whole = whole
         self.border = border
-        self.allocated_size = tuple([x+2*border for x in dim_lens])
+        self.allocated_size = tuple([x + 2 * border for x in dim_lens])
         self.whole_space = whole_space
         self.from_border = from_border
         self.to_border = to_border
         self.dtype = dtype
         if self.dtype is not None:
-            gnpargs = {"dtype":self.dtype}
+            gnpargs = {"dtype": self.dtype}
         else:
             gnpargs = {}
 
-        if border == 0 and creation_mode==Filler.WHOLE_ARRAY_NEW and not gpu_present:
+        if border == 0 and creation_mode == Filler.WHOLE_ARRAY_NEW and not gpu_present:
             self.bcontainer = None
         else:
             if debug:
@@ -804,7 +981,18 @@ class LocalNdarray:
                 self.bcontainer = gnp.empty(self.allocated_size, **gnpargs)
 
     def init_like(self, gid):
-        return LocalNdarray(gid, self.remote, self.subspace, self.dim_lens, self.whole, self.border, self.whole_space, self.from_border, self.to_border, self.dtype)
+        return LocalNdarray(
+            gid,
+            self.remote,
+            self.subspace,
+            self.dim_lens,
+            self.whole,
+            self.border,
+            self.whole_space,
+            self.from_border,
+            self.to_border,
+            self.dtype,
+        )
 
     def getlocal(self, width=None):
         if isinstance(width, int):
@@ -816,7 +1004,7 @@ class LocalNdarray:
             return self.bcontainer
         else:
             print("Dynamic addition of border not yet supported!")
-            assert(0)
+            assert 0
 
         """
         neighborhood = None  # bypass this for now
@@ -840,27 +1028,64 @@ class LocalNdarray:
         if self.to_border is None:
             print("getborder with no pre-computed overlaps")
             # what to do here?
-            assert(0)
+            assert 0
         else:
-            dprint(2, "getborder:", self.remote.worker_num, len(self.to_border), len(self.from_border), self.remote, type(self.remote), ndebug)
+            dprint(
+                2,
+                "getborder:",
+                self.remote.worker_num,
+                len(self.to_border),
+                len(self.from_border),
+                self.remote,
+                type(self.remote),
+                ndebug,
+            )
             for remote_id, region in self.to_border.items():
-                the_slice = tuple([slice(region[0][x], region[1][x] + 1) for x in range(region.shape[1])])
-                #local_slice = slice_to_local(the_slice, self.subspace)
-                local_slice = shardview.slice_to_local(self.subspace,the_slice)
-                dprint(2, "Sending Data:", self.remote.worker_num, remote_id, the_slice, local_slice)
-                self.remote.comm_queues[remote_id].put((the_slice, self.bcontainer[local_slice], stencil_uuid))
+                the_slice = tuple(
+                    [
+                        slice(region[0][x], region[1][x] + 1)
+                        for x in range(region.shape[1])
+                    ]
+                )
+                # local_slice = slice_to_local(the_slice, self.subspace)
+                local_slice = shardview.slice_to_local(self.subspace, the_slice)
+                dprint(
+                    2,
+                    "Sending Data:",
+                    self.remote.worker_num,
+                    remote_id,
+                    the_slice,
+                    local_slice,
+                )
+                self.remote.comm_queues[remote_id].put(
+                    (the_slice, self.bcontainer[local_slice], stencil_uuid)
+                )
             for _ in range(len(self.from_border)):
                 try:
                     if stencil_uuid is not None:
-                        incoming_slice, incoming_data, ruuid = self.remote.comm_queues[self.remote.worker_num].get(gfilter=lambda x: x[2] == stencil_uuid, timeout = 5)
+                        incoming_slice, incoming_data, ruuid = self.remote.comm_queues[
+                            self.remote.worker_num
+                        ].get(gfilter=lambda x: x[2] == stencil_uuid, timeout=5)
                     else:
-                        incoming_slice, incoming_data, ruuid = self.remote.comm_queues[self.remote.worker_num].get(timeout = 5)
+                        incoming_slice, incoming_data, ruuid = self.remote.comm_queues[
+                            self.remote.worker_num
+                        ].get(timeout=5)
                 except:
                     print("some exception!", sys.exc_info()[0])
-                    assert(0)
-                #local_slice = slice_to_local(incoming_slice, self.subspace)
-                local_slice = shardview.slice_to_local(self.subspace,incoming_slice)
-                dprint(2, "Receiving Data:", self.remote.worker_num, incoming_slice, local_slice, self.bcontainer.shape, incoming_data.shape, self.bcontainer[local_slice].size, ruuid)
+                    assert 0
+                # local_slice = slice_to_local(incoming_slice, self.subspace)
+                local_slice = shardview.slice_to_local(self.subspace, incoming_slice)
+                dprint(
+                    2,
+                    "Receiving Data:",
+                    self.remote.worker_num,
+                    incoming_slice,
+                    local_slice,
+                    self.bcontainer.shape,
+                    incoming_data.shape,
+                    self.bcontainer[local_slice].size,
+                    ruuid,
+                )
                 self.bcontainer[local_slice] = incoming_data
 
     @property
@@ -871,18 +1096,26 @@ class LocalNdarray:
         return self.subspace
 
     def get_partial_view(self, slice_index, shard, global_index=True, remap_view=True):
-        local_slice = shardview.slice_to_local(shard,slice_index) if global_index else slice_index
+        local_slice = (
+            shardview.slice_to_local(shard, slice_index)
+            if global_index
+            else slice_index
+        )
         arr = self.bcontainer[local_slice]
-        if remap_view: arr = shardview.array_to_view(shard,arr)
-        #print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
+        if remap_view:
+            arr = shardview.array_to_view(shard, arr)
+        # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
         return arr
 
     def get_view(self, shard):
-        return self.get_partial_view(shardview.to_base_slice(shard), shard, global_index=False)
+        return self.get_partial_view(
+            shardview.to_base_slice(shard), shard, global_index=False
+        )
 
-#------------------------------------------------------------------
+
+# ------------------------------------------------------------------
 # Support LocalNdarray usage in Numba.
-#------------------------------------------------------------------
+# ------------------------------------------------------------------
 class NumbaLocalNdarray(numba.types.Type):
     def __init__(self, dtype, ndim):
         try:
@@ -891,8 +1124,15 @@ class NumbaLocalNdarray(numba.types.Type):
             raise ValueError("Unsupported array dtype: %s" % (dtype,))
 
         self.ndim = ndim
-        dprint(3, "NumbaLocalNdarray:__init__:", dtype, type(dtype), self.dtype, type(self.dtype))
-        super(NumbaLocalNdarray, self).__init__(name='LocalNdarray')
+        dprint(
+            3,
+            "NumbaLocalNdarray:__init__:",
+            dtype,
+            type(dtype),
+            self.dtype,
+            type(self.dtype),
+        )
+        super(NumbaLocalNdarray, self).__init__(name="LocalNdarray")
 
     @property
     def key(self):
@@ -901,67 +1141,102 @@ class NumbaLocalNdarray(numba.types.Type):
     def __repr__(self):
         return "NumbaLocalNdarray(" + str(self.dtype) + "," + str(self.ndim) + ")"
 
+
 @numba.extending.typeof_impl.register(LocalNdarray)
 def typeof_LocalNdarray(val, c):
     dprint(3, "typeof_LocalNdarray", val, type(val))
     return NumbaLocalNdarray(val.bcontainer.dtype, val.bcontainer.ndim)
 
+
 @numba.extending.register_model(NumbaLocalNdarray)
 class NumbaLocalNdarrayModel(numba.extending.models.StructModel):
     def __init__(self, dmm, fe_type):
-        dprint(3, "NumbaLocalNdarrayModel:", fe_type, type(fe_type), fe_type.dtype, type(fe_type.dtype))
+        dprint(
+            3,
+            "NumbaLocalNdarrayModel:",
+            fe_type,
+            type(fe_type),
+            fe_type.dtype,
+            type(fe_type.dtype),
+        )
         members = [
-            ('subspace', numba.types.Array(numba.types.int64, 2, "C")),
-            ('bcontainer', numba.types.Array(fe_type.dtype, fe_type.ndim, "C"))
-            ]
+            ("subspace", numba.types.Array(numba.types.int64, 2, "C")),
+            ("bcontainer", numba.types.Array(fe_type.dtype, fe_type.ndim, "C")),
+        ]
         numba.extending.models.StructModel.__init__(self, dmm, fe_type, members)
 
-numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'bcontainer', 'bcontainer')
-numba.extending.make_attribute_wrapper(NumbaLocalNdarray, 'subspace', 'subspace')
+
+numba.extending.make_attribute_wrapper(NumbaLocalNdarray, "bcontainer", "bcontainer")
+numba.extending.make_attribute_wrapper(NumbaLocalNdarray, "subspace", "subspace")
 
 # Convert from Python LocalNdarray to Numba format.
 @numba.extending.unbox(NumbaLocalNdarray)
 def unbox_LocalNdarray(typ, obj, c):
-    dprint(3, "unbox", typ, type(typ), typ.dtype, type(typ.dtype), numba.core.typing.typeof.typeof(typ.dtype))
-    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
+    dprint(
+        3,
+        "unbox",
+        typ,
+        type(typ),
+        typ.dtype,
+        type(typ.dtype),
+        numba.core.typing.typeof.typeof(typ.dtype),
+    )
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(
+        c.context, c.builder
+    )
 
     subspace_obj = c.pyapi.object_getattr_string(obj, "subspace")
-    subspace_unboxed = numba.core.boxing.unbox_array(numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c)
+    subspace_unboxed = numba.core.boxing.unbox_array(
+        numba.types.Array(numba.types.int64, 2, "C"), subspace_obj, c
+    )
     numba_localndarray.subspace = subspace_unboxed.value
 
     bcontainer_obj = c.pyapi.object_getattr_string(obj, "bcontainer")
-    bcontainer_unboxed = numba.core.boxing.unbox_array(numba.types.Array(typ.dtype, typ.ndim, "C"), bcontainer_obj, c)
+    bcontainer_unboxed = numba.core.boxing.unbox_array(
+        numba.types.Array(typ.dtype, typ.ndim, "C"), bcontainer_obj, c
+    )
     numba_localndarray.bcontainer = bcontainer_unboxed.value
 
     c.pyapi.decref(subspace_obj)
     c.pyapi.decref(bcontainer_obj)
 
     is_error = numba.core.cgutils.is_not_null(c.builder, c.pyapi.err_occurred())
-    return numba.core.pythonapi.NativeValue(numba_localndarray._getvalue(), is_error=is_error)
+    return numba.core.pythonapi.NativeValue(
+        numba_localndarray._getvalue(), is_error=is_error
+    )
+
 
 @numba.extending.box(NumbaLocalNdarray)
 def box_LocalNdarray(typ, val, c):
     dprint(3, "box_LocalNdarray")
-    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(c.context, c.builder)
+    numba_localndarray = numba.core.cgutils.create_struct_proxy(typ)(
+        c.context, c.builder
+    )
     classobj = c.pyapi.unserialize(c.pyapi.serialize_object(LocalNdarray))
-    assert(0)
+    assert 0
     return ret
+
 
 @numba.extending.overload_method(NumbaLocalNdarray, "getlocal")
 def localndarray_getlocal(localndarray):
     def getter(localndarray):
         return localndarray.bcontainer
+
     return getter
+
 
 @numba.extending.overload_method(NumbaLocalNdarray, "getglobal")
 def localndarray_getglobal(localndarray):
     def getter(localndarray):
         return localndarray.subspace
+
     return getter
 
-#------------------------------------------------------------------
+
+# ------------------------------------------------------------------
 # Support LocalNdarray usage in Numba.
-#------------------------------------------------------------------
+# ------------------------------------------------------------------
+
 
 def none_if_zero(a, b):
     x = a - b
@@ -972,7 +1247,15 @@ def none_if_zero(a, b):
 
 def get_remote_ranges(distribution, required_division):
     divisions = shardview.distribution_to_divisions(distribution)
-    dprint(2, "get_remote_ranges: distribution\n", distribution, "\ndivisions\n", divisions, "\nrequired_division\n", required_division)
+    dprint(
+        2,
+        "get_remote_ranges: distribution\n",
+        distribution,
+        "\ndivisions\n",
+        divisions,
+        "\nrequired_division\n",
+        required_division,
+    )
 
     ret = []
     for node_num in range(len(divisions)):
@@ -982,6 +1265,7 @@ def get_remote_ranges(distribution, required_division):
             ret.append((node_num, bi, sview))
 
     return ret
+
 
 def division_non_empty(x):
     xshape = x.shape
@@ -993,7 +1277,7 @@ def division_non_empty(x):
     elif len(xshape) == 2:
         return not np.any(x[0] > x[1])
     else:
-        assert(0)
+        assert 0
 
 
 @numba.njit(parallel=True, cache=True)
@@ -1009,22 +1293,28 @@ def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill", filler)
     # FIX ME: What if njit(filler) fails during compile or runtime?
-    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
 
     if num_dim > 1:
+
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
                 # Construct the global index.
                 for j in range(len(starts)):
-                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                    arg = UT.tuple_setitem(arg, j, i[j] + starts[j])
                 A[i] = njfiller(arg)
 
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
     else:
+
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
-                A[i] = njfiller((i+starts[0],))
+                A[i] = njfiller((i + starts[0],))
 
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
@@ -1034,22 +1324,28 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill_non_tuple", filler)
     print("get_do_fill_non_tuple", filler, num_dim)
-    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
 
     if num_dim > 1:
+
         def do_fill(A, sz, starts):
             for i in numba.pndindex(sz):
                 arg = sz
                 # Construct the global index.
                 for j in range(len(starts)):
-                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                    arg = UT.tuple_setitem(arg, j, i[j] + starts[j])
                 A[i] = njfiller(*arg)
 
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
     else:
+
         def do_fill(A, sz, starts):
             for i in numba.prange(sz[0]):
-                A[i] = njfiller(i+starts[0])
+                A[i] = njfiller(i + starts[0])
 
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
@@ -1058,28 +1354,35 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 def get_smap_index(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_smap_index", filler)
-    njfiller = filler if isinstance(filler,numba.core.registry.CPUDispatcher) else numba.njit(filler)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
 
     if num_dim > 1:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
+
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts, *args):
             for i in numba.pndindex(sz):
                 arg = sz
                 # Construct the global index.
                 for j in range(len(starts)):
-                    arg = UT.tuple_setitem(arg, j, i[j]+starts[j])
+                    arg = UT.tuple_setitem(arg, j, i[j] + starts[j])
                 fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
                 A[i] = njfiller(arg, *fargs)
 
         return do_fill
     else:
-        @numba.njit #(parallel=True) # using parallel causes compile to fail
+
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
         def do_fill(A, sz, starts, *args):
             for i in numba.prange(sz[0]):
                 fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
-                A[i] = njfiller((i+starts[0],), *fargs)
+                A[i] = njfiller((i + starts[0],), *fargs)
 
         return do_fill
+
 
 def rec_buf_summary(rec_buf):
     total = 0
@@ -1090,13 +1393,13 @@ def rec_buf_summary(rec_buf):
             num_compiled += 1
             if depth == 0:
                 start = rec[0]
-                #print("rec_buf_summary starting", start)
+                # print("rec_buf_summary starting", start)
             depth += 1
         elif rec[1].is_end:
             depth -= 1
             if depth == 0:
                 total += rec[0] - start
-                #print("rec_buf_summary ending", rec[0], rec[0] - start, total)
+                # print("rec_buf_summary ending", rec[0], rec[0] - start, total)
 
     return (num_compiled, total)
 
@@ -1104,25 +1407,27 @@ def rec_buf_summary(rec_buf):
 # The following support functions are for ZMQ with BCAST -- this helps create a 2 level control and response tree
 def workers_by_node(comm_queues):
     w = {}
-    for i,q in enumerate(comm_queues):
+    for i, q in enumerate(comm_queues):
         if q.ip not in w:
             w[q.ip] = []
         w[q.ip].append(i)
     return w
 
+
 def get_children(i, comm_queues):
     if not USE_RAY_CALLS and USE_ZMQ and USE_BCAST:
         w = workers_by_node(comm_queues)
-        nw = w[ comm_queues[i].ip ]
+        nw = w[comm_queues[i].ip]
         aggr = nw[0]
         nw = nw[1:]
-        return aggr==i, nw
+        return aggr == i, nw
     return False, []
+
 
 def get_aggregators(comm_queues):
     if not USE_RAY_CALLS and USE_ZMQ and USE_BCAST:
         w = workers_by_node(comm_queues)
-        aggregators = [ x[0] for _,x in w.items() ]
+        aggregators = [x[0] for _, x in w.items()]
         return aggregators
     return []
 
@@ -1131,17 +1436,28 @@ class RemoteState:
     def __init__(self, worker_num, common_state):
         set_common_state(common_state)
         z = numa.set_affinity(worker_num, numa_zones)
-        dprint(1,"Worker:",worker_num, socket.gethostname(), num_workers, z, num_threads, ndebug, ntiming, timing)
+        dprint(
+            1,
+            "Worker:",
+            worker_num,
+            socket.gethostname(),
+            num_workers,
+            z,
+            num_threads,
+            ndebug,
+            ntiming,
+            timing,
+        )
         self.numpy_map = {}
         self.worker_num = worker_num
         # ensure numba is imported in remote contexts
         x = numba.config.NUMBA_DEFAULT_NUM_THREADS
         numba.set_num_threads(num_threads)
-        self.my_comm_queue = None #ramba_queue.Queue()
-        self.my_control_queue = None #ramba_queue.Queue()
+        self.my_comm_queue = None  # ramba_queue.Queue()
+        self.my_control_queue = None  # ramba_queue.Queue()
         self.my_rvq = None
         self.up_rvq = None
-        self.tlast=timer()
+        self.tlast = timer()
 
         if numba.version_info.short >= (0, 53):
             self.compile_recorder = numba.core.event.RecordingListener()
@@ -1154,30 +1470,57 @@ class RemoteState:
         self.comm_queues[self.worker_num] = self.my_comm_queue
         self.control_queues = control_queues
         self.control_queues[self.worker_num] = self.my_control_queue
-        self.is_aggregator, self.children = get_children( self.worker_num, self.comm_queues )
+        self.is_aggregator, self.children = get_children(
+            self.worker_num, self.comm_queues
+        )
         return self.comm_queues
 
     def get_comm_queue(self):
-        if self.my_comm_queue is None: self.my_comm_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=0)
+        if self.my_comm_queue is None:
+            self.my_comm_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=0)
         return self.my_comm_queue
 
     def get_control_queue(self):
-        if self.my_control_queue is None: self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=1)
+        if self.my_control_queue is None:
+            self.my_control_queue = ramba_queue.Queue(hint_ip=hint_ip, tag=1)
         return self.my_control_queue
 
     def set_up_rvq(self, rvq):
         self.up_rvq = rvq
 
     def destroy_array(self, gid):
-        #if gid in self.numpy_map:
-            self.numpy_map.pop(gid)
+        # if gid in self.numpy_map:
+        self.numpy_map.pop(gid)
 
-    def create_array(self, gid, subspace, whole, filler, local_border, dtype, whole_space, from_border, to_border, filler_tuple_arg=True):
-        dprint(3, "RemoteState::create_array:", gid, subspace, filler, local_border, dtype)
+    def create_array(
+        self,
+        gid,
+        subspace,
+        whole,
+        filler,
+        local_border,
+        dtype,
+        whole_space,
+        from_border,
+        to_border,
+        filler_tuple_arg=True,
+    ):
+        dprint(
+            3, "RemoteState::create_array:", gid, subspace, filler, local_border, dtype
+        )
         num_dim = len(shardview.get_size(subspace))
         dim_lens = tuple(shardview.get_size(subspace))
         starts = tuple(shardview.get_start(subspace))
-        dprint(3, "num_dim:", num_dim, dim_lens, type(dim_lens), dim_lens[0], type(dim_lens[0]), starts)
+        dprint(
+            3,
+            "num_dim:",
+            num_dim,
+            dim_lens,
+            type(dim_lens),
+            dim_lens[0],
+            type(dim_lens[0]),
+            starts,
+        )
         # Per-element fillers is the default.  This can be updated through passing a Filler object as filler.
         # If there is no filler then setting this mode will assure that LocalNdarray allocates the array.
         mode = Filler.PER_ELEMENT
@@ -1185,7 +1528,7 @@ class RemoteState:
         if filler:
             filler = func_loads(filler)
         if filler:
-            #per_element = True
+            # per_element = True
             do_compile = True
             if isinstance(filler, Filler):
                 mode = filler.mode
@@ -1193,11 +1536,24 @@ class RemoteState:
                 filler = filler.func
             dprint(3, "Has filler", mode, do_compile, filler_tuple_arg)
 
-        lnd = LocalNdarray(gid, self, subspace, dim_lens, whole, local_border, whole_space, from_border, to_border, dtype, creation_mode=mode)
+        lnd = LocalNdarray(
+            gid,
+            self,
+            subspace,
+            dim_lens,
+            whole,
+            local_border,
+            whole_space,
+            from_border,
+            to_border,
+            dtype,
+            creation_mode=mode,
+        )
         self.numpy_map[gid] = lnd
         new_bcontainer = lnd.bcontainer
         if filler:
             if mode == Filler.PER_ELEMENT:
+
                 def do_per_element_non_compiled(new_bcontainer, dim_lens, starts):
                     for i in np.ndindex(dim_lens):
                         # Construct the global index.
@@ -1225,7 +1581,11 @@ class RemoteState:
             elif mode == Filler.WHOLE_ARRAY_NEW:
                 if do_compile:
                     try:
-                        njfiller = filler if isinstance(filler, numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
+                        njfiller = (
+                            filler
+                            if isinstance(filler, numba.core.registry.CPUDispatcher)
+                            else FunctionMetadata(filler, (), {})
+                        )
                         filler_res = njfiller(dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
@@ -1240,7 +1600,11 @@ class RemoteState:
             elif mode == Filler.WHOLE_ARRAY_INPLACE:
                 if do_compile:
                     try:
-                        njfiller = filler if isinstance(filler, numba.core.registry.CPUDispatcher) else FunctionMetadata(filler, (), {})
+                        njfiller = (
+                            filler
+                            if isinstance(filler, numba.core.registry.CPUDispatcher)
+                            else FunctionMetadata(filler, (), {})
+                        )
                         njfiller(new_bcontainer, dim_lens, starts)
                     except:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
@@ -1249,33 +1613,79 @@ class RemoteState:
                 else:
                     filler(new_bcontainer, dim_lens, starts)
             else:
-                assert(0)
+                assert 0
 
     def copy(self, new_gid, old_gid, border, from_border, to_border):
         old_lnd = self.numpy_map[old_gid]
-        lnd = LocalNdarray(new_gid, self, old_lnd.subspace, old_lnd.dim_lens, old_lnd.whole, border, old_lnd.whole_space, from_border, to_border, old_lnd.dtype)
+        lnd = LocalNdarray(
+            new_gid,
+            self,
+            old_lnd.subspace,
+            old_lnd.dim_lens,
+            old_lnd.whole,
+            border,
+            old_lnd.whole_space,
+            from_border,
+            to_border,
+            old_lnd.dtype,
+        )
         self.numpy_map[new_gid] = lnd
         new_bcontainer = lnd.bcontainer
         new_bcontainer[lnd.core_slice] = old_lnd.bcontainer[lnd.core_slice]
 
     def triu(self, new_gid, old_gid, k, border, from_border, to_border):
         old_lnd = self.numpy_map[old_gid]
-        lnd = LocalNdarray(new_gid, self, old_lnd.subspace, old_lnd.dim_lens, old_lnd.whole, border, old_lnd.whole_space, from_border, to_border, old_lnd.dtype)
+        lnd = LocalNdarray(
+            new_gid,
+            self,
+            old_lnd.subspace,
+            old_lnd.dim_lens,
+            old_lnd.whole,
+            border,
+            old_lnd.whole_space,
+            from_border,
+            to_border,
+            old_lnd.dtype,
+        )
         self.numpy_map[new_gid] = lnd
         new_bcontainer = lnd.bcontainer
         starts = tuple(shardview.get_start(lnd.subspace))
         # We should have a Numba function here to parallelize.
-        new_bcontainer[lnd.core_slice] = np.triu(old_lnd.bcontainer[lnd.core_slice], k - (starts[1] - starts[0]))
+        new_bcontainer[lnd.core_slice] = np.triu(
+            old_lnd.bcontainer[lnd.core_slice], k - (starts[1] - starts[0])
+        )
 
     def setitem1(self, to_gid, from_gid):
         to_lnd = self.numpy_map[to_gid]
         from_lnd = self.numpy_map[from_gid]
         to_lnd.bcontainer[to_lnd.core_slice] = from_lnd.bcontainer[to_lnd.core_slice]
 
-    def push_array(self, gid, subspace, whole, pushed_subarray, border, whole_space, from_border, to_border, dtype):
+    def push_array(
+        self,
+        gid,
+        subspace,
+        whole,
+        pushed_subarray,
+        border,
+        whole_space,
+        from_border,
+        to_border,
+        dtype,
+    ):
         num_dim = len(shardview.get_size(subspace))
         dim_lens = tuple(shardview.get_size(subspace))
-        lnd = LocalNdarray(gid, self, subspace, dim_lens, whole, border, whole_space, from_border, to_border, dtype)
+        lnd = LocalNdarray(
+            gid,
+            self,
+            subspace,
+            dim_lens,
+            whole,
+            border,
+            whole_space,
+            from_border,
+            to_border,
+            dtype,
+        )
         self.numpy_map[gid] = lnd
         new_bcontainer = lnd.bcontainer
         if dim_lens != pushed_subarray.shape:
@@ -1283,7 +1693,7 @@ class RemoteState:
         new_bcontainer[lnd.core_slice] = pushed_subarray
 
     def get_array(self, gid):
-#        print("get_array:", gid, self.numpy_map.keys())
+        #        print("get_array:", gid, self.numpy_map.keys())
         lnd = self.numpy_map[gid]
         return lnd.bcontainer[lnd.core_slice]
 
@@ -1293,20 +1703,25 @@ class RemoteState:
     # returns a view corresponding to the whole shard
     # output dimensionality is always same as bcontainer
     def get_view(self, gid, shard):
-        return self.get_partial_view(gid, shardview.to_base_slice(shard), shard, global_index=False)
+        return self.get_partial_view(
+            gid, shardview.to_base_slice(shard), shard, global_index=False
+        )
 
     # returns a view corresponding to the slice_index based on given shardview
     # slice_index may be globally indexed (same num dims as view), or locally indexed (same num dims as bcontainer)
     # output dimensionality is always same as bcontainer
-    def get_partial_view(self, gid, slice_index, shard, global_index=True, remap_view=True):
+    def get_partial_view(
+        self, gid, slice_index, shard, global_index=True, remap_view=True
+    ):
         lnd = self.numpy_map[gid]
-        return lnd.get_partial_view(slice_index, shard, global_index=global_index, remap_view=remap_view)
-        #local_slice = shard.slice_to_local(slice_index) if global_index else slice_index
+        return lnd.get_partial_view(
+            slice_index, shard, global_index=global_index, remap_view=remap_view
+        )
+        # local_slice = shard.slice_to_local(slice_index) if global_index else slice_index
         ##print("get_partial_view:",self.worker_num, slice_index, local_slice, shard, lnd.bcontainer.shape)
-        #arr = lnd.bcontainer[local_slice]
-        #if remap_view: arr = shard.array_to_view(arr)
-        #return arr
-
+        # arr = lnd.bcontainer[local_slice]
+        # if remap_view: arr = shard.array_to_view(arr)
+        # return arr
 
     def getitem_global(self, gid, global_index, shard):
         lnd = self.numpy_map[gid]
@@ -1316,12 +1731,12 @@ class RemoteState:
         unaryop = getattr(self.get_view(lhs_gid, dist[self.worker_num]), op)
         if out_gid is not None:
             outarr = self.get_view(out_gid, out_dist[self.worker_num])
-            sl = tuple(0 if i==axis else slice(None) for i in range(outarr.ndim))
+            sl = tuple(0 if i == axis else slice(None) for i in range(outarr.ndim))
             outarr[sl] = unaryop(axis=axis, dtype=dtype)
         else:
-        #    print("befor unaryop array_unary_op", timer())
-            ret = unaryop(axis=axis,dtype=dtype)  # works for some simple reductions
-        #    print("after unaryop array_unary_op", timer())
+            #    print("befor unaryop array_unary_op", timer())
+            ret = unaryop(axis=axis, dtype=dtype)  # works for some simple reductions
+            #    print("after unaryop array_unary_op", timer())
             return ret
 
     # TODO: should use get_view
@@ -1331,10 +1746,13 @@ class RemoteState:
         lnd = first.init_like(out_gid)
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
-        #uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
-        #bcontainers = [self.numpy_map[x][0] for x in uuids]
+        # uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
+        # bcontainers = [self.numpy_map[x][0] for x in uuids]
         for index in np.ndindex(first.dim_lens):
-            fargs = [self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x for x in args]
+            fargs = [
+                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                for x in args
+            ]
             new_bcontainer[index] = func(*fargs)
 
     # TODO: should use get_view
@@ -1345,40 +1763,68 @@ class RemoteState:
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         starts = tuple(shardview.get_start(first.subspace))
 
-#        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
-#        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
-#        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-#        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
+        #        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
+        #        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
+        #        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+        #        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         for index in np.ndindex(first.dim_lens):
             index_arg = tuple(map(operator.add, index, starts))
-            #index_arg = tuple(shardview.base_to_index(first.subspace,index))
-            fargs = [self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x for x in args]
+            # index_arg = tuple(shardview.base_to_index(first.subspace,index))
+            fargs = [
+                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                for x in args
+            ]
             new_bcontainer[index] = func(index_arg, *fargs)
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer):
-        func=func_loads(func)
-        reducer=func_loads(reducer)
+        func = func_loads(func)
+        reducer = func_loads(reducer)
         first = self.numpy_map[first_gid]
         result = None
-        assert(len(args) == 1)
+        assert len(args) == 1
         for index in np.ndindex(first.dim_lens):
-            fargs = [self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x for x in args]
+            fargs = [
+                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                for x in args
+            ]
             if result is None:
                 result = func(*fargs)
             else:
                 result = reducer(result, func(*fargs))
         return result
 
-    def reshape(self, out_gid, out_size, out_distribution,
-                      arr_gid, arr_size, arr_distribution, send_recv):
+    def reshape(
+        self,
+        out_gid,
+        out_size,
+        out_distribution,
+        arr_gid,
+        arr_size,
+        arr_distribution,
+        send_recv,
+    ):
         out_lnd = self.numpy_map[out_gid]
         arr_lnd = self.numpy_map[arr_gid]
 
         worker_data = [[] for _ in range(num_workers)]
-        out_cumul = np.array([int(np.prod(out_size[i+1:])) for i in range(len(out_size))])
-        arr_cumul = np.array([int(np.prod(arr_size[i+1:])) for i in range(len(arr_size))])
-        dprint(2, "reshape", self.worker_num, out_cumul, arr_cumul, arr_lnd.subspace, arr_lnd.whole, shardview.distribution_to_divisions(arr_lnd.whole_space)[self.worker_num], arr_distribution)
+        out_cumul = np.array(
+            [int(np.prod(out_size[i + 1 :])) for i in range(len(out_size))]
+        )
+        arr_cumul = np.array(
+            [int(np.prod(arr_size[i + 1 :])) for i in range(len(arr_size))]
+        )
+        dprint(
+            2,
+            "reshape",
+            self.worker_num,
+            out_cumul,
+            arr_cumul,
+            arr_lnd.subspace,
+            arr_lnd.whole,
+            shardview.distribution_to_divisions(arr_lnd.whole_space)[self.worker_num],
+            arr_distribution,
+        )
 
         def to_flat(index):
             return sum(index * arr_cumul)
@@ -1394,38 +1840,65 @@ class RemoteState:
             flat = to_flat(index)
             out_index = to_out_index(flat)
             out_worker = shardview.find_index(out_distribution, out_index)
-            base_index = shardview.index_to_base(arr_distribution[self.worker_num],index)
+            base_index = shardview.index_to_base(
+                arr_distribution[self.worker_num], index
+            )
             if out_worker != self.worker_num:
                 worker_data[out_worker].append(arr_lnd.bcontainer[base_index])
             else:
-                out_base_index = shardview.index_to_base(out_distribution[self.worker_num],out_index)
+                out_base_index = shardview.index_to_base(
+                    out_distribution[self.worker_num], out_index
+                )
                 out_lnd.bcontainer[out_base_index] = arr_lnd.bcontainer[base_index]
 
         for i in range(num_workers):
             if i != self.worker_num:
-                self.comm_queues[i].put((send_recv, self.worker_num, np.array(worker_data[i])))
+                self.comm_queues[i].put(
+                    (send_recv, self.worker_num, np.array(worker_data[i]))
+                )
 
         for i in range(num_workers):
             if i != self.worker_num:
-                incoming_send_recv_uuid, from_worker_num, incoming_data = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0] == send_recv, timeout = 5)
+                (
+                    incoming_send_recv_uuid,
+                    from_worker_num,
+                    incoming_data,
+                ) = self.comm_queues[self.worker_num].get(
+                    gfilter=lambda x: x[0] == send_recv, timeout=5
+                )
                 j = 0
                 for index in distindex(arr_lnd.whole_space[from_worker_num]):
                     flat = to_flat(index)
                     out_index = to_out_index(flat)
                     out_worker = shardview.find_index(out_distribution, out_index)
                     if out_worker == self.worker_num:
-                        base_index = shardview.index_to_base(out_distribution[self.worker_num],out_index)
+                        base_index = shardview.index_to_base(
+                            out_distribution[self.worker_num], out_index
+                        )
                         out_lnd.bcontainer[base_index] = incoming_data[j]
                         j += 1
 
-    def matmul(self, out_gid, out_size, out_distribution,
-                     a_gid, a_size, a_distribution,
-                     b_gid, b_size, b_distribution,
-                     bextend, a_send_recv, b_send_recv):
+    def matmul(
+        self,
+        out_gid,
+        out_size,
+        out_distribution,
+        a_gid,
+        a_size,
+        a_distribution,
+        b_gid,
+        b_size,
+        b_distribution,
+        bextend,
+        a_send_recv,
+        b_send_recv,
+    ):
         start_worker_matmul = timer()
         dprint(3, "remote matmul", self.worker_num, out_gid, a_gid, b_gid)
-        #print( "remote matmul", out_gid, a_gid, a_distribution, b_gid, b_distribution)
-        def send_recv(thearray, array_distribution, from_range, to_range, send_recv_gid):
+        # print( "remote matmul", out_gid, a_gid, a_distribution, b_gid, b_distribution)
+        def send_recv(
+            thearray, array_distribution, from_range, to_range, send_recv_gid
+        ):
             ret = []
             send_stats = []
             recv_stats = []
@@ -1433,108 +1906,191 @@ class RemoteState:
             for to_worker, from_worker, block_intersection, sview in to_range:
                 if from_worker != to_worker:
                     start_time = timer()
-                    local_slice = shardview.div_to_local(array_distribution,block_intersection)
-                    dprint(4, "send matmul:", to_worker, from_worker, block_intersection, sview, local_slice, thearray.subspace)
-                    data = self.get_partial_view(thearray.gid, local_slice, array_distribution,global_index=False)
-                    self.comm_queues[to_worker].put((send_recv_gid, data, block_intersection, sview))
+                    local_slice = shardview.div_to_local(
+                        array_distribution, block_intersection
+                    )
+                    dprint(
+                        4,
+                        "send matmul:",
+                        to_worker,
+                        from_worker,
+                        block_intersection,
+                        sview,
+                        local_slice,
+                        thearray.subspace,
+                    )
+                    data = self.get_partial_view(
+                        thearray.gid,
+                        local_slice,
+                        array_distribution,
+                        global_index=False,
+                    )
+                    self.comm_queues[to_worker].put(
+                        (send_recv_gid, data, block_intersection, sview)
+                    )
                     end_time = timer()
-                    #print("sending",local_slice,data.shape,block_intersection,array_distribution)
+                    # print("sending",local_slice,data.shape,block_intersection,array_distribution)
                     send_stats.append((end_time - start_time, data.size))
 
             for to_worker, from_worker, block_intersection, sview in from_range:
                 if from_worker == to_worker:
-                    local_slice = shardview.div_to_local(array_distribution,block_intersection)
-                    dprint(4, "from same matmul:", to_worker, from_worker, block_intersection, sview, local_slice)
-                    ret.append((block_intersection, self.get_partial_view(thearray.gid,local_slice,array_distribution,global_index=False)))
+                    local_slice = shardview.div_to_local(
+                        array_distribution, block_intersection
+                    )
+                    dprint(
+                        4,
+                        "from same matmul:",
+                        to_worker,
+                        from_worker,
+                        block_intersection,
+                        sview,
+                        local_slice,
+                    )
+                    ret.append(
+                        (
+                            block_intersection,
+                            self.get_partial_view(
+                                thearray.gid,
+                                local_slice,
+                                array_distribution,
+                                global_index=False,
+                            ),
+                        )
+                    )
                 else:
-                    dprint(4, "from different matmul:", to_worker, from_worker, block_intersection, sview)
+                    dprint(
+                        4,
+                        "from different matmul:",
+                        to_worker,
+                        from_worker,
+                        block_intersection,
+                        sview,
+                    )
                     try:
                         start_time = timer()
-                        incoming_send_recv_gid, incoming_data, in_block_intersection, in_sview = self.comm_queues[to_worker].get(gfilter=lambda x: x[0] == send_recv_gid, timeout = 5)
-                        assert(incoming_send_recv_gid == send_recv_gid)
-                        dprint(4, "receive matmul:", incoming_data.shape, in_block_intersection)
+                        (
+                            incoming_send_recv_gid,
+                            incoming_data,
+                            in_block_intersection,
+                            in_sview,
+                        ) = self.comm_queues[to_worker].get(
+                            gfilter=lambda x: x[0] == send_recv_gid, timeout=5
+                        )
+                        assert incoming_send_recv_gid == send_recv_gid
+                        dprint(
+                            4,
+                            "receive matmul:",
+                            incoming_data.shape,
+                            in_block_intersection,
+                        )
                         ret.append((in_block_intersection, incoming_data))
                         end_time = timer()
                         recv_stats.append((end_time - start_time, incoming_data.size))
                     except:
                         print("some exception!", sys.exc_info()[0])
-                        assert(0)
-            #print ("ret: ", ret)
+                        assert 0
+            # print ("ret: ", ret)
             return ret, send_stats, recv_stats
 
         class FakeLocal:
             def __init__(self, shape, worker_num, bcontainer=None):
                 self.whole = shape
-                self.whole_space = shardview.divisions_to_distribution(shardview.make_uni_dist_from_shape(num_workers, worker_num, shape))
+                self.whole_space = shardview.divisions_to_distribution(
+                    shardview.make_uni_dist_from_shape(num_workers, worker_num, shape)
+                )
                 if bcontainer is not None:
                     self.bcontainer = bcontainer
                 else:
                     self.bcontainer = np.zeros(shape)
-                self.core_slice = tuple([slice(None,None,None) for _ in range(len(shape))])
+                self.core_slice = tuple(
+                    [slice(None, None, None) for _ in range(len(shape))]
+                )
 
             def get_partial_view(self, the_slice, dist, global_index=True):
-                #assert(global_index == False)
+                # assert(global_index == False)
                 return self.bcontainer[the_slice]
 
             def get_view(self, shard):
-                print (shard, self.core_slice)
-                return self.get_partial_view(shardview.to_base_slice(shard), shard, global_index=False)
+                print(shard, self.core_slice)
+                return self.get_partial_view(
+                    shardview.to_base_slice(shard), shard, global_index=False
+                )
 
         a = self.numpy_map[a_gid]
         adiv = shardview.to_division(a_distribution[self.worker_num])
         if isinstance(b_gid, uuid.UUID):
             b = self.numpy_map[b_gid]
             bdiv = shardview.to_division(b_distribution[self.worker_num])
-            #b_slice = tuple([slice(None,None)]*len(b.dim_lens))
-            b_slice = tuple([slice(bdiv[0][i],bdiv[1][i]+1) for i in range(len(b.dim_lens))])
+            # b_slice = tuple([slice(None,None)]*len(b.dim_lens))
+            b_slice = tuple(
+                [slice(bdiv[0][i], bdiv[1][i] + 1) for i in range(len(b.dim_lens))]
+            )
         elif isinstance(b_gid, np.ndarray):
             b = FakeLocal(b_gid.shape, self.worker_num, bcontainer=b_gid)
             bdiv = shardview.to_division(b.whole_space[self.worker_num])
             b_distribution = b.whole_space
             if bextend:
-                b.core_slice = (slice(adiv[0,1],adiv[1,1]+1),)
-                b_slice = (slice(adiv[0,1],adiv[1,1]+1),)
+                b.core_slice = (slice(adiv[0, 1], adiv[1, 1] + 1),)
+                b_slice = (slice(adiv[0, 1], adiv[1, 1] + 1),)
             else:
-                b.core_slice = (slice(adiv[0,1],adiv[1,1]+1),slice(0,b_gid.shape[1]))
-                b_slice = (slice(adiv[0,1],adiv[1,1]+1),slice(0,b_gid.shape[1]))
+                b.core_slice = (
+                    slice(adiv[0, 1], adiv[1, 1] + 1),
+                    slice(0, b_gid.shape[1]),
+                )
+                b_slice = (slice(adiv[0, 1], adiv[1, 1] + 1), slice(0, b_gid.shape[1]))
         else:
-            assert(0)
+            assert 0
 
         if isinstance(out_gid, uuid.UUID):
             clocal = self.numpy_map[out_gid]
             # This is too much....should only do the slice portion.
             clocal.bcontainer.fill(0)
             cdiv = shardview.to_division(out_distribution[self.worker_num])
-            #cdiv = shardview.to_division(clocal.subspace)
+            # cdiv = shardview.to_division(clocal.subspace)
             partial_numpy = None
             cslice = self.get_view(out_gid, out_distribution[self.worker_num])
         elif isinstance(out_gid, tuple):
             clocal = FakeLocal(out_gid, self.worker_num)
             cdiv = shardview.to_division(clocal.whole_space[self.worker_num])
             partial_numpy = clocal.bcontainer
-            #print("pre alocal:", self.worker_num, a_distribution[self.worker_num], type(a_distribution[self.worker_num]), a_distribution[self.worker_num].to_base_slice())
-            #alocal = a.get_partial_view(shardview.to_base_slice(a_distribution[self.worker_num]), a_distribution[self.worker_num], global_index=False)
+            # print("pre alocal:", self.worker_num, a_distribution[self.worker_num], type(a_distribution[self.worker_num]), a_distribution[self.worker_num].to_base_slice())
+            # alocal = a.get_partial_view(shardview.to_base_slice(a_distribution[self.worker_num]), a_distribution[self.worker_num], global_index=False)
             alocal = a.get_view(a_distribution[self.worker_num])
-            #print("pre blocal:", self.worker_num, b_distribution[self.worker_num], type(b_distribution[self.worker_num]), b_distribution[self.worker_num].to_base_slice())
-            #blocal = b.get_partial_view(shardview.to_base_slice(b_distribution[self.worker_num]), b_distribution[self.worker_num], global_index=False)
-            #blocal = b.get_view(b_distribution[self.worker_num])
+            # print("pre blocal:", self.worker_num, b_distribution[self.worker_num], type(b_distribution[self.worker_num]), b_distribution[self.worker_num].to_base_slice())
+            # blocal = b.get_partial_view(shardview.to_base_slice(b_distribution[self.worker_num]), b_distribution[self.worker_num], global_index=False)
+            # blocal = b.get_view(b_distribution[self.worker_num])
             blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
-            nothing_to_do = all(x == 0 for x in alocal.shape) or all(x == 0 for x in blocal.shape)
+            nothing_to_do = all(x == 0 for x in alocal.shape) or all(
+                x == 0 for x in blocal.shape
+            )
             if not nothing_to_do and alocal.shape[1] != blocal.shape[0]:
                 print("mismatch", self.worker_num, alocal.shape, blocal.shape)
-                print("a_distribution:", a_distribution, "\n", shardview.distribution_to_divisions(a_distribution))
-                print("b_distribution:", b_distribution, "\n", shardview.distribution_to_divisions(b_distribution))
-                assert(0)
+                print(
+                    "a_distribution:",
+                    a_distribution,
+                    "\n",
+                    shardview.distribution_to_divisions(a_distribution),
+                )
+                print(
+                    "b_distribution:",
+                    b_distribution,
+                    "\n",
+                    shardview.distribution_to_divisions(b_distribution),
+                )
+                assert 0
 
             exec_start_time = timer()
             if not nothing_to_do:
                 if bextend:
-                    cslice_struct = (slice(adiv[0,0], adiv[1,0]+1),)
+                    cslice_struct = (slice(adiv[0, 0], adiv[1, 0] + 1),)
                 else:
-                    cslice_struct = (slice(adiv[0,0], adiv[1,0]+1), slice(0, out_gid[1]))
+                    cslice_struct = (
+                        slice(adiv[0, 0], adiv[1, 0] + 1),
+                        slice(0, out_gid[1]),
+                    )
                 clocal.bcontainer[cslice_struct] = alocal @ blocal
-                #clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
-#                print("special dot:", alocal.shape, blocal.shape)
+                # clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
+            #                print("special dot:", alocal.shape, blocal.shape)
             exec_end_time = timer()
 
             start_reduction_time = timer()
@@ -1547,80 +2103,141 @@ class RemoteState:
                     # this worker will send
                     if self.worker_num >= midpoint:
                         send_to = self.worker_num - midpoint
-                        #print("parreduction", max_worker, self.worker_num, "sending to", send_to)
+                        # print("parreduction", max_worker, self.worker_num, "sending to", send_to)
                         self.comm_queues[send_to].put((a_send_recv, partial_numpy))
                         break
                     else:
                         # If the remaining workers is odd and this worker is the last one then it won't receive
                         # any communication or needs to do any compute but just goes to the next iteration where
                         # it will send.
-                        if not (max_worker % 2 == 1 and self.worker_num == midpoint - 1):
-                            #print("parreduction", max_worker, self.worker_num, "receiving")
+                        if not (
+                            max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                        ):
+                            # print("parreduction", max_worker, self.worker_num, "receiving")
                             try:
-                                incoming_uuid, incoming_partial = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0] == a_send_recv, timeout = 5)
+                                incoming_uuid, incoming_partial = self.comm_queues[
+                                    self.worker_num
+                                ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
                             except:
                                 print("some exception!", sys.exc_info()[0])
-                                assert(0)
+                                assert 0
                             partial_numpy += incoming_partial
 
                     max_worker = midpoint
 
                 if self.worker_num == 0:
-                    #final_res = self.numpy_map[out_size]
-                    #final_res.bcontainer[:] = partial_numpy
-                    final_res = self.get_view(out_size, out_distribution[self.worker_num])
+                    # final_res = self.numpy_map[out_size]
+                    # final_res.bcontainer[:] = partial_numpy
+                    final_res = self.get_view(
+                        out_size, out_distribution[self.worker_num]
+                    )
                     final_res[:] = partial_numpy
                 partial_numpy = 0
 
             end_worker_matmul = timer()
-            return (self.worker_num, end_worker_matmul - start_worker_matmul, 0, end_worker_matmul - start_reduction_time, 0, 0, exec_end_time - exec_start_time, [], [], [], [], partial_numpy)
+            return (
+                self.worker_num,
+                end_worker_matmul - start_worker_matmul,
+                0,
+                end_worker_matmul - start_reduction_time,
+                0,
+                0,
+                exec_end_time - exec_start_time,
+                [],
+                [],
+                [],
+                [],
+                partial_numpy,
+            )
         else:
-            assert(0)
+            assert 0
 
-        cstartrow = cdiv[0,0]
-        cendrow = cdiv[1,0]
+        cstartrow = cdiv[0, 0]
+        cendrow = cdiv[1, 0]
         if not bextend:
-            cstartcol = cdiv[0,1]
-            cendcol = cdiv[1,1]
+            cstartcol = cdiv[0, 1]
+            cendcol = cdiv[1, 1]
         else:
             cstartcol = None
             cendcol = None
 
-        dprint(4, "remote matmul a subspace:", self.worker_num, a_distribution[self.worker_num], adiv)
-        dprint(4, "remote matmul b subspace:", self.worker_num, b_distribution[self.worker_num], bdiv)
-        dprint(4, "remote matmul c whole:", self.worker_num, clocal.whole, cdiv, cstartrow, cstartcol, out_distribution, clocal.whole_space)
+        dprint(
+            4,
+            "remote matmul a subspace:",
+            self.worker_num,
+            a_distribution[self.worker_num],
+            adiv,
+        )
+        dprint(
+            4,
+            "remote matmul b subspace:",
+            self.worker_num,
+            b_distribution[self.worker_num],
+            bdiv,
+        )
+        dprint(
+            4,
+            "remote matmul c whole:",
+            self.worker_num,
+            clocal.whole,
+            cdiv,
+            cstartrow,
+            cstartcol,
+            out_distribution,
+            clocal.whole_space,
+        )
 
         # Compute which c indices need the chunk of a that this worker has.
         if bextend:
-            send_a_indices = np.array([[adiv[0,0]], [adiv[1,0]]])
+            send_a_indices = np.array([[adiv[0, 0]], [adiv[1, 0]]])
         else:
-            send_a_indices = np.array([[adiv[0,0], 0], [adiv[1,0], clocal.whole[1] - 1]])
+            send_a_indices = np.array(
+                [[adiv[0, 0], 0], [adiv[1, 0], clocal.whole[1] - 1]]
+            )
         dprint(4, "remote matmul send_a_indices:", self.worker_num, send_a_indices)
         # Compute which c indices need the chunk of b that this worker has.
         if bextend:
-            send_b_indices = np.array([[bdiv[0,0]], [bdiv[1,0]]])
+            send_b_indices = np.array([[bdiv[0, 0]], [bdiv[1, 0]]])
         else:
-            send_b_indices = np.array([[0, bdiv[0,1]], [clocal.whole[0] - 1, bdiv[1,1]]])
+            send_b_indices = np.array(
+                [[0, bdiv[0, 1]], [clocal.whole[0] - 1, bdiv[1, 1]]]
+            )
         dprint(4, "remote matmul send_b_indices:", self.worker_num, send_b_indices)
         # Compute which a indices are needed by this worker.
-        from_a_indices = np.array([[cstartrow, 0], [cendrow, a_size[1]-1]])
+        from_a_indices = np.array([[cstartrow, 0], [cendrow, a_size[1] - 1]])
         dprint(4, "remote matmul from_a_indices:", self.worker_num, from_a_indices)
         # Compute which a indices are needed by this worker.
         if bextend:
-            from_b_indices = np.array([[0], [b_size[0]-1]])
+            from_b_indices = np.array([[0], [b_size[0] - 1]])
         else:
-            from_b_indices = np.array([[0, cstartcol], [b_size[0]-1, cendcol]])
+            from_b_indices = np.array([[0, cstartcol], [b_size[0] - 1, cendcol]])
         dprint(4, "remote matmul from_b_indices:", self.worker_num, from_b_indices)
 
-        send_a_ranges = [[rr[0], self.worker_num, np.array([[rr[1][0,0],adiv[0,1]],[rr[1][1,0],adiv[1,1]]]), None] for rr in get_remote_ranges(clocal.whole_space, send_a_indices)]
+        send_a_ranges = [
+            [
+                rr[0],
+                self.worker_num,
+                np.array([[rr[1][0, 0], adiv[0, 1]], [rr[1][1, 0], adiv[1, 1]]]),
+                None,
+            ]
+            for rr in get_remote_ranges(clocal.whole_space, send_a_indices)
+        ]
         if bextend:
-            #send_b_ranges = [[i, self.worker_num, bdiv, None] for i in range(len(clocal.whole_space))]
+            # send_b_ranges = [[i, self.worker_num, bdiv, None] for i in range(len(clocal.whole_space))]
             send_b_ranges = []
             for i in range(len(clocal.whole_space)):
                 if not shardview.is_empty(clocal.whole_space[i]):
                     send_b_ranges.append([i, self.worker_num, bdiv, None])
         else:
-            send_b_ranges = [[rr[0], self.worker_num, np.array([[bdiv[0,0], rr[1][0,1]],[bdiv[1,0], rr[1][1,1]]]), None] for rr in get_remote_ranges(clocal.whole_space, send_b_indices)]
+            send_b_ranges = [
+                [
+                    rr[0],
+                    self.worker_num,
+                    np.array([[bdiv[0, 0], rr[1][0, 1]], [bdiv[1, 0], rr[1][1, 1]]]),
+                    None,
+                ]
+                for rr in get_remote_ranges(clocal.whole_space, send_b_indices)
+            ]
 
         def non_empty(x):
             divs = x[2]
@@ -1631,8 +2248,12 @@ class RemoteState:
 
         # If this node computes nothing (meaning cdiv is empty) then it should receive nothing.
         if division_non_empty(cdiv):
-            from_a_rr = list(filter(non_empty, get_remote_ranges(a_distribution, from_a_indices)))
-            from_b_rr = list(filter(non_empty, get_remote_ranges(b_distribution, from_b_indices)))
+            from_a_rr = list(
+                filter(non_empty, get_remote_ranges(a_distribution, from_a_indices))
+            )
+            from_b_rr = list(
+                filter(non_empty, get_remote_ranges(b_distribution, from_b_indices))
+            )
         else:
             from_a_rr = []
             from_b_rr = []
@@ -1645,37 +2266,68 @@ class RemoteState:
         dprint(4, "remote matmul from_b_ranges:", self.worker_num, from_b_ranges)
         after_compute_comm = timer()
 
-        aranges, a_send_stats, a_recv_stats = send_recv(a, a_distribution[self.worker_num], from_a_ranges, send_a_ranges, a_send_recv)
-        branges, b_send_stats, b_recv_stats = send_recv(b, b_distribution[self.worker_num], from_b_ranges, send_b_ranges, b_send_recv)
+        aranges, a_send_stats, a_recv_stats = send_recv(
+            a,
+            a_distribution[self.worker_num],
+            from_a_ranges,
+            send_a_ranges,
+            a_send_recv,
+        )
+        branges, b_send_stats, b_recv_stats = send_recv(
+            b,
+            b_distribution[self.worker_num],
+            from_b_ranges,
+            send_b_ranges,
+            b_send_recv,
+        )
         after_communication = timer()
 
         for adata in aranges:
             adataarray = adata[1]
             if shardview.division_to_shape(adata[0]) != adataarray.shape:
-                print("shard wrong size!", adataarray.shape, adata[0], shardview.division_to_shape(adata[0]), self.worker_num)
-                assert(0)
+                print(
+                    "shard wrong size!",
+                    adataarray.shape,
+                    adata[0],
+                    shardview.division_to_shape(adata[0]),
+                    self.worker_num,
+                )
+                assert 0
             for bdata in branges:
                 bdataarray = bdata[1]
                 if shardview.division_to_shape(bdata[0]) != bdataarray.shape:
-                    print("shard wrong size!", bdataarray.shape, bdata[0], shardview.division_to_shape(bdata[0]), self.worker_num)
-                    assert(0)
+                    print(
+                        "shard wrong size!",
+                        bdataarray.shape,
+                        bdata[0],
+                        shardview.division_to_shape(bdata[0]),
+                        self.worker_num,
+                    )
+                    assert 0
 
-                dprint(4, "adata, bdata:", adata[0], adataarray.shape, bdata[0], bdataarray.shape)
-                astartrow = adata[0][0,0]
-                aendrow = adata[0][1,0] + 1
-                astartcol = adata[0][0,1]
-                aendcol = adata[0][1,1] + 1
+                dprint(
+                    4,
+                    "adata, bdata:",
+                    adata[0],
+                    adataarray.shape,
+                    bdata[0],
+                    bdataarray.shape,
+                )
+                astartrow = adata[0][0, 0]
+                aendrow = adata[0][1, 0] + 1
+                astartcol = adata[0][0, 1]
+                aendcol = adata[0][1, 1] + 1
 
                 if bdata[0].shape[1] == 1:
-                    bstartrow = bdata[0][0,0]
-                    bendrow = bdata[0][1,0] + 1
+                    bstartrow = bdata[0][0, 0]
+                    bendrow = bdata[0][1, 0] + 1
                     bstartcol = 0
                     bendcol = 1
                 else:
-                    bstartrow = bdata[0][0,0]
-                    bendrow = bdata[0][1,0] + 1
-                    bstartcol = bdata[0][0,1]
-                    bendcol = bdata[0][1,1] + 1
+                    bstartrow = bdata[0][0, 0]
+                    bendrow = bdata[0][1, 0] + 1
+                    bstartcol = bdata[0][0, 1]
+                    bendcol = bdata[0][1, 1] + 1
 
                 kstart = max(astartcol, bstartrow)
                 kend = min(aendcol, bendrow)
@@ -1683,37 +2335,121 @@ class RemoteState:
                 if kend > kstart:
                     try:
                         if bextend:
-                            d = cslice[astartrow-cstartrow:aendrow-cstartrow]
-                            #d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow]
+                            d = cslice[astartrow - cstartrow : aendrow - cstartrow]
+                            # d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow]
                         else:
-                            d = cslice[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
-                            #d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
+                            d = cslice[
+                                astartrow - cstartrow : aendrow - cstartrow,
+                                bstartcol - cstartcol : bendcol - cstartcol,
+                            ]
+                            # d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
                     except:
                         print("subfail", cremote, sys.exc_info()[0])
 
                     try:
                         ktotal = kend - kstart
                         if bextend:
-                            ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
-                            bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal]
+                            ashifted = adataarray[
+                                :,
+                                kstart
+                                - adata[0][0, 1] : kstart
+                                - adata[0][0, 1]
+                                + ktotal,
+                            ]
+                            bshifted = bdataarray[
+                                kstart
+                                - bdata[0][0, 0] : kstart
+                                - bdata[0][0, 0]
+                                + ktotal
+                            ]
                             d += ashifted @ bshifted
-                            #d += np.dot(ashifted, bshifted)
-#                            print("general dot:", ashifted.shape, bshifted.shape)
+                            # d += np.dot(ashifted, bshifted)
+                        #                            print("general dot:", ashifted.shape, bshifted.shape)
                         else:
-                            ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
-                            bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal,:]
+                            ashifted = adataarray[
+                                :,
+                                kstart
+                                - adata[0][0, 1] : kstart
+                                - adata[0][0, 1]
+                                + ktotal,
+                            ]
+                            bshifted = bdataarray[
+                                kstart
+                                - bdata[0][0, 0] : kstart
+                                - bdata[0][0, 0]
+                                + ktotal,
+                                :,
+                            ]
                             d += ashifted @ bshifted
-                            #d += np.dot(ashifted, bshifted)
-#                            print("general dot:", ashifted.shape, bshifted.shape)
+                            # d += np.dot(ashifted, bshifted)
+                    #                            print("general dot:", ashifted.shape, bshifted.shape)
                     except:
                         print(self.worker_num, sys.exc_info()[0])
-                        print("shifted shapes exception:", adataarray.shape, bdataarray.shape, ashifted.shape, bshifted.shape, "kstart", kstart, "kend", kend, "ktotal", ktotal, adata[0][0,1], bdata[0][0,0], adata[0][0,1]-kstart, bdata[0][0,0]-kstart)
-                        print("cross-ranges:", self.worker_num, clocal.whole, adata, bdata, "astartrow", astartrow, aendrow, "bstartcol", bstartcol, bendcol, "kstart", kstart, kend, "cstart", cstartrow, cstartcol, "indices", astartrow-cstartrow, aendrow-cstartrow, bstartcol-cstartcol, bendcol-bstartcol)
-                        print("worker:", self.worker_num, adataarray.shape, bdataarray.shape)
+                        print(
+                            "shifted shapes exception:",
+                            adataarray.shape,
+                            bdataarray.shape,
+                            ashifted.shape,
+                            bshifted.shape,
+                            "kstart",
+                            kstart,
+                            "kend",
+                            kend,
+                            "ktotal",
+                            ktotal,
+                            adata[0][0, 1],
+                            bdata[0][0, 0],
+                            adata[0][0, 1] - kstart,
+                            bdata[0][0, 0] - kstart,
+                        )
+                        print(
+                            "cross-ranges:",
+                            self.worker_num,
+                            clocal.whole,
+                            adata,
+                            bdata,
+                            "astartrow",
+                            astartrow,
+                            aendrow,
+                            "bstartcol",
+                            bstartcol,
+                            bendcol,
+                            "kstart",
+                            kstart,
+                            kend,
+                            "cstart",
+                            cstartrow,
+                            cstartcol,
+                            "indices",
+                            astartrow - cstartrow,
+                            aendrow - cstartrow,
+                            bstartcol - cstartcol,
+                            bendcol - bstartcol,
+                        )
+                        print(
+                            "worker:",
+                            self.worker_num,
+                            adataarray.shape,
+                            bdataarray.shape,
+                        )
                         raise
 
         end_worker_matmul = timer()
-        return (self.worker_num, end_worker_matmul - start_worker_matmul, after_compute_comm - start_worker_matmul, after_communication - after_compute_comm, len(aranges), len(branges), end_worker_matmul - after_communication, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, partial_numpy)
+        return (
+            self.worker_num,
+            end_worker_matmul - start_worker_matmul,
+            after_compute_comm - start_worker_matmul,
+            after_communication - after_compute_comm,
+            len(aranges),
+            len(branges),
+            end_worker_matmul - after_communication,
+            a_send_stats,
+            a_recv_stats,
+            b_send_stats,
+            b_recv_stats,
+            partial_numpy,
+        )
+
     """
 
     # TODO: should use get_view
@@ -1915,35 +2651,71 @@ class RemoteState:
 
         def write_to_out(out, incoming_data, map_out_combined, region):
             bires = map_out_combined[0] + region
-            global_slice = tuple([slice(bires[0][x], bires[1][x] + 1) for x in range(bires.shape[1])])
-            local_slice = shardview.slice_to_local(out.subspace,global_slice)
-            dprint(2, "Receiving Data:", self.worker_num, map_out_combined, out.bcontainer.shape, incoming_data.shape, bires, global_slice, local_slice, region)
+            global_slice = tuple(
+                [slice(bires[0][x], bires[1][x] + 1) for x in range(bires.shape[1])]
+            )
+            local_slice = shardview.slice_to_local(out.subspace, global_slice)
+            dprint(
+                2,
+                "Receiving Data:",
+                self.worker_num,
+                map_out_combined,
+                out.bcontainer.shape,
+                incoming_data.shape,
+                bires,
+                global_slice,
+                local_slice,
+                region,
+            )
             out.bcontainer[local_slice] = incoming_data
 
         for gid, remote_id, region, map_out_combined in to_ranges:
             other_local = self.numpy_map[gid]
-            the_slice = tuple([slice(region[0][x], region[1][x] + 1) for x in range(region.shape[1])])
-            local_slice = shardview.slice_to_local(other_local.subspace,the_slice)
-            dprint(2, "Sending Data:", other_local.remote.worker_num, remote_id, the_slice, local_slice, map_out_combined)
+            the_slice = tuple(
+                [slice(region[0][x], region[1][x] + 1) for x in range(region.shape[1])]
+            )
+            local_slice = shardview.slice_to_local(other_local.subspace, the_slice)
+            dprint(
+                2,
+                "Sending Data:",
+                other_local.remote.worker_num,
+                remote_id,
+                the_slice,
+                local_slice,
+                map_out_combined,
+            )
             if other_local.remote.worker_num == remote_id:
                 local_send += 1
-                write_to_out(out, other_local.bcontainer[local_slice], map_out_combined, region)
+                write_to_out(
+                    out, other_local.bcontainer[local_slice], map_out_combined, region
+                )
             else:
-                self.comm_queues[remote_id].put((send_recv_uuid, other_local.bcontainer[local_slice], map_out_combined, region))
+                self.comm_queues[remote_id].put(
+                    (
+                        send_recv_uuid,
+                        other_local.bcontainer[local_slice],
+                        map_out_combined,
+                        region,
+                    )
+                )
 
         for _ in range(len(from_ranges) - local_send):
             try:
-                get_result = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0] == send_recv_uuid, timeout = 5)
+                get_result = self.comm_queues[self.worker_num].get(
+                    gfilter=lambda x: x[0] == send_recv_uuid, timeout=5
+                )
                 in_send_recv_uuid, incoming_data, map_out_combined, region = get_result
-                #incoming_data, map_out_combined, region = self.comm_queues[self.worker_num].get(timeout = 5)
+                # incoming_data, map_out_combined, region = self.comm_queues[self.worker_num].get(timeout = 5)
             except:
                 print("some exception!", sys.exc_info()[0])
                 print("get_result:", get_result)
-                assert(0)
+                assert 0
             write_to_out(out, incoming_data, map_out_combined, region)
 
-    def sstencil(self, stencil_op_uuid, out_gid, neighborhood, first_gid, args, func, create_flag):
-        func=func_loads(func)
+    def sstencil(
+        self, stencil_op_uuid, out_gid, neighborhood, first_gid, args, func, create_flag
+    ):
+        func = func_loads(func)
         first = self.numpy_map[first_gid]
         if create_flag:
             lnd = first.init_like(out_gid)
@@ -1951,47 +2723,64 @@ class RemoteState:
         else:
             lnd = self.numpy_map[out_gid]
         new_bcontainer = lnd.bcontainer
-        for i,x in enumerate(args):
+        for i, x in enumerate(args):
             if isinstance(x, uuid.UUID):
                 lnd_arg = self.numpy_map[x]
-                lnd_arg.getborder(str(stencil_op_uuid)+str(i))
-#        print("sstencil:", first.remote.worker_num, func, type(func), first.subspace, first.bcontainer.shape, neighborhood)
-        assert(isinstance(func, StencilMetadata))
+                lnd_arg.getborder(str(stencil_op_uuid) + str(i))
+        #        print("sstencil:", first.remote.worker_num, func, type(func), first.subspace, first.bcontainer.shape, neighborhood)
+        assert isinstance(func, StencilMetadata)
         # Convert from StencilMetadata to Numba StencilFunc
-        fargs = [self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args]
+        fargs = [
+            self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x
+            for x in args
+        ]
 
-        worker_neighborhood = [(min(0,int(shardview.get_start(lnd.subspace)[x] + neighborhood[x][0])),
-                                max(2*lnd.border,int(shardview.get_start(lnd.subspace)[x] + shardview.get_size(lnd.subspace)[x]- lnd.whole[x] + 2*lnd.border + neighborhood[x][1])))
-                                for x in range(len(lnd.dim_lens))]
-        sfunc = func.compile({"neighborhood":tuple(worker_neighborhood)})
-#        print("sstencil fargs:", first.remote.worker_num, sfunc, type(sfunc), worker_neighborhood, "\n", fargs)
-        t0=timer()
+        worker_neighborhood = [
+            (
+                min(0, int(shardview.get_start(lnd.subspace)[x] + neighborhood[x][0])),
+                max(
+                    2 * lnd.border,
+                    int(
+                        shardview.get_start(lnd.subspace)[x]
+                        + shardview.get_size(lnd.subspace)[x]
+                        - lnd.whole[x]
+                        + 2 * lnd.border
+                        + neighborhood[x][1]
+                    ),
+                ),
+            )
+            for x in range(len(lnd.dim_lens))
+        ]
+        sfunc = func.compile({"neighborhood": tuple(worker_neighborhood)})
+        #        print("sstencil fargs:", first.remote.worker_num, sfunc, type(sfunc), worker_neighborhood, "\n", fargs)
+        t0 = timer()
         if create_flag:
             sout = sfunc(*fargs)
             new_bcontainer[first.core_slice] = sout[first.core_slice]
         else:
             sfunc(*fargs, out=new_bcontainer)
         t1 = timer()
-        dprint(1,"SStencil item", t1-t0)
-#        print("sstencil sout:", first.remote.worker_num, sout)
-#        new_bcontainer[first.core_slice] = sout[first.core_slice]
-#        new_bcontainer[:] = sfunc(*fargs, out=new_bcontainer)
-#        print("sstencil done", first.remote.worker_num, "\n", new_bcontainer)
+        dprint(1, "SStencil item", t1 - t0)
+
+    #        print("sstencil sout:", first.remote.worker_num, sout)
+    #        new_bcontainer[first.core_slice] = sout[first.core_slice]
+    #        new_bcontainer[:] = sfunc(*fargs, out=new_bcontainer)
+    #        print("sstencil done", first.remote.worker_num, "\n", new_bcontainer)
 
     # TODO: should use get_view
     def scumulative_local(self, out_gid, in_gid, func):
-        func=func_loads(func)
+        func = func_loads(func)
         in_bcontainer = self.numpy_map[in_gid]
         self.numpy_map[out_gid] = in_bcontainer.init_like(out_gid)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         in_array = in_bcontainer.bcontainer
         new_bcontainer[0] = in_array[0]
         for index in range(1, in_bcontainer.dim_lens[0]):
-            new_bcontainer[index] = func(new_bcontainer[index-1], in_array[index])
+            new_bcontainer[index] = func(new_bcontainer[index - 1], in_array[index])
 
     # TODO: should use get_view
     def scumulative_final(self, array_gid, boundary_value, func):
-        func=func_loads(func)
+        func = func_loads(func)
         in_bcontainer = self.numpy_map[array_gid]
         in_array = in_bcontainer.bcontainer
         boundary_value = boundary_value[0]
@@ -2017,9 +2806,9 @@ class RemoteState:
     def spmd(self, func, args):
         dprint(2, "Starting remote spmd", self.worker_num)
         try:
-            func=func_loads(func)
+            func = func_loads(func)
             fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
-            fmfunc = FunctionMetadata(func,[],{})
+            fmfunc = FunctionMetadata(func, [], {})
             dprint(3, "Before local spmd fmfunc call")
             fmfunc(*fargs)
             dprint(3, "After local spmd fmfunc call")
@@ -2029,107 +2818,166 @@ class RemoteState:
             pass
         sys.stdout.flush()
 
-    def run_deferred_ops( self, uuid, arrays, delete_gids, pickledvars, exec_dist, fname, code, imports):
+    def run_deferred_ops(
+        self, uuid, arrays, delete_gids, pickledvars, exec_dist, fname, code, imports
+    ):
         times = [timer()]
-        dprint(4,"HERE - deferredops; arrays:", arrays.keys())
-        subspace = shardview.clean_range(exec_dist[self.worker_num])  # our slice of work range
+        dprint(4, "HERE - deferredops; arrays:", arrays.keys())
+        subspace = shardview.clean_range(
+            exec_dist[self.worker_num]
+        )  # our slice of work range
         # create array shards if needed
         # TODO:  This has become very complicated and ugly.  Consider restructuring, use class instead of tuple.
         # info tuple is (size, distribution, local_border, from_border, to_border, dtype)
         # TODO:  Need to check array construction -- this code may break for views/slices; assumes first view of gid is the canonical, full array
-        #[ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
-        for (g,(l,bdist,pad,_)) in arrays.items():
+        # [ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
+        for (g, (l, bdist, pad, _)) in arrays.items():
             if g in self.numpy_map:
                 continue
             v = l[0][0]
             info = l[0][1]
-            self.create_array(g, subspace, info[0], None, info[2], info[5], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num])
+            self.create_array(
+                g,
+                subspace,
+                info[0],
+                None,
+                info[2],
+                info[5],
+                info[1],
+                None if info[3] is None else info[3][self.worker_num],
+                None if info[4] is None else info[4][self.worker_num],
+            )
 
         times.append(timer())
         # check if function exists, else exec to create it
-        ldict={}
-        gdict=globals()
+        ldict = {}
+        gdict = globals()
         for imp in imports:
             the_module = __import__(imp)
             gdict[imp] = the_module
 
-        #gdict=sys.modules['__main__'].__dict__
+        # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
             dprint(2, "function does not exist, creating it")
             exec(code, gdict, ldict)
-            gdict[fname] = FunctionMetadata(ldict[fname],[],{})
-            #print (gdict.keys())
+            gdict[fname] = FunctionMetadata(ldict[fname], [], {})
+            # print (gdict.keys())
         func = gdict[fname]
         times.append(timer())
 
         # Send data to other workers as needed, count how many items to recieve later
         # TODO: optimize by combining messages of overlapping array parts
-        arr_parts = {}   # place to keep array parts received and local parts, indexed by variable name
-        expected_parts = 0  # count of parts that will be sent to this worker from others
-        to_send={}  # save up list of messages to node i, send all as single message
-        from_set={} # nodes to recieve from
-        overlap_time=0.0
-        getview_time=0.0
-        arrview_time=0.0
-        copy_time=0.0
-        for (g,(l,bdist,pad,_)) in arrays.items():
-            for (v,info) in l:
+        arr_parts = (
+            {}
+        )  # place to keep array parts received and local parts, indexed by variable name
+        expected_parts = (
+            0  # count of parts that will be sent to this worker from others
+        )
+        to_send = {}  # save up list of messages to node i, send all as single message
+        from_set = {}  # nodes to recieve from
+        overlap_time = 0.0
+        getview_time = 0.0
+        arrview_time = 0.0
+        copy_time = 0.0
+        for (g, (l, bdist, pad, _)) in arrays.items():
+            for (v, info) in l:
                 arr_parts[v] = []
-                if shardview.is_compat(subspace,info[1][self.worker_num]):  # whole compute range is local
+                if shardview.is_compat(
+                    subspace, info[1][self.worker_num]
+                ):  # whole compute range is local
                     sl = self.get_view(g, info[1][self.worker_num])
-                    arr_parts[v].append( (subspace, sl) )
+                    arr_parts[v].append((subspace, sl))
                     continue
                 overlap_time -= timer()
-                overlap_workers = shardview.get_overlaps(self.worker_num, info[1], exec_dist)
+                overlap_workers = shardview.get_overlaps(
+                    self.worker_num, info[1], exec_dist
+                )
                 overlap_time += timer()
-                #for i in range(num_workers):
+                # for i in range(num_workers):
                 for i in overlap_workers:
-                    if i!=self.worker_num:
-                        #part = shardview.intersect(exec_dist[self.worker_num],info[1][i])  # part of what we need but located at worker i
-                        part = shardview.intersect(info[1][i],exec_dist[self.worker_num])  # part of what we need but located at worker i
+                    if i != self.worker_num:
+                        # part = shardview.intersect(exec_dist[self.worker_num],info[1][i])  # part of what we need but located at worker i
+                        part = shardview.intersect(
+                            info[1][i], exec_dist[self.worker_num]
+                        )  # part of what we need but located at worker i
                         if not shardview.is_empty(part):
-                            expected_parts+=1
-                            from_set[i]=1
-                    #part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
-                    part = shardview.intersect(info[1][self.worker_num],exec_dist[i])  # part of what we have needed at worker i
-                    if shardview.is_empty(part): continue
-                    getview_time-=timer()
-                    sl = self.get_partial_view(g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False)
-                    getview_time+=timer()
-                    if i==self.worker_num:
-                        #arr_parts[v].append( (part, sl) )
-                        #arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
-                        arrview_time-=timer()
-                        arr_parts[v].append( (shardview.clean_range(part), shardview.array_to_view(part, sl)) )
-                        arrview_time+=timer()
-                        dprint (2, "Worker",self.worker_num,"Keeping local part",part,sl, info[1])
+                            expected_parts += 1
+                            from_set[i] = 1
+                    # part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
+                    part = shardview.intersect(
+                        info[1][self.worker_num], exec_dist[i]
+                    )  # part of what we have needed at worker i
+                    if shardview.is_empty(part):
+                        continue
+                    getview_time -= timer()
+                    sl = self.get_partial_view(
+                        g,
+                        shardview.to_slice(part),
+                        info[1][self.worker_num],
+                        remap_view=False,
+                    )
+                    getview_time += timer()
+                    if i == self.worker_num:
+                        # arr_parts[v].append( (part, sl) )
+                        # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
+                        arrview_time -= timer()
+                        arr_parts[v].append(
+                            (
+                                shardview.clean_range(part),
+                                shardview.array_to_view(part, sl),
+                            )
+                        )
+                        arrview_time += timer()
+                        dprint(
+                            2,
+                            "Worker",
+                            self.worker_num,
+                            "Keeping local part",
+                            part,
+                            sl,
+                            info[1],
+                        )
                     else:
                         # deferred send data to worker i
-                        #self.comm_queues[i].put( (uuid, v, part, sl) )
-                        if i not in to_send: to_send[i] = []
-                        copy_time-=timer()
-                        #to_send[i].append( (v, part, sl) )
-                        to_send[i].append( (v, part, sl.copy()) )   # pickling a slice is slower than copy+pickle !!
-                        copy_time+=timer()
-                        dprint (2, "Worker",self.worker_num,"Sending to worker",i,part,sl, info[1])
+                        # self.comm_queues[i].put( (uuid, v, part, sl) )
+                        if i not in to_send:
+                            to_send[i] = []
+                        copy_time -= timer()
+                        # to_send[i].append( (v, part, sl) )
+                        to_send[i].append(
+                            (v, part, sl.copy())
+                        )  # pickling a slice is slower than copy+pickle !!
+                        copy_time += timer()
+                        dprint(
+                            2,
+                            "Worker",
+                            self.worker_num,
+                            "Sending to worker",
+                            i,
+                            part,
+                            sl,
+                            info[1],
+                        )
         times.append(timer())
 
         # actual sends
-        for (i,v) in to_send.items():
-            self.comm_queues[i].put( (uuid, v, self.worker_num) )
-        expected_parts = len(from_set)  # since messages are coalesced, expect 1 from each node sending to us
+        for (i, v) in to_send.items():
+            self.comm_queues[i].put((uuid, v, self.worker_num))
+        expected_parts = len(
+            from_set
+        )  # since messages are coalesced, expect 1 from each node sending to us
 
         times.append(timer())
-        othervars = {v: pickle.loads(val) for (v,val) in pickledvars}
+        othervars = {v: pickle.loads(val) for (v, val) in pickledvars}
         # Convert 0d arrays to scalars since 0d support may otherwise be spotty in Numba.
-        for k,v in othervars.items():
-            if isinstance(v, np.ndarray) and v.shape == (): #0d array
+        for k, v in othervars.items():
+            if isinstance(v, np.ndarray) and v.shape == ():  # 0d array
                 # convert to scalar
                 othervars[k] = v.item()
 
         times.append(timer())
         # Receive data from other workers
-        #for i in range(expected_parts):
+        # for i in range(expected_parts):
         #    try:
         #        _, v, part, sl = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==uuid, timeout=5)
         #        arr_parts[v].append( (part, sl) )
@@ -2137,56 +2985,64 @@ class RemoteState:
         #        print("some exception", sys.exc_info()[0])
         #        assert(0)
         msgs = []
-        while expected_parts>0:
-            m = self.comm_queues[self.worker_num].multi_get(expected_parts, gfilter=lambda x: x[0]==uuid, timeout=5, print_times=(ntiming>=1 and self.worker_num==timing_debug_worker), msginfo=lambda x: "[from "+str(x[2])+"]")
+        while expected_parts > 0:
+            m = self.comm_queues[self.worker_num].multi_get(
+                expected_parts,
+                gfilter=lambda x: x[0] == uuid,
+                timeout=5,
+                print_times=(ntiming >= 1 and self.worker_num == timing_debug_worker),
+                msginfo=lambda x: "[from " + str(x[2]) + "]",
+            )
             msgs += m
             expected_parts -= len(m)
-            if expected_parts>0:  print("Still waiting for", expected_parts, "items")
-        #for _,v,part,sl in msgs:
+            if expected_parts > 0:
+                print("Still waiting for", expected_parts, "items")
+        # for _,v,part,sl in msgs:
         #    arr_parts[v].append( (part, sl) )
-        for _,l,_ in msgs:
-            for v,part,sl in l:
-                #arr_parts[v].append( (part, sl) )
-                #arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
-                arrview_time-=timer()
-                arr_parts[v].append( (shardview.clean_range(part), shardview.array_to_view(part, sl)) )
-                arrview_time+=timer()
+        for _, l, _ in msgs:
+            for v, part, sl in l:
+                # arr_parts[v].append( (part, sl) )
+                # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
+                arrview_time -= timer()
+                arr_parts[v].append(
+                    (shardview.clean_range(part), shardview.array_to_view(part, sl))
+                )
+                arrview_time += timer()
 
         times.append(timer())
         # Construct set of ranges and array parts to use in each
 
         vparts = numba.typed.List()
-        for _,pl in arr_parts.items():
-            for vpart,_ in pl:
+        for _, pl in arr_parts.items():
+            for vpart, _ in pl:
                 vparts.append(vpart)
-        ranges = shardview.get_range_splits_list( vparts )
+        ranges = shardview.get_range_splits_list(vparts)
         times.append(timer())
         rangedvars = [{} for _ in ranges]
-        #varlist={}
-        for i,rpart in enumerate(ranges):
+        # varlist={}
+        for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
-            #varlist.clear()
+            # varlist.clear()
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
-                    if not shardview.overlaps(rpart,vpart):   # skip
+                    if not shardview.overlaps(rpart, vpart):  # skip
                         continue
-                    #times.append(timer())
-                    #slindex = shardview.to_base_slice(shardview.mapsv(vpart,rpart))
-                    tmp = shardview.mapsv(vpart,rpart)
-                    #times.append(timer())
-                    #slindex = shardview.to_base_slice(tmp)
-                    #times.append(timer())
-                    #varlist[varname] = data[slindex]
+                    # times.append(timer())
+                    # slindex = shardview.to_base_slice(shardview.mapsv(vpart,rpart))
+                    tmp = shardview.mapsv(vpart, rpart)
+                    # times.append(timer())
+                    # slindex = shardview.to_base_slice(tmp)
+                    # times.append(timer())
+                    # varlist[varname] = data[slindex]
                     varlist[varname] = shardview.get_base_slice(tmp, data)
-            #times.append(timer())
-            #if not shardview.is_empty(rpart):
+            # times.append(timer())
+            # if not shardview.is_empty(rpart):
             #    func( **varlist, **othervars )
-            #times.append(timer())
-
+            # times.append(timer())
 
         #######
-        #ranges = [ (subspace, {}) ]
-        #for (varname, partlist) in arr_parts.items():
+        # ranges = [ (subspace, {}) ]
+        # for (varname, partlist) in arr_parts.items():
         #    i=0;
         #    while i<len(partlist):
         #        vpart, data = partlist[i]
@@ -2220,44 +3076,57 @@ class RemoteState:
         #            # if we get here, should continue with same j value (repeat with updated ranges)
 
         times.append(timer())
-        if len(ranges)>1: dprint(2, "Ranges:",len(ranges))
+        if len(ranges) > 1:
+            dprint(2, "Ranges:", len(ranges))
 
         # execute function in each range
-        #for (r,arrvars) in ranges:
-        for i,r in enumerate(ranges):
+        # for (r,arrvars) in ranges:
+        for i, r in enumerate(ranges):
             arrvars = rangedvars[i]
             if not shardview.is_empty(r):
-                for k,v in arrvars.items():
+                for k, v in arrvars.items():
                     dprint(4, "inputs:", k, v, type(v))
-                for k,v in othervars.items():
+                for k, v in othervars.items():
                     dprint(4, "others:", k, v, type(v))
 
-                func( **arrvars, **othervars )
-                for k,v in arrvars.items():
+                func(**arrvars, **othervars)
+                for k, v in arrvars.items():
                     dprint(4, "results:", k, v, type(v))
         times.append(timer())
 
         # delete arrays no longer needed
-        [ self.destroy_array(g) for g in delete_gids ]
+        [self.destroy_array(g) for g in delete_gids]
 
         times.append(timer())
         if not USE_ZMQ and USE_MPI:
             ramba_queue.wait_sends()
         tnow = timer()
         times.append(tnow)
-        self.deferred_ops_time += (tnow - times[0])
+        self.deferred_ops_time += tnow - times[0]
         self.deferred_ops_count += 1
-        if ntiming>=1 and self.worker_num==timing_debug_worker:
-            times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
-            tprint (1, "Deferred execution", (tnow-self.tlast)*1000,times, int(overlap_time*1000000)/1000, int(getview_time*1000000)/1000, int(arrview_time*1000000)/1000, int(copy_time*1000000)/1000)
-            tprint (2, code)
+        if ntiming >= 1 and self.worker_num == timing_debug_worker:
+            times = [
+                int((times[i] - times[i - 1]) * 1000000) / 1000
+                for i in range(1, len(times))
+            ]
+            tprint(
+                1,
+                "Deferred execution",
+                (tnow - self.tlast) * 1000,
+                times,
+                int(overlap_time * 1000000) / 1000,
+                int(getview_time * 1000000) / 1000,
+                int(arrview_time * 1000000) / 1000,
+                int(copy_time * 1000000) / 1000,
+            )
+            tprint(2, code)
         self.tlast = tnow
 
     def nop(self):
         return
 
     def seed(self, x):
-        np.random.seed(x+self.worker_num)
+        np.random.seed(x + self.worker_num)
 
     def get_comm_stats(self):
         return [x.get_stats() for x in self.comm_queues]
@@ -2280,47 +3149,62 @@ class RemoteState:
             return 0
 
     def rpc_serve(self, rvq):
-        #z = numa.set_affinity(self.worker_num, numa_zones)
-        print_stuff = timing>2 and self.worker_num==0
+        # z = numa.set_affinity(self.worker_num, numa_zones)
+        print_stuff = timing > 2 and self.worker_num == 0
         self.up_rvq = rvq
         if self.is_aggregator:
             if self.my_rvq is None:
                 self.my_rvq = ramba_queue.Queue(hint_ip=hint_ip, tag=2)
-            msg = ramba_queue.pickle( ('RPC','set_up_rvq',None,[self.my_rvq],{}) )
+            msg = ramba_queue.pickle(("RPC", "set_up_rvq", None, [self.my_rvq], {}))
             [self.control_queues[i].put(msg, raw=True) for i in self.children]
         t0 = timer()
         while True:
             if self.is_aggregator:
                 msg = self.my_control_queue.get(raw=True, print_times=print_stuff)
                 rpctype, method, rvid, args, kwargs = ramba_queue.unpickle(msg)
-                if rpctype=='RPC':
-                    [self.control_queues[i].put( msg, raw=True ) for i in self.children]
+                if rpctype == "RPC":
+                    [self.control_queues[i].put(msg, raw=True) for i in self.children]
             else:
-                rpctype, method, rvid, args, kwargs = self.my_control_queue.get(gfilter=lambda x: x[0]=='RPC' or x[0]=='RPC1', print_times=print_stuff)
-            
-            if method=="END":
+                rpctype, method, rvid, args, kwargs = self.my_control_queue.get(
+                    gfilter=lambda x: x[0] == "RPC" or x[0] == "RPC1",
+                    print_times=print_stuff,
+                )
+
+            if method == "END":
                 break
             t1 = timer()
             try:
                 op = getattr(self, method)
-                retval = op(*args,**kwargs)
+                retval = op(*args, **kwargs)
             except:
                 traceback.print_exc()
-                rvq.put(("ERROR",self.worker_num, traceback.format_exc()))
+                rvq.put(("ERROR", self.worker_num, traceback.format_exc()))
                 break
             t2 = timer()
             if rvid is not None:
-                if rpctype=='RPC':
-                    self.up_rvq.put( (rvid+str(self.worker_num), retval) )
+                if rpctype == "RPC":
+                    self.up_rvq.put((rvid + str(self.worker_num), retval))
                 else:
-                    rvq.put( (rvid+str(self.worker_num), retval) )
+                    rvq.put((rvid + str(self.worker_num), retval))
             t3 = timer()
-            if self.is_aggregator and rvid is not None and rpctype=='RPC':
+            if self.is_aggregator and rvid is not None and rpctype == "RPC":
                 for _ in self.children:
-                    msg = self.my_rvq.get( raw=True )
-                    self.up_rvq.put( msg, raw=True )
+                    msg = self.my_rvq.get(raw=True)
+                    self.up_rvq.put(msg, raw=True)
             t4 = timer()
-            if print_stuff: print("Command ", method, "get", (t1-t0)*1000, "exec", (t2-t1)*1000, "ret", (t3-t2)*1000, "fwd", (t4-t3)*1000)
+            if print_stuff:
+                print(
+                    "Command ",
+                    method,
+                    "get",
+                    (t1 - t0) * 1000,
+                    "exec",
+                    (t2 - t1) * 1000,
+                    "ret",
+                    (t3 - t2) * 1000,
+                    "fwd",
+                    (t4 - t3) * 1000,
+                )
             t0 = t4
 
     def mgrid(self, out_gid, out_size, out_distribution):
@@ -2329,90 +3213,121 @@ class RemoteState:
         if np.all(divs[0] <= divs[1]):
             out_lnd = self.numpy_map[out_gid]
             bcontainer = out_lnd.bcontainer[out_lnd.core_slice]
-            mslice = [slice(divs[0][i+1], divs[1][i+1] + 1) for i in range(divs.shape[1]-1)]
+            mslice = [
+                slice(divs[0][i + 1], divs[1][i + 1] + 1)
+                for i in range(divs.shape[1] - 1)
+            ]
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
     def load(self, gid, fname, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
         fldr = fileio.get_load_handler(fname, ftype)
-        fldr.read( fname, lnd.bcontainer, shardview.to_slice(lnd.subspace), **kwargs )
+        fldr.read(fname, lnd.bcontainer, shardview.to_slice(lnd.subspace), **kwargs)
 
 
 if not USE_MPI:
-    RemoteState = ray.remote(num_cpus = num_threads)(RemoteState)
-
+    RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
 
 
 # Wrappers to abstract away Ray method calls
 
-ALL_NODES=-1
+ALL_NODES = -1
+
 
 def _real_remote(nodeid, method, has_retval, args, kwargs):
-    if nodeid==ALL_NODES:
+    if nodeid == ALL_NODES:
         if USE_RAY_CALLS:
-            rargs = [ ray.put(v) for v in args ]
-            rkwargs = { k:ray.put(v) for k,v in kwargs.items() }
-            return [getattr(remote_states[i], method).remote(*rargs,**rkwargs) for i in range(num_workers)]
+            rargs = [ray.put(v) for v in args]
+            rkwargs = {k: ray.put(v) for k, v in kwargs.items()}
+            return [
+                getattr(remote_states[i], method).remote(*rargs, **rkwargs)
+                for i in range(num_workers)
+            ]
         rvid = str(uuid.uuid4()) if has_retval else None
         if USE_ZMQ or not USE_BCAST:
-            msg = ramba_queue.pickle( ('RPC',method,rvid,args,kwargs) )
-            if ntiming>=1: print("control message size: ",sum([len(i.raw()) if isinstance(i, pickle.PickleBuffer) else len(i) for i in msg]) if isinstance(msg,list) else len(msg))
+            msg = ramba_queue.pickle(("RPC", method, rvid, args, kwargs))
+            if ntiming >= 1:
+                print(
+                    "control message size: ",
+                    sum(
+                        [
+                            len(i.raw())
+                            if isinstance(i, pickle.PickleBuffer)
+                            else len(i)
+                            for i in msg
+                        ]
+                    )
+                    if isinstance(msg, list)
+                    else len(msg),
+                )
         else:
-            msg = ('RPC',method,rvid,args,kwargs)
+            msg = ("RPC", method, rvid, args, kwargs)
         if USE_MPI and USE_BCAST and not USE_ZMQ:
             ramba_queue.bcast(msg)
         elif USE_ZMQ and USE_BCAST:
-            [control_queues[i].put( msg, raw=True ) for i in aggregators]
+            [control_queues[i].put(msg, raw=True) for i in aggregators]
         else:
-            [control_queues[i].put( msg, raw=True ) for i in range(num_workers)]
-        return [rvid+str(i) for i in range(num_workers)] if has_retval else None
+            [control_queues[i].put(msg, raw=True) for i in range(num_workers)]
+        return [rvid + str(i) for i in range(num_workers)] if has_retval else None
     if USE_RAY_CALLS:
         rop = getattr(remote_states[nodeid], method)
-        return rop.remote(*args,**kwargs)
+        return rop.remote(*args, **kwargs)
     rvid = str(uuid.uuid4()) if has_retval else None
-    control_queues[nodeid].put( ('RPC1',method,rvid,args,kwargs) )
-    return rvid+str(nodeid) if has_retval else None
+    control_queues[nodeid].put(("RPC1", method, rvid, args, kwargs))
+    return rvid + str(nodeid) if has_retval else None
+
 
 def get_results(refs):
     if USE_RAY_CALLS:
         return ray.get(refs)
     if isinstance(refs, list):
-        rv = [ get_results(v) for v in refs ]
+        rv = [get_results(v) for v in refs]
     else:
         rv = retval_queue.get(gfilter=lambda x: x[0] == refs or x[0] == "ERROR")
-        if rv[0]=="ERROR":
-            raise Exception("Exception in Remote Worker "+str(rv[1])+"\n"+rv[2])
-        rv=rv[1]
+        if rv[0] == "ERROR":
+            raise Exception("Exception in Remote Worker " + str(rv[1]) + "\n" + rv[2])
+        rv = rv[1]
     return rv
 
-def remote_exec( nodeid, method, *args, **kwargs):
+
+def remote_exec(nodeid, method, *args, **kwargs):
     _real_remote(nodeid, method, False, args, kwargs)
 
-def remote_async_call( nodeid, method, *args, **kwargs):
+
+def remote_async_call(nodeid, method, *args, **kwargs):
     return _real_remote(nodeid, method, True, args, kwargs)
 
-def remote_call( nodeid, method, *args, **kwargs):
+
+def remote_call(nodeid, method, *args, **kwargs):
     return get_results(_real_remote(nodeid, method, True, args, kwargs))
 
-def remote_exec_all( method, *args, **kwargs):
-    #[ _real_remote(i, method, False, args, kwargs) for i in range(num_workers) ]
-    _real_remote(ALL_NODES, method, False, args, kwargs)
-    #get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
-def remote_async_call_all( method, *args, **kwargs):
-    #return [ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ]
+def remote_exec_all(method, *args, **kwargs):
+    # [ _real_remote(i, method, False, args, kwargs) for i in range(num_workers) ]
+    _real_remote(ALL_NODES, method, False, args, kwargs)
+    # get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
+
+
+def remote_async_call_all(method, *args, **kwargs):
+    # return [ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ]
     return _real_remote(ALL_NODES, method, True, args, kwargs)
 
-def remote_call_all( method, *args, **kwargs):
-    #return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ])
+
+def remote_call_all(method, *args, **kwargs):
+    # return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ])
     return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
+
 if USE_RAY_CALLS:
-    def func_dumps( f ):
+
+    def func_dumps(f):
         return f
-    def func_loads( f ):
+
+    def func_loads(f):
         return f
+
+
 else:
     func_dumps = cloudpickle.dumps
     func_loads = cloudpickle.loads
@@ -2422,37 +3337,40 @@ else:
 # ** Initialize Remote Workers **
 # *******************************
 import atexit
+
 if USE_MPI:
     # MPI setup
     # Queue tags: 0 = general comm, 1 = control, 2 = reply
     from mpi4py import MPI
+
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
-    if rank==num_workers:  # driver
+    if rank == num_workers:  # driver
         # do this stuff only once
         def do_init(done=[]):
-            if len(done)>0:
+            if len(done) > 0:
                 print("HERE -- already done")
                 return None
             done += [1]
             rv_q = ramba_queue.Queue(tag=2)
-            comm_q = comm.allgather(0)[:-1] #ignore our own invalid one
+            comm_q = comm.allgather(0)[:-1]  # ignore our own invalid one
             con_q = comm.allgather(rv_q)
             aggr = get_aggregators(comm_q)
             return rv_q, comm_q, con_q, aggr
+
         x = do_init()
         if x is not None:
             retval_queue, comm_queues, control_queues, aggregators = x
-            atexit.register(remote_exec_all,'END')
+            atexit.register(remote_exec_all, "END")
 
-    else:   # workers -- should never leave this section!
+    else:  # workers -- should never leave this section!
         RS = RemoteState(rank, get_common_state())
         con_q = RS.get_control_queue()
         comm_q = RS.get_comm_queue()
-        comm_queues = comm.allgather(comm_q)[:-1]  #ignore invalid one for controller
+        comm_queues = comm.allgather(comm_q)[:-1]  # ignore invalid one for controller
         control_queues = comm.allgather(con_q)
         rv_q = control_queues[num_workers]
-        RS.set_comm_queues(comm_queues,control_queues)
+        RS.set_comm_queues(comm_queues, control_queues)
         RS.rpc_serve(rv_q)
         sys.exit()
 
@@ -2462,41 +3380,50 @@ else:  # Ray setup
     if ray_first_init:
         dprint(1, "Constructing RemoteState actors")
         from ray.util.placement_group import placement_group
-        res = [{'CPU':num_threads}]*num_workers
-        pg = placement_group(res, strategy='SPREAD')
-        remote_states = [RemoteState.options(placement_group=pg).remote(x, get_common_state()) for x in range(num_workers)]
+
+        res = [{"CPU": num_threads}] * num_workers
+        pg = placement_group(res, strategy="SPREAD")
+        remote_states = [
+            RemoteState.options(placement_group=pg).remote(x, get_common_state())
+            for x in range(num_workers)
+        ]
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
         comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
         aggregators = get_aggregators(comm_queues)
-        [x.set_comm_queues.remote(comm_queues,control_queues) for x in remote_states]
+        [x.set_comm_queues.remote(comm_queues, control_queues) for x in remote_states]
         if not USE_RAY_CALLS:
             retval_queue = ramba_queue.Queue()
             [x.rpc_serve.remote(retval_queue) for x in remote_states]
 
 
-
 def print_comm_stats():
-    if not USE_ZMQ: return
+    if not USE_ZMQ:
+        return
     stats = remote_call_all("get_comm_stats")
     totals = {}
     pickle_times = {}
     unpickle_times = {}
-    for i,l in enumerate(stats):
+    for i, l in enumerate(stats):
         ips = l[i][0]
-        for ipd,_,_,sent,unpick,pick in l:
-            if (ips,ipd) not in totals:  totals[(ips,ipd)] = 0
-            totals[(ips,ipd)] += sent
-            if (ips,ipd) not in pickle_times:  pickle_times[(ips,ipd)] = 0.0
-            pickle_times[(ips,ipd)] += pick
-            if ips not in unpickle_times:  unpickle_times[ips] = 0.0
+        for ipd, _, _, sent, unpick, pick in l:
+            if (ips, ipd) not in totals:
+                totals[(ips, ipd)] = 0
+            totals[(ips, ipd)] += sent
+            if (ips, ipd) not in pickle_times:
+                pickle_times[(ips, ipd)] = 0.0
+            pickle_times[(ips, ipd)] += pick
+            if ips not in unpickle_times:
+                unpickle_times[ips] = 0.0
             unpickle_times[ips] += unpick
 
-    print (totals)
-    print (pickle_times)
-    print (unpickle_times)
+    print(totals)
+    print(pickle_times)
+    print(unpickle_times)
+
 
 ## track live ndarray gids.  map gid to [ref_count, remote_constructed flag, weakset of ndarray references]
-#ndarray_gids = {}
+# ndarray_gids = {}
+
 
 def find_index(distribution, index):
     if isinstance(index, int):
@@ -2504,7 +3431,7 @@ def find_index(distribution, index):
 
     dprint(3, "find_index:", distribution, index)
     dshape = distribution.shape
-    assert(dshape[2] == len(index))
+    assert dshape[2] == len(index)
 
     for i in range(dshape[0]):
         for j in range(dshape[2]):
@@ -2513,39 +3440,68 @@ def find_index(distribution, index):
         else:
             return i
 
+
 HANDLED_FUNCTIONS = {}
 
+
 class ndarray:
-    def __init__(self, size, gid=None, distribution=None, local_border=0, dtype=None, flex_dist=True, readonly=False, **kwargs):
+    def __init__(
+        self,
+        size,
+        gid=None,
+        distribution=None,
+        local_border=0,
+        dtype=None,
+        flex_dist=True,
+        readonly=False,
+        **kwargs
+    ):
         t0 = timer()
-        self.bdarray = bdarray.assign_bdarray(self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs)  # extra options for distribution hints
-        #self.gid = self.bdarray.gid
+        self.bdarray = bdarray.assign_bdarray(
+            self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs
+        )  # extra options for distribution hints
+        # self.gid = self.bdarray.gid
         self.size = size
-        self.distribution = distribution if ((distribution is not None) and (gid is not None)) else self.bdarray.distribution
+        self.distribution = (
+            distribution
+            if ((distribution is not None) and (gid is not None))
+            else self.bdarray.distribution
+        )
         self.local_border = local_border
         self.getitem_cache = {}
         # TODO: move to_border, from_border out of ndarray; put into bdarray, or just compute when needed to construct Local_NDarray on remotes
         if local_border > 0:
-            self.from_border, self.to_border = shardview.compute_from_border(size, self.distribution, local_border)
+            self.from_border, self.to_border = shardview.compute_from_border(
+                size, self.distribution, local_border
+            )
         else:
             self.from_border = None
             self.to_border = None
-        #self.order = order
-       # #self.remote_constructed = False
-       # if gid in ndarray_gids:
-       #     ndarray_gids[gid][0]+=1   # increment refcount
-       #     ndarray_gids[gid][2].add(self)  # add to weakref set
-       # else:
-       #     # initially: refcount=1, remote_constructed=False, only this array in set
-       #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
-        #self.broadcasted_dims = broadcasted_dims
+        # self.order = order
+        # #self.remote_constructed = False
+        # if gid in ndarray_gids:
+        #     ndarray_gids[gid][0]+=1   # increment refcount
+        #     ndarray_gids[gid][2].add(self)  # add to weakref set
+        # else:
+        #     # initially: refcount=1, remote_constructed=False, only this array in set
+        #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
+        # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
         t1 = timer()
-        dprint(2, "Created ndarray",self.gid,"size",size, "time", (t1-t0)*1000)
+        dprint(2, "Created ndarray", self.gid, "size", size, "time", (t1 - t0) * 1000)
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
-        return tuple( [self.size, self.distribution, self.local_border, self.from_border, self.to_border, self.dtype] )
+        return tuple(
+            [
+                self.size,
+                self.distribution,
+                self.local_border,
+                self.from_border,
+                self.to_border,
+                self.dtype,
+            ]
+        )
 
     @property
     def gid(self):
@@ -2566,22 +3522,22 @@ class ndarray:
     def transpose(self, *args):
         ndims = len(self.size)
         if len(args) == 0:
-            return self.remapped_axis([ndims-i-1 for i in range(ndims)])
+            return self.remapped_axis([ndims - i - 1 for i in range(ndims)])
         else:
             if len(args) > 1:
                 axes = args
             elif len(args) == 1 and isinstance(args[0], tuple):
                 axes = args[0]
             # Not sufficient...should check for duplicates (i.e., all axes used exactly once)
-            assert(all(index >= 0 and index < ndims for index in axes))
+            assert all(index >= 0 and index < ndims for index in axes)
             return self.remapped_axis(axes)
 
     @property
     def T(self):
         return self.transpose()
 
-    #@property
-    #def T(self):
+    # @property
+    # def T(self):
     #    assert(len(self.size) == 2)
     #    divs = shardview.distribution_to_divisions(self.distribution)
     #    outdiv = np.flip(divs, axis=2)
@@ -2614,103 +3570,156 @@ class ndarray:
 
         deferred_op.do_ops()
         ret = np.empty(self.size, dtype=self.dtype)
-        #dist_shape = self.distribution.shape
-        #topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
+        # dist_shape = self.distribution.shape
+        # topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
         dprint(2, "asarray:", self.distribution, self.size)
         dprint(2, "asarray:", shardview.distribution_to_divisions(self.distribution))
-        #shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
-        #shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
+        # shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
+        # shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
         #                  tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])]) ) for i in range(dist_shape[0])])
-        #shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(num_workers)])
-        shards = get_results([remote_async_call(i, "get_view", self.gid, self.distribution[i]) for i in range(num_workers)])
-#        print("shards:", shards)
-#        for i in range(dist_shape[0]):
+        # shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(num_workers)])
+        shards = get_results(
+            [
+                remote_async_call(i, "get_view", self.gid, self.distribution[i])
+                for i in range(num_workers)
+            ]
+        )
+        #        print("shards:", shards)
+        #        for i in range(dist_shape[0]):
         for i in range(num_workers):
-#            dprint(2, "for:", i, dist_shape[2])
-            #gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
-            #rindex = slice_minus_offset(gindex, topleft)
-            #dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].size)
-            dprint(3, "gslice:", shardview.to_slice(self.distribution[i]), "bslice:",shardview.to_base_slice(self.distribution[i]))
-            #ret[rindex] = shards[i]
-            ret[ shardview.to_slice(self.distribution[i]) ] = shards[i]
+            #            dprint(2, "for:", i, dist_shape[2])
+            # gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
+            # rindex = slice_minus_offset(gindex, topleft)
+            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].size)
+            dprint(
+                3,
+                "gslice:",
+                shardview.to_slice(self.distribution[i]),
+                "bslice:",
+                shardview.to_base_slice(self.distribution[i]),
+            )
+            # ret[rindex] = shards[i]
+            ret[shardview.to_slice(self.distribution[i])] = shards[i]
         return ret
 
-    def array_unaryop(self, op, optext, reduction=False, imports=[], dtype=None, axis=None):
+    def array_unaryop(
+        self, op, optext, reduction=False, imports=[], dtype=None, axis=None
+    ):
         if dtype is None:
-            dtype=self.dtype
-        elif dtype=="float":
-            dtype=np.float32 if self.dtype==np.float32 else np.float64
+            dtype = self.dtype
+        elif dtype == "float":
+            dtype = np.float32 if self.dtype == np.float32 else np.float64
         if reduction:
             # TODO: should see if this can be converted into a deferred op
             deferred_op.do_ops()
-            if axis is None or (axis==0 and self.ndim==1):
-                #v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(num_workers)]
-                #g1 = get_results(v)
-                g1 = remote_call_all("array_unaryop", self.gid, None, self.distribution, None, op, None, dtype)
+            if axis is None or (axis == 0 and self.ndim == 1):
+                # v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(num_workers)]
+                # g1 = get_results(v)
+                g1 = remote_call_all(
+                    "array_unaryop",
+                    self.gid,
+                    None,
+                    self.distribution,
+                    None,
+                    op,
+                    None,
+                    dtype,
+                )
                 v = np.array(g1)
                 uop = getattr(v, op)
                 ret = uop(dtype=dtype)
             else:
                 dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
                 k = dsz[axis]
-                red_arr = empty(dsz, dtype=dtype, distribution=dist)  # should create immediately
-                remote_exec_all("array_unaryop", self.gid, red_arr.gid, self.distribution, dist, op, axis, dtype)
-                sl = tuple(0 if i==axis else slice(None) for i in range(red_arr.ndim))
-                if k==1:  # done, just get the slice with axis removed
+                red_arr = empty(
+                    dsz, dtype=dtype, distribution=dist
+                )  # should create immediately
+                remote_exec_all(
+                    "array_unaryop",
+                    self.gid,
+                    red_arr.gid,
+                    self.distribution,
+                    dist,
+                    op,
+                    axis,
+                    dtype,
+                )
+                sl = tuple(0 if i == axis else slice(None) for i in range(red_arr.ndim))
+                if k == 1:  # done, just get the slice with axis removed
                     ret = red_arr[sl]
                 else:
                     # need global reduction
-                    arr = empty_like( red_arr[sl] )
-                    code = ["", arr, " = "+optext+"( np.array([", red_arr[sl]]
-                    for j in range(1,k):
-                        sl = tuple(j if i==axis else slice(None) for i in range(red_arr.ndim))
+                    arr = empty_like(red_arr[sl])
+                    code = ["", arr, " = " + optext + "( np.array([", red_arr[sl]]
+                    for j in range(1, k):
+                        sl = tuple(
+                            j if i == axis else slice(None) for i in range(red_arr.ndim)
+                        )
                         code += [", ", red_arr[sl]]
                     code.append("]) )")
                     deferred_op.add_op(code, arr, imports=imports)
                     ret = arr
             return ret
         else:
-            new_ndarray = create_array_with_divisions(self.size, self.distribution, local_border=self.local_border, dtype=dtype)
-            deferred_op.add_op(["", new_ndarray, " = "+optext+"(", self, ")"], new_ndarray, imports=imports)
+            new_ndarray = create_array_with_divisions(
+                self.size,
+                self.distribution,
+                local_border=self.local_border,
+                dtype=dtype,
+            )
+            deferred_op.add_op(
+                ["", new_ndarray, " = " + optext + "(", self, ")"],
+                new_ndarray,
+                imports=imports,
+            )
             return new_ndarray
 
     def broadcast_to(self, size):
         dprint(4, "broadcast_to:", self.size, size)
         new_dims = len(size) - len(self.size)
         dprint(4, "new_dims:", new_dims)
-        sslice = size[-len(self.size):]
+        sslice = size[-len(self.size) :]
         dprint(4, "sslice:", sslice)
         z1 = zip(sslice, self.size)
         dprint(4, "zip check:", z1)
-        if any([a > 1 and b > 1 and a != b for a,b in z1]):
+        if any([a > 1 and b > 1 and a != b for a, b in z1]):
             raise ValueError("Non-broadcastable.")
 
-        bd = [i < new_dims or (size[i] != 1 and self.size[i - new_dims] == 1) for i in range(len(size))]
+        bd = [
+            i < new_dims or (size[i] != 1 and self.size[i - new_dims] == 1)
+            for i in range(len(size))
+        ]
         dprint(4, "broadcasted_dims:", bd)
 
         # make sure array distribution can't change (ie, not flexible or is already constructed)
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
-        return ndarray(size, gid=self.gid, distribution=shardview.broadcast(self.distribution, bd, size), local_border=0, readonly=True)
+        return ndarray(
+            size,
+            gid=self.gid,
+            distribution=shardview.broadcast(self.distribution, bd, size),
+            local_border=0,
+            readonly=True,
+        )
 
     @classmethod
     def broadcast(cls, a, b):
         new_array_size = numpy_broadcast_size(a, b)
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(a, ndarray) and a.shape == ():
-           aview = a.distribution
+            aview = a.distribution
         elif not isinstance(a, ndarray) or new_array_size == a.size:
-           aview = a
+            aview = a
         else:
-           aview = a.broadcast_to(new_array_size)
+            aview = a.broadcast_to(new_array_size)
 
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(b, ndarray) and b.shape == ():
-           bview = b.distribution
+            bview = b.distribution
         elif not isinstance(b, ndarray) or new_array_size == b.size:
-           bview = b
+            bview = b
         else:
-           bview = b.broadcast_to(new_array_size)
+            bview = b.broadcast_to(new_array_size)
 
         return (new_array_size, aview, bview)
 
@@ -2723,42 +3732,52 @@ class ndarray:
                 return self
 
         if copy:
-            new_ndarray = create_array_with_divisions(self.size, self.distribution, dtype=dtype)
+            new_ndarray = create_array_with_divisions(
+                self.size, self.distribution, dtype=dtype
+            )
             deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
         else:
             raise ValueError("Non-copy version of astype not implemented.")
         return new_ndarray
 
-    def array_binop(self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None):
-        t0=timer()
+    def array_binop(
+        self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
+    ):
+        t0 = timer()
         if isinstance(rhs, np.ndarray):
             rhs = fromarray(rhs)
         if inplace:
             sz, selfview, rhsview = ndarray.broadcast(self, rhs)
-            assert (self.size == sz)
+            assert self.size == sz
 
             if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
                 getattr(selfview, op)(rhsview)
                 return self
 
             deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
-            t1=timer()
-            dprint(4, "BINARY_OP:",optext, "time",(t1-t0)*1000)
+            t1 = timer()
+            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
             return self
         else:
-            lb = max(self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0)
+            lb = max(
+                self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
+            )
             new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
-            if hasattr(rhs,"dtype"):
-                rhs_dtype=rhs.dtype
+            if hasattr(rhs, "dtype"):
+                rhs_dtype = rhs.dtype
             else:
                 try:
                     rhs_dtype = np.dtype(rhs)
                 except:
-                    rhs_dtype=None
+                    rhs_dtype = None
             if dtype is None:
-                dtype = np.result_type(self.dtype,rhs_dtype)
-            elif dtype=="float":
-                dtype=np.float32 if rhs_dtype==np.float32 and self.dtype==np.float32 else np.float64
+                dtype = np.result_type(self.dtype, rhs_dtype)
+            elif dtype == "float":
+                dtype = (
+                    np.float32
+                    if rhs_dtype == np.float32 and self.dtype == np.float32
+                    else np.float64
+                )
 
             if isinstance(new_array_size, tuple):
                 if len(new_array_size) > 0:
@@ -2776,11 +3795,19 @@ class ndarray:
                 return res
 
             if reverse:
-                deferred_op.add_op(["", new_ndarray, " = ", rhsview, optext, selfview], new_ndarray, imports=imports)
+                deferred_op.add_op(
+                    ["", new_ndarray, " = ", rhsview, optext, selfview],
+                    new_ndarray,
+                    imports=imports,
+                )
             else:
-                deferred_op.add_op(["", new_ndarray, " = ", selfview, optext, rhsview], new_ndarray, imports=imports)
-            t1=timer()
-            dprint(4, "BINARY_OP:",optext, "time",(t1-t0)*1000)
+                deferred_op.add_op(
+                    ["", new_ndarray, " = ", selfview, optext, rhsview],
+                    new_ndarray,
+                    imports=imports,
+                )
+            t1 = timer()
+            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
             return new_ndarray
 
     def __setitem__(self, key, value):
@@ -2791,24 +3818,27 @@ class ndarray:
             key = (key,)
         if all([isinstance(i, int) for i in key]) and len(key) == len(self.size):
             print("Setting individual element is not handled yet!")
-            assert(0)
+            assert 0
 
-        if any([isinstance(i, slice) for i in key]) or len(key)<len(self.size):
+        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
             view = self[key]
             if isinstance(value, (int, bool, float, complex)):
-                    deferred_op.add_op(["", view, " = ", value, ""], view)
-                    return
+                deferred_op.add_op(["", view, " = ", value, ""], view)
+                return
             elif view.size == value.size:
                 # avoid adding code in case of inplace operations
-                if not (view.gid == value.gid and shardview.dist_is_eq(view.distribution,value.distribution)):
+                if not (
+                    view.gid == value.gid
+                    and shardview.dist_is_eq(view.distribution, value.distribution)
+                ):
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                #TODO:  Should try to broadcast value to view.size before giving up
+                # TODO:  Should try to broadcast value to view.size before giving up
                 print("Mismatched sizes", view.size, value.size)
-                assert(0)
+                assert 0
 
-        '''
+        """
         if isinstance(key[0], slice):
             if key.start is None and key.stop is None:   # a[:] = b
                 if isinstance(value, ndarray):
@@ -2824,10 +3854,10 @@ class ndarray:
                 if view.size == value.size:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                     return
-        '''
+        """
         # Need to handle all possible remaining cases.
-        print("Don't know how to set index", key, " of dist array of size",self.size)
-        assert(0)
+        print("Don't know how to set index", key, " of dist array of size", self.size)
+        assert 0
 
     def __getitem__(self, index):
         indhash = pickle.dumps(index)
@@ -2844,10 +3874,14 @@ class ndarray:
         if all([isinstance(i, int) for i in index]) and len(index) == len(self.size):
             deferred_op.do_ops()
 
-            owner = shardview.find_index(self.distribution, index) #find_index(self.distribution, index)
+            owner = shardview.find_index(
+                self.distribution, index
+            )  # find_index(self.distribution, index)
             dprint(2, "owner:", owner)
-            #ret = ray.get(remote_states[owner].getitem_global.remote(self.gid, index, self.distribution[owner]))
-            ret = remote_call(owner, "getitem_global", self.gid, index, self.distribution[owner])
+            # ret = ray.get(remote_states[owner].getitem_global.remote(self.gid, index, self.distribution[owner]))
+            ret = remote_call(
+                owner, "getitem_global", self.gid, index, self.distribution[owner]
+            )
             return ret
 
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
@@ -2855,7 +3889,14 @@ class ndarray:
             # check for out-of-bounds
             for i in range(len(index)):
                 if isinstance(index[i], int) and index[i] >= self.size[i]:
-                    raise IndexError("index " + str(index[i]) + " is out of bounds for axis " + str(i) + " with size " + str(self.size[i]))
+                    raise IndexError(
+                        "index "
+                        + str(index[i])
+                        + " is out of bounds for axis "
+                        + str(i)
+                        + " with size "
+                        + str(self.size[i])
+                    )
 
             # make sure array distribution can't change (ie, not flexible or is already constructed)
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
@@ -2865,24 +3906,36 @@ class ndarray:
             dim_sizes = tuple([max(0, x.stop - x.start) for x in cindex])
             dprint(2, "getitem slice:", cindex, dim_sizes)
 
-            #sdistribution = [
+            # sdistribution = [
             #                 [[max(self.distribution[i][0][j], cindex[j].start)  for j in range(num_dim)],
             #                  [max(max(self.distribution[i][0][j]-1, cindex[j].start), min(self.distribution[i][1][j], cindex[j].stop-1)) for j in range(num_dim)]]
             #                  for i in range(len(self.distribution))]
             sdistribution = shardview.slice_distribution(cindex, self.distribution)
             # reduce dimensionality as needed
-            axismap = [i for i in range(len(dim_sizes)) if i>=len(index) or isinstance(index[i],slice)]
-            if len(axismap)<len(dim_sizes):
-                dim_sizes, sdistribution = shardview.remap_axis(dim_sizes, sdistribution, axismap)
+            axismap = [
+                i
+                for i in range(len(dim_sizes))
+                if i >= len(index) or isinstance(index[i], slice)
+            ]
+            if len(axismap) < len(dim_sizes):
+                dim_sizes, sdistribution = shardview.remap_axis(
+                    dim_sizes, sdistribution, axismap
+                )
             dprint(2, "getitem slice:", dim_sizes, sdistribution)
-#            deferred_op.add_op(["", self, " = ", value, ""])
-            #return ndarray(self.gid, tuple(dim_sizes), np.asarray(sdistribution))
+            #            deferred_op.add_op(["", self, " = ", value, ""])
+            # return ndarray(self.gid, tuple(dim_sizes), np.asarray(sdistribution))
             # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
-            return ndarray(dim_sizes, gid=self.gid, distribution=sdistribution, local_border=0, readonly=self.readonly, dtype=self.dtype)
+            return ndarray(
+                dim_sizes,
+                gid=self.gid,
+                distribution=sdistribution,
+                local_border=0,
+                readonly=self.readonly,
+                dtype=self.dtype,
+            )
 
-        print("Don't know how to get index", index, " of dist array of size",self.size)
-        assert(0)  # Handle other types
-
+        print("Don't know how to get index", index, " of dist array of size", self.size)
+        assert 0  # Handle other types
 
     def get_remote_ranges(self, required_division):
         return get_remote_ranges(self.distribution, required_division)
@@ -2898,22 +3951,30 @@ class ndarray:
 
     def mean(self, axis=None, dtype=None):
         n = np.prod(self.shape) if axis is None else self.shape[axis]
-        s = 1/n
-        rv = s * self.sum(axis=axis,dtype=dtype)
+        s = 1 / n
+        rv = s * self.sum(axis=axis, dtype=dtype)
         if dtype is not None:
-            if isinstance(rv,ndarray):
+            if isinstance(rv, ndarray):
                 rv = rv.astype(dtype)
             else:
-                rv = np.mean([rv],dtype=dtype)
+                rv = np.mean([rv], dtype=dtype)
         return rv
 
-    #def __len__(self):
+    # def __len__(self):
     #    return self.size[0]
 
     def __array_function__(self, func, types, args, kwargs):
-        dprint(2, "__array_function__", func, types, args, kwargs, func in HANDLED_FUNCTIONS)
+        dprint(
+            2,
+            "__array_function__",
+            func,
+            types,
+            args,
+            kwargs,
+            func in HANDLED_FUNCTIONS,
+        )
         for arg in args:
-             dprint(4, "arg:", arg, type(arg))
+            dprint(4, "arg:", arg, type(arg))
         new_args = []
         if func not in HANDLED_FUNCTIONS:
             return NotImplemented
@@ -2941,7 +4002,7 @@ class ndarray:
                 elif isinstance(arg, numbers.Number):
                     real_args.append(arg)
                 else:
-                    print (type(arg))
+                    print(type(arg))
                     return NotImplemented
             isreversed = not isinstance(inputs[0], ndarray)
             if ufunc.__name__ in ufunc_map:
@@ -2949,7 +4010,7 @@ class ndarray:
             else:
                 mapname = ufunc.__name__
             if isreversed:
-                mapname = 'r' + mapname
+                mapname = "r" + mapname
                 real_args = real_args[::-1]
 
             attrres = getattr(real_args[0], "__" + mapname + "__", None)
@@ -2957,7 +4018,7 @@ class ndarray:
                 attrres = getattr(real_args[0], mapname, None)
             if attrres is None:
                 attrres = getattr(real_args[0], ufunc.__name__, None)
-            assert(attrres is not None)
+            assert attrres is not None
             dprint(2, "attrres:", attrres, type(attrres), real_args)
             return attrres(*real_args[1:], **kwargs)
         elif method == "reduce":
@@ -2965,14 +4026,17 @@ class ndarray:
         else:
             return NotImplemented
 
+
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
-ufunc_map = { 'multiply': 'mul',
-              'subtract':'sub',
-              'divide':'div',
-              'true_divide':'truediv',
-              'floor_divide':'floordiv'
-            }
+ufunc_map = {
+    "multiply": "mul",
+    "subtract": "sub",
+    "divide": "div",
+    "true_divide": "truediv",
+    "floor_divide": "floordiv",
+}
+
 
 def dot(a, b, out=None):
     ashape = a.shape
@@ -2981,7 +4045,8 @@ def dot(a, b, out=None):
         return matmul(a, b, out=out)
     else:
         print("dot for matrices higher than 2 dimensions not currently supported.")
-        assert(0)
+        assert 0
+
 
 # --------------- Global variables to hold timings of parts of Ramba -------------
 # The dict value {0:(0,0)} is explained as follows:
@@ -2989,40 +4054,46 @@ def dot(a, b, out=None):
 # that key entry.  Other key values indicate sub-parts of that time.
 # In the (0,0) tuple, the first zero is a counter of how many times have been recorded
 # and the second 0 is the total time.
-time_dict = {"matmul_b_c_not_dist":{0:(0,0)},
-             "matmul_c_not_dist_a_b_dist_match":{0:(0,0)},
-             "matmul_c_not_dist_a_b_dist_non_match":{0:(0,0)},
-             "matmul_general":{0:(0,0)},
-            }
+time_dict = {
+    "matmul_b_c_not_dist": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_match": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_non_match": {0: (0, 0)},
+    "matmul_general": {0: (0, 0)},
+}
 
 if in_driver() and numba.version_info.short >= (0, 53):
     global compile_recorder
     compile_recorder = numba.core.event.RecordingListener()
     numba.core.event.register("numba:compile", compile_recorder)
 
+
 def reset_timing():
-    for k,v in time_dict.items():
-        time_dict[k] = {0:(0,0)}
+    for k, v in time_dict.items():
+        time_dict[k] = {0: (0, 0)}
     if numba.version_info.short >= (0, 53):
         compile_recorder.buffer = []
     remote_exec_all("reset_compile_stats")
     remote_exec_all("reset_def_ops_stats")
+
 
 def get_timing(details=False):
     if numba.version_info.short >= (0, 53):
         driver_summary = rec_buf_summary(compile_recorder.buffer)
         stats = remote_call_all("get_compile_stats")
         remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-        time_dict["numba_compile_time"] = {0:tuple(map(operator.add, driver_summary, remote_maximum))}
+        time_dict["numba_compile_time"] = {
+            0: tuple(map(operator.add, driver_summary, remote_maximum))
+        }
 
     stats = remote_call_all("get_def_ops_stats")
     remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-    time_dict["remote_deferred_ops"] = {0:remote_maximum}
+    time_dict["remote_deferred_ops"] = {0: remote_maximum}
 
     if details:
         return time_dict
     else:
-        return {k:time_dict[k][0] for k in time_dict.keys()}
+        return {k: time_dict[k][0] for k in time_dict.keys()}
+
 
 def get_timing_str(details=False):
     timings = get_timing(details=details)
@@ -3038,21 +4109,25 @@ def get_timing_str(details=False):
             res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
     return res
 
+
 def add_time(time_name, val):
     tindex = time_dict[time_name]
-    assert(isinstance(tindex, dict))
+    assert isinstance(tindex, dict)
     cur_val = tindex[0]
-    assert(isinstance(cur_val, tuple))
+    assert isinstance(cur_val, tuple)
     tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
+
 
 def add_sub_time(time_name, sub_name, val):
     tindex = time_dict[time_name]
     if sub_name not in tindex:
-        tindex[sub_name] = (0,0)
+        tindex[sub_name] = (0, 0)
     cur_val = tindex[sub_name]
     tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
 
+
 # --------------- Global variables to hold timings of parts of Ramba -------------
+
 
 def matmul(a, b, reduction=False, out=None):
     dprint(1, "starting matmul", a.shape, b.shape)
@@ -3062,7 +4137,7 @@ def matmul(a, b, reduction=False, out=None):
 
     # Handle the 1D x 1D case.
     if len(ashape) == 1 and len(bshape) == 1:
-        assert(ashape[0] == bshape[0])
+        assert ashape[0] == bshape[0]
         # shortcut
         return (a * b).sum()
 
@@ -3078,23 +4153,29 @@ def matmul(a, b, reduction=False, out=None):
 
     if len(ashape) > 2 or len(bshape) > 2:
         print("matmul for matrices higher than 2 dimensions not currently supported.")
-        assert(0)
+        assert 0
 
-    assert(ashape[1] == bshape[0])
+    assert ashape[1] == bshape[0]
 
     if bextend:
-        out_shape = (ashape[0], )
+        out_shape = (ashape[0],)
     else:
         out_shape = (ashape[0], bshape[1])
 
     if out is not None:
-        assert(out.shape == out_shape)
+        assert out.shape == out_shape
         out_ndarray = out
     else:
         out_ndarray = empty(out_shape, dtype=np.result_type(a.dtype, b.dtype))
 
     pre_matmul_end_time = timer()
-    tprint(2, "pre_matmul_total_time:", pre_matmul_end_time - pre_matmul_start_time, ashape, bshape)
+    tprint(
+        2,
+        "pre_matmul_total_time:",
+        pre_matmul_end_time - pre_matmul_start_time,
+        ashape,
+        bshape,
+    )
 
     a_send_recv = uuid.uuid4()
     b_send_recv = uuid.uuid4()
@@ -3106,7 +4187,13 @@ def matmul(a, b, reduction=False, out=None):
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
-            tprint(2, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
+            tprint(
+                2,
+                "matmul_sync_total_time:",
+                sync_end_time - sync_start_time,
+                ashape,
+                bshape,
+            )
         else:
             deferred_op.do_ops()
 
@@ -3114,8 +4201,8 @@ def matmul(a, b, reduction=False, out=None):
 
         adivs = shardview.distribution_to_divisions(a.distribution)
         bdivs = shardview.distribution_to_divisions(b.distribution)
-        dprint(4, "matmul adivs:", adivs, "\n", adivs[:,:,0], "\n", adivs[:,:,1])
-        dprint(3, "matmul bdivs:", bdivs, "\n", bdivs[:,:,0])
+        dprint(4, "matmul adivs:", adivs, "\n", adivs[:, :, 0], "\n", adivs[:, :, 1])
+        dprint(3, "matmul bdivs:", bdivs, "\n", bdivs[:, :, 0])
         if do_not_distribute(bshape):
             dprint(2, "matmul b matrix is not distributed")
             blocal = b.asarray()
@@ -3127,11 +4214,21 @@ def matmul(a, b, reduction=False, out=None):
             reduction_slicing_start_time = timer()
             reduction_slicing_end_time = timer()
             launch_start_time = timer()
-            matmul_workers = remote_async_call_all("matmul",
-                                out_shape, out_ndarray.gid, out_ndarray.distribution,
-                                a.gid, a.size, a.distribution,
-                                blocal, 0, 0,
-                                bextend, a_send_recv, b_send_recv)
+            matmul_workers = remote_async_call_all(
+                "matmul",
+                out_shape,
+                out_ndarray.gid,
+                out_ndarray.distribution,
+                a.gid,
+                a.size,
+                a.distribution,
+                blocal,
+                0,
+                0,
+                bextend,
+                a_send_recv,
+                b_send_recv,
+            )
             launch_end_time = timer()
             launch_total = launch_end_time - launch_start_time
 
@@ -3147,29 +4244,92 @@ def matmul(a, b, reduction=False, out=None):
                 if ntiming >= 1:
                     sync()
                 sync_end_time = timer()
-                tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
+                tprint(
+                    2,
+                    "driver_reduction_time:",
+                    sync_end_time - reduce_start_time,
+                    reduce_end_time - reduce_start_time,
+                    fromarray_end_time - reduce_end_time,
+                    sync_end_time - fromarray_end_time,
+                )
 
             matmul_end_time = timer()
-            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_total, post_get_end_time - reduction_slicing_end_time, matmul_end_time - post_get_end_time)
+            tprint(
+                2,
+                "matmul_total_time:",
+                matmul_end_time - matmul_start_time,
+                ashape,
+                bshape,
+                reduction_slicing_end_time - reduction_slicing_start_time,
+                launch_total,
+                post_get_end_time - reduction_slicing_end_time,
+                matmul_end_time - post_get_end_time,
+            )
             for worker_data in worker_timings:
-                worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                (
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    len_arange,
+                    len_brange,
+                    exec_time,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                    _,
+                ) = worker_data
+                tprint(
+                    3,
+                    "reduction matmul_worker:",
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    exec_time,
+                    len_arange,
+                    len_brange,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                )
 
             add_time("matmul_b_c_not_dist", matmul_end_time - pre_matmul_start_time)
-            add_sub_time("matmul_b_c_not_dist", "pre", pre_matmul_end_time - pre_matmul_start_time)
+            add_sub_time(
+                "matmul_b_c_not_dist",
+                "pre",
+                pre_matmul_end_time - pre_matmul_start_time,
+            )
             add_sub_time("matmul_b_c_not_dist", "launch", launch_total)
-            add_sub_time("matmul_b_c_not_dist", "compute_comm", max([x[2] for x in worker_timings]))
-            add_sub_time("matmul_b_c_not_dist", "comm", max([x[3] for x in worker_timings]))
-            add_sub_time("matmul_b_c_not_dist", "exec", max([x[6] for x in worker_timings]))
+            add_sub_time(
+                "matmul_b_c_not_dist",
+                "compute_comm",
+                max([x[2] for x in worker_timings]),
+            )
+            add_sub_time(
+                "matmul_b_c_not_dist", "comm", max([x[3] for x in worker_timings])
+            )
+            add_sub_time(
+                "matmul_b_c_not_dist", "exec", max([x[6] for x in worker_timings])
+            )
 
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
             else:
                 return out_ndarray
-        elif np.array_equal(adivs[:,:,1], bdivs[:,:,0]) and np.min(adivs[:,0,0])==np.max(adivs[:,0,0]) and np.min(adivs[:,1,0])==np.max(adivs[:,1,0]):
-            dprint(2, "matmul b matrix is distributed and has same inner distribution as the a matrix outer distribution")
+        elif (
+            np.array_equal(adivs[:, :, 1], bdivs[:, :, 0])
+            and np.min(adivs[:, 0, 0]) == np.max(adivs[:, 0, 0])
+            and np.min(adivs[:, 1, 0]) == np.max(adivs[:, 1, 0])
+        ):
+            dprint(
+                2,
+                "matmul b matrix is distributed and has same inner distribution as the a matrix outer distribution",
+            )
             adivs_shape = adivs.shape
-            assert(adivs_shape[0] == num_workers)
+            assert adivs_shape[0] == num_workers
 
             worker_info = []
             workers = []
@@ -3178,11 +4338,21 @@ def matmul(a, b, reduction=False, out=None):
             reduction_slicing_start_time = timer()
             reduction_slicing_end_time = timer()
             launch_start_time = timer()
-            matmul_workers = remote_async_call_all("matmul",
-                                out_shape, out_ndarray.gid, out_ndarray.distribution,
-                                a.gid, a.size, a.distribution,
-                                b.gid, b.size, b.distribution, bextend,
-                                a_send_recv, b_send_recv)
+            matmul_workers = remote_async_call_all(
+                "matmul",
+                out_shape,
+                out_ndarray.gid,
+                out_ndarray.distribution,
+                a.gid,
+                a.size,
+                a.distribution,
+                b.gid,
+                b.size,
+                b.distribution,
+                bextend,
+                a_send_recv,
+                b_send_recv,
+            )
             launch_end_time = timer()
             launch_total = launch_end_time - launch_start_time
             worker_timings = get_results(matmul_workers)
@@ -3197,34 +4367,98 @@ def matmul(a, b, reduction=False, out=None):
                 if ntiming >= 1:
                     sync()
                 sync_end_time = timer()
-                tprint(2, "driver_reduction_time:", sync_end_time - reduce_start_time, reduce_end_time - reduce_start_time, fromarray_end_time - reduce_end_time, sync_end_time - fromarray_end_time)
+                tprint(
+                    2,
+                    "driver_reduction_time:",
+                    sync_end_time - reduce_start_time,
+                    reduce_end_time - reduce_start_time,
+                    fromarray_end_time - reduce_end_time,
+                    sync_end_time - fromarray_end_time,
+                )
 
             matmul_end_time = timer()
-            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, "slicing_time", 0, "launch_time", launch_total, "get_results_time", post_get_end_time - launch_end_time)
+            tprint(
+                2,
+                "matmul_total_time:",
+                matmul_end_time - matmul_start_time,
+                ashape,
+                bshape,
+                "slicing_time",
+                0,
+                "launch_time",
+                launch_total,
+                "get_results_time",
+                post_get_end_time - launch_end_time,
+            )
             for worker_data in worker_timings:
-                worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                (
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    len_arange,
+                    len_brange,
+                    exec_time,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                    _,
+                ) = worker_data
+                tprint(
+                    3,
+                    "reduction matmul_worker:",
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    exec_time,
+                    len_arange,
+                    len_brange,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                )
 
-            add_time("matmul_c_not_dist_a_b_dist_match", matmul_end_time - pre_matmul_start_time)
-            add_sub_time("matmul_c_not_dist_a_b_dist_match", "pre", pre_matmul_end_time - pre_matmul_start_time)
+            add_time(
+                "matmul_c_not_dist_a_b_dist_match",
+                matmul_end_time - pre_matmul_start_time,
+            )
+            add_sub_time(
+                "matmul_c_not_dist_a_b_dist_match",
+                "pre",
+                pre_matmul_end_time - pre_matmul_start_time,
+            )
             add_sub_time("matmul_c_not_dist_a_b_dist_match", "launch", launch_total)
-            add_sub_time("matmul_c_not_dist_a_b_dist_match", "reduction", max([x[3] for x in worker_timings]))
-            add_sub_time("matmul_c_not_dist_a_b_dist_match", "exec", max([x[6] for x in worker_timings]))
+            add_sub_time(
+                "matmul_c_not_dist_a_b_dist_match",
+                "reduction",
+                max([x[3] for x in worker_timings]),
+            )
+            add_sub_time(
+                "matmul_c_not_dist_a_b_dist_match",
+                "exec",
+                max([x[6] for x in worker_timings]),
+            )
 
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
             else:
                 return out_ndarray
         else:
-            #print("not simple case:", out_shape, adivs, adivs[:,:,1], bdivs, bdivs[:,:,0], np.array_equal(adivs[:,:,1], bdivs[:,:,0]))
-            dprint(2, "matmul b matrix is distributed but a is not distributed across 2nd dimension nor b across inner dimension")
+            # print("not simple case:", out_shape, adivs, adivs[:,:,1], bdivs, bdivs[:,:,0], np.array_equal(adivs[:,:,1], bdivs[:,:,0]))
+            dprint(
+                2,
+                "matmul b matrix is distributed but a is not distributed across 2nd dimension nor b across inner dimension",
+            )
             adivs_shape = adivs.shape
-            divisions = np.empty((adivs_shape[0],2,len(out_shape)), dtype=np.int64)
+            divisions = np.empty((adivs_shape[0], 2, len(out_shape)), dtype=np.int64)
             starts = np.zeros(len(out_shape), dtype=np.int64)
             ends = np.array(list(out_shape), dtype=np.int64)
             # the ends are inclusive, not one past the last index
             ends -= 1
-            assert(adivs_shape[0] == num_workers)
+            assert adivs_shape[0] == num_workers
 
             worker_info = []
             workers = []
@@ -3233,20 +4467,40 @@ def matmul(a, b, reduction=False, out=None):
             reduction_slicing_start_time = timer()
             for i in range(adivs_shape[0]):
                 shardview.make_uni_dist(divisions, i, starts, ends)
-                partial_matmul_res = zeros(out_shape, distribution=shardview.divisions_to_distribution(divisions))
-                aslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1), slice(adivs[i,0,1], adivs[i,1,1]+1))
+                partial_matmul_res = zeros(
+                    out_shape,
+                    distribution=shardview.divisions_to_distribution(divisions),
+                )
+                aslice_struct = (
+                    slice(adivs[i, 0, 0], adivs[i, 1, 0] + 1),
+                    slice(adivs[i, 0, 1], adivs[i, 1, 1] + 1),
+                )
                 aslice = a[aslice_struct]
                 if bextend:
-                    bslice_struct = (slice(adivs[i,0,1], adivs[i,1,1]+1),)
+                    bslice_struct = (slice(adivs[i, 0, 1], adivs[i, 1, 1] + 1),)
                     bslice = b[bslice_struct]
-                    cslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1),)
+                    cslice_struct = (slice(adivs[i, 0, 0], adivs[i, 1, 0] + 1),)
                     cslice = partial_matmul_res[cslice_struct]
                 else:
-                    bslice_struct = (slice(adivs[i,0,1], adivs[i,1,1]+1), slice(0, out_shape[1]))
+                    bslice_struct = (
+                        slice(adivs[i, 0, 1], adivs[i, 1, 1] + 1),
+                        slice(0, out_shape[1]),
+                    )
                     bslice = b[bslice_struct]
-                    cslice_struct = (slice(adivs[i,0,0], adivs[i,1,0]+1), slice(0, out_shape[1]))
+                    cslice_struct = (
+                        slice(adivs[i, 0, 0], adivs[i, 1, 0] + 1),
+                        slice(0, out_shape[1]),
+                    )
                     cslice = partial_matmul_res[cslice_struct]
-                dprint(2, "matmul part:", i, partial_matmul_res, aslice_struct, bslice_struct, cslice_struct)
+                dprint(
+                    2,
+                    "matmul part:",
+                    i,
+                    partial_matmul_res,
+                    aslice_struct,
+                    bslice_struct,
+                    cslice_struct,
+                )
 
                 partials.append(partial_matmul_res)
                 worker_info.append((aslice, bslice, cslice, partial_matmul_res))
@@ -3260,7 +4514,9 @@ def matmul(a, b, reduction=False, out=None):
             launch_start_time = timer()
             for wi in worker_info:
                 aslice, bslice, cslice, partial_matmul_res = wi
-                matmul_workers.extend(matmul(aslice, bslice, reduction=True, out=cslice))
+                matmul_workers.extend(
+                    matmul(aslice, bslice, reduction=True, out=cslice)
+                )
 
             launch_end_time = timer()
 
@@ -3276,12 +4532,52 @@ def matmul(a, b, reduction=False, out=None):
                 sync()
 
             matmul_end_time = timer()
-            tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape, reduction_slicing_end_time - reduction_slicing_start_time, launch_end_time - launch_start_time, post_get_end_time - launch_end_time, matmul_end_time - post_get_end_time)
+            tprint(
+                2,
+                "matmul_total_time:",
+                matmul_end_time - matmul_start_time,
+                ashape,
+                bshape,
+                reduction_slicing_end_time - reduction_slicing_start_time,
+                launch_end_time - launch_start_time,
+                post_get_end_time - launch_end_time,
+                matmul_end_time - post_get_end_time,
+            )
             for worker_data in worker_timings:
-                worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-                tprint(3, "reduction matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+                (
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    len_arange,
+                    len_brange,
+                    exec_time,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                    _,
+                ) = worker_data
+                tprint(
+                    3,
+                    "reduction matmul_worker:",
+                    worker_num,
+                    worker_total,
+                    compute_comm,
+                    comm_time,
+                    exec_time,
+                    len_arange,
+                    len_brange,
+                    a_send_stats,
+                    a_recv_stats,
+                    b_send_stats,
+                    b_recv_stats,
+                )
 
-            add_time("matmul_c_not_dist_a_b_dist_non_match", matmul_end_time - pre_matmul_start_time)
+            add_time(
+                "matmul_c_not_dist_a_b_dist_non_match",
+                matmul_end_time - pre_matmul_start_time,
+            )
 
             if aextend:
                 return reshape(out_ndarray, (out_shape[1],))
@@ -3293,50 +4589,105 @@ def matmul(a, b, reduction=False, out=None):
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
-            tprint(2, "matmul_sync_total_time:", sync_end_time - sync_start_time, ashape, bshape)
+            tprint(
+                2,
+                "matmul_sync_total_time:",
+                sync_end_time - sync_start_time,
+                ashape,
+                bshape,
+            )
         else:
             deferred_op.do_ops()
 
     matmul_start_time = timer()
-    dprint(4, "matmul a:", ashape, a.distribution, shardview.distribution_to_divisions(a.distribution))
+    dprint(
+        4,
+        "matmul a:",
+        ashape,
+        a.distribution,
+        shardview.distribution_to_divisions(a.distribution),
+    )
     dprint(4, "matmul b:", bshape, shardview.distribution_to_divisions(b.distribution))
     out_distribution = shardview.distribution_to_divisions(out_ndarray.distribution)
     dprint(4, "matmul out:", out_shape, out_distribution)
 
-    #a_send_recv = uuid.uuid4()
-    #b_send_recv = uuid.uuid4()
+    # a_send_recv = uuid.uuid4()
+    # b_send_recv = uuid.uuid4()
     end_compute_comm_set = timer()
 
-    #matmul_workers = remote_call_all("matmul", out_ndarray.gid,
+    # matmul_workers = remote_call_all("matmul", out_ndarray.gid,
     #                                a.gid, a.size, a.distribution,
     #                                b.gid, b.size, b.distribution, bextend,
     #                                a_send_recv, b_send_recv)
 
     launch_start_time = timer()
-    matmul_workers = remote_async_call_all("matmul",
-                                    out_ndarray.gid, out_ndarray.size, out_ndarray.distribution,
-                                    a.gid, a.size, a.distribution,
-                                    b.gid, b.size, b.distribution, bextend,
-                                    a_send_recv, b_send_recv)
+    matmul_workers = remote_async_call_all(
+        "matmul",
+        out_ndarray.gid,
+        out_ndarray.size,
+        out_ndarray.distribution,
+        a.gid,
+        a.size,
+        a.distribution,
+        b.gid,
+        b.size,
+        b.distribution,
+        bextend,
+        a_send_recv,
+        b_send_recv,
+    )
     launch_end_time = timer()
     launch_total = launch_end_time - launch_start_time
 
     if reduction:
         return matmul_workers
     else:
-        #worker_timings = ray.get(matmul_workers)
+        # worker_timings = ray.get(matmul_workers)
         worker_timings = get_results(matmul_workers)
 
         matmul_end_time = timer()
-        tprint(2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape)
+        tprint(
+            2, "matmul_total_time:", matmul_end_time - matmul_start_time, ashape, bshape
+        )
         for worker_data in worker_timings:
-            worker_num, worker_total, compute_comm, comm_time, len_arange, len_brange, exec_time, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats, _ = worker_data
-            tprint(3, "matmul_worker:", worker_num, worker_total, compute_comm, comm_time, exec_time, len_arange, len_brange, a_send_stats, a_recv_stats, b_send_stats, b_recv_stats)
+            (
+                worker_num,
+                worker_total,
+                compute_comm,
+                comm_time,
+                len_arange,
+                len_brange,
+                exec_time,
+                a_send_stats,
+                a_recv_stats,
+                b_send_stats,
+                b_recv_stats,
+                _,
+            ) = worker_data
+            tprint(
+                3,
+                "matmul_worker:",
+                worker_num,
+                worker_total,
+                compute_comm,
+                comm_time,
+                exec_time,
+                len_arange,
+                len_brange,
+                a_send_stats,
+                a_recv_stats,
+                b_send_stats,
+                b_recv_stats,
+            )
 
         add_time("matmul_general", matmul_end_time - pre_matmul_start_time)
-        add_sub_time("matmul_general", "pre", pre_matmul_end_time - pre_matmul_start_time)
+        add_sub_time(
+            "matmul_general", "pre", pre_matmul_end_time - pre_matmul_start_time
+        )
         add_sub_time("matmul_general", "launch", launch_total)
-        add_sub_time("matmul_general", "compute_comm", max([x[2] for x in worker_timings]))
+        add_sub_time(
+            "matmul_general", "compute_comm", max([x[2] for x in worker_timings])
+        )
         add_sub_time("matmul_general", "comm", max([x[3] for x in worker_timings]))
         add_sub_time("matmul_general", "exec", max([x[6] for x in worker_timings]))
 
@@ -3345,12 +4696,15 @@ def matmul(a, b, reduction=False, out=None):
         else:
             return out_ndarray
 
+
 def matmul_summary():
     print(get_timing_str())
+
 
 if ntiming > 0:
     print("registering matmul_summary")
     atexit.register(matmul_summary)
+
 
 def canonical_dim(dim, dim_size, end=False):
     if dim is None:
@@ -3362,24 +4716,31 @@ def canonical_dim(dim, dim_size, end=False):
     else:
         return dim_size
 
+
 def canonical_index(index, size):
     newindex = []
     if not isinstance(index, tuple):
         index = (index,)
-    assert(len(index) <= len(size))
+    assert len(index) <= len(size)
     for i in range(len(size)):
-        if i>=len(index):
-            newindex.append(slice(0,size[i]))
+        if i >= len(index):
+            newindex.append(slice(0, size[i]))
             continue
         ti = index[i]
         if isinstance(ti, int):
             ni = canonical_dim(ti, size[i])
-            newindex.append(slice(ni, ni+1))
+            newindex.append(slice(ni, ni + 1))
         elif isinstance(ti, slice):
-            newindex.append(slice(canonical_dim(ti.start, size[i]), canonical_dim(ti.stop, size[i], end=True)))
+            newindex.append(
+                slice(
+                    canonical_dim(ti.start, size[i]),
+                    canonical_dim(ti.stop, size[i], end=True),
+                )
+            )
         else:
-            assert(0)
+            assert 0
     return tuple(newindex)
+
 
 def numpy_broadcast_size(a, b):
     rev_ashape = a.shape[::-1]
@@ -3391,8 +4752,9 @@ def numpy_broadcast_size(a, b):
         rev_bshape = (1,)
 
     # scalar output
-    if ((isinstance(a, numbers.Number) or rev_ashape == ()) and
-        (isinstance(b, numbers.Number) or rev_bshape == ())):
+    if (isinstance(a, numbers.Number) or rev_ashape == ()) and (
+        isinstance(b, numbers.Number) or rev_bshape == ()
+    ):
         return None
 
     dprint(3, "numpy_broadcast_size:", rev_ashape, rev_bshape)
@@ -3408,7 +4770,12 @@ def numpy_broadcast_size(a, b):
         elif rev_bshape[i] == 1:
             new_shape.append(rev_ashape[i])
         elif rev_ashape[i] != rev_bshape[i]:
-            raise ValueError("operands could not be broadcast together with shapes " + str(a.shape) + " and " + str(b.shape))
+            raise ValueError(
+                "operands could not be broadcast together with shapes "
+                + str(a.shape)
+                + " and "
+                + str(b.shape)
+            )
         else:
             new_shape.append(rev_ashape[i])
 
@@ -3418,24 +4785,44 @@ def numpy_broadcast_size(a, b):
 
     return tuple(new_shape[::-1])
 
-def make_method(name, optext, inplace=False, unary=False, reduction=False, reverse=False, imports=[], dtype=None):
+
+def make_method(
+    name,
+    optext,
+    inplace=False,
+    unary=False,
+    reduction=False,
+    reverse=False,
+    imports=[],
+    dtype=None,
+):
     if unary:
+
         def _method(self, **kwargs):
-            if "dtype" not in kwargs: kwargs["dtype"]=dtype
-            retval = self.array_unaryop(name, optext, reduction, imports=imports, **kwargs)
+            if "dtype" not in kwargs:
+                kwargs["dtype"] = dtype
+            retval = self.array_unaryop(
+                name, optext, reduction, imports=imports, **kwargs
+            )
             return retval
+
     else:
+
         def _method(self, rhs):
-            t0=timer()
-#            print("make_method", name, type(self), type(rhs))
-#            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
-#                assert(self.size == rhs.size)
-            new_ndarray = self.array_binop(rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype)
-            t1=timer()
-            dprint(4, "BIN METHOD: time",(t1-t0)*1000)
+            t0 = timer()
+            #            print("make_method", name, type(self), type(rhs))
+            #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
+            #                assert(self.size == rhs.size)
+            new_ndarray = self.array_binop(
+                rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype
+            )
+            t1 = timer()
+            dprint(4, "BIN METHOD: time", (t1 - t0) * 1000)
             return new_ndarray
+
     _method.__name__ = name
     return _method
+
 
 class op_info:
     def __init__(self, code, imports=[], dtype=None):
@@ -3443,102 +4830,124 @@ class op_info:
         self.imports = imports
         self.dtype = dtype
 
-array_binop_funcs = {"__add__":op_info(" + "),
-                     "__mul__":op_info(" * "),
-                     "__sub__":op_info(" - "),
-                     "__floordiv__":op_info(" // "),
-                     "__truediv__":op_info(" / ", dtype="float"),
-                     "__mod__":op_info(" % "),
-                     "__pow__":op_info(" ** "),
-                     "__gt__":op_info(" > ", dtype=np.bool_),
-                     "__lt__":op_info(" < ", dtype=np.bool_),
-                     "__ge__":op_info(" >= ", dtype=np.bool_),
-                     "__le__":op_info(" <= ", dtype=np.bool_),
-                     "__eq__":op_info(" == ", dtype=np.bool_),
-                     "__ne__":op_info(" != ", dtype=np.bool_),
-                    }
-for (abf,code) in array_binop_funcs.items():
+
+array_binop_funcs = {
+    "__add__": op_info(" + "),
+    "__mul__": op_info(" * "),
+    "__sub__": op_info(" - "),
+    "__floordiv__": op_info(" // "),
+    "__truediv__": op_info(" / ", dtype="float"),
+    "__mod__": op_info(" % "),
+    "__pow__": op_info(" ** "),
+    "__gt__": op_info(" > ", dtype=np.bool_),
+    "__lt__": op_info(" < ", dtype=np.bool_),
+    "__ge__": op_info(" >= ", dtype=np.bool_),
+    "__le__": op_info(" <= ", dtype=np.bool_),
+    "__eq__": op_info(" == ", dtype=np.bool_),
+    "__ne__": op_info(" != ", dtype=np.bool_),
+}
+for (abf, code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
-array_binop_rfuncs = {"__radd__":op_info(" + "),
-                      "__rmul__":op_info(" * "),
-                      "__rsub__":op_info(" - "),
-                      "__rtruediv__":op_info(" / ", dtype="float"),
-                      "__rfloordiv__":op_info( " // "),
-                      "__rmod__":op_info(" % "),
-                      "__rpow__":op_info(" ** "),
-                    }
-for (abf,code) in array_binop_rfuncs.items():
-    new_func = make_method(abf,code.code, dtype=code.dtype, reverse=True)
+array_binop_rfuncs = {
+    "__radd__": op_info(" + "),
+    "__rmul__": op_info(" * "),
+    "__rsub__": op_info(" - "),
+    "__rtruediv__": op_info(" / ", dtype="float"),
+    "__rfloordiv__": op_info(" // "),
+    "__rmod__": op_info(" % "),
+    "__rpow__": op_info(" ** "),
+}
+for (abf, code) in array_binop_rfuncs.items():
+    new_func = make_method(abf, code.code, dtype=code.dtype, reverse=True)
     setattr(ndarray, abf, new_func)
 
-array_inplace_binop_funcs = {"__iadd__":" += ","__isub__":" -= ","__imul__":" *= ","__itruediv__":" /= ","__ifloordiv__":" //= ","__imod__":" %= ","__ipow__":" **= "}
-for (abf,code) in array_inplace_binop_funcs.items():
+array_inplace_binop_funcs = {
+    "__iadd__": " += ",
+    "__isub__": " -= ",
+    "__imul__": " *= ",
+    "__itruediv__": " /= ",
+    "__ifloordiv__": " //= ",
+    "__imod__": " %= ",
+    "__ipow__": " **= ",
+}
+for (abf, code) in array_inplace_binop_funcs.items():
     new_func = make_method(abf, code, inplace=True)
     setattr(ndarray, abf, new_func)
 
-array_unaryop_funcs = {"__abs__":op_info(" numpy.abs", imports=["numpy"]),
-                       "abs":op_info(" numpy.abs", imports=["numpy"]),
-                       "square":op_info(" numpy.square", imports=["numpy"]),
-                       "sqrt":op_info(" numpy.sqrt", imports=["numpy"], dtype="float"),
-                       "sin":op_info(" numpy.sin", imports=["numpy"], dtype="float"),
-                       "cos":op_info(" numpy.cos", imports=["numpy"], dtype="float"),
-                       "tan":op_info(" numpy.tan", imports=["numpy"], dtype="float"),
-                       "arcsin":op_info(" numpy.arcsin", imports=["numpy"], dtype="float"),
-                       "arccos":op_info(" numpy.arccos", imports=["numpy"], dtype="float"),
-                       "arctan":op_info(" numpy.arctan", imports=["numpy"], dtype="float"),
-                       "__neg__":op_info(" -"),
-                       "exp":op_info(" math.exp", imports=["math"], dtype="float"),
-                       "log":op_info(" math.log", imports=["math"], dtype="float"),
-                       "isnan":op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_)}
+array_unaryop_funcs = {
+    "__abs__": op_info(" numpy.abs", imports=["numpy"]),
+    "abs": op_info(" numpy.abs", imports=["numpy"]),
+    "square": op_info(" numpy.square", imports=["numpy"]),
+    "sqrt": op_info(" numpy.sqrt", imports=["numpy"], dtype="float"),
+    "sin": op_info(" numpy.sin", imports=["numpy"], dtype="float"),
+    "cos": op_info(" numpy.cos", imports=["numpy"], dtype="float"),
+    "tan": op_info(" numpy.tan", imports=["numpy"], dtype="float"),
+    "arcsin": op_info(" numpy.arcsin", imports=["numpy"], dtype="float"),
+    "arccos": op_info(" numpy.arccos", imports=["numpy"], dtype="float"),
+    "arctan": op_info(" numpy.arctan", imports=["numpy"], dtype="float"),
+    "__neg__": op_info(" -"),
+    "exp": op_info(" math.exp", imports=["math"], dtype="float"),
+    "log": op_info(" math.log", imports=["math"], dtype="float"),
+    "isnan": op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_),
+}
 
-for (abf,code) in array_unaryop_funcs.items():
-    new_func = make_method(abf, code.code, unary=True, imports=code.imports, dtype=code.dtype)
+for (abf, code) in array_unaryop_funcs.items():
+    new_func = make_method(
+        abf, code.code, unary=True, imports=code.imports, dtype=code.dtype
+    )
     setattr(ndarray, abf, new_func)
 
-array_simple_reductions = ["sum","prod","min","max"]
+array_simple_reductions = ["sum", "prod", "min", "max"]
 for abf in array_simple_reductions:
-    new_func = make_method(abf, "np."+abf, imports=["numpy"], unary=True, reduction=True)
+    new_func = make_method(
+        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True
+    )
     setattr(ndarray, abf, new_func)
-
 
 
 # Deferred Ops stuff
+
 
 class deferred_op:
     ramba_deferred_ops = None
     count = 0
     last_call_time = timer()
     last_add_time = timer()
+
     def __init__(self, size, distribution, fdist):
         self.size = size
         self.distribution = distribution
         self.flex_dist = fdist
         self.delete_gids = []
-        self.use_gids = {}    # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
-        self.preconstructed_gids = {} # subset of use_gids that already are remote_constructed
-        self.use_other = {}   # map tmp var name to pickled data
+        self.use_gids = (
+            {}
+        )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
+        self.preconstructed_gids = (
+            {}
+        )  # subset of use_gids that already are remote_constructed
+        self.use_other = {}  # map tmp var name to pickled data
         self.codelines = []
         self.imports = []
         self.varcount = 0
-        self.uuid = "ramba_def_ops_%05d"%(deferred_op.count)
-        deferred_op.count+=1
+        self.uuid = "ramba_def_ops_%05d" % (deferred_op.count)
+        deferred_op.count += 1
 
     def get_var_name(self):
-        nm = "ramba_tmp_var_%05d"%(self.varcount)
-        self.varcount+=1
+        nm = "ramba_tmp_var_%05d" % (self.varcount)
+        self.varcount += 1
         return nm
 
     def add_gid(self, gid, arr_info, bd_info, pad, flex_dist):
         if gid not in self.use_gids:
-            #self.use_gids[gid] = tuple([self.get_var_name(), arr_info, bd_info, pad])
+            # self.use_gids[gid] = tuple([self.get_var_name(), arr_info, bd_info, pad])
             self.use_gids[gid] = ([], bd_info, pad, flex_dist)
-        for (v,ai) in self.use_gids[gid][0]:
-            if shardview.dist_is_eq(arr_info[1],ai[1]):
+        for (v, ai) in self.use_gids[gid][0]:
+            if shardview.dist_is_eq(arr_info[1], ai[1]):
                 return v
         v = self.get_var_name()
-        dprint(4,"deferred_ops.ad_gid:", v,gid, arr_info[1])
+        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info[1])
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
@@ -3549,61 +4958,86 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
-        times=[timer()]
+        times = [timer()]
         # Do stuff, then clear out list
-        #print("Doing deferred ops", self.codelines)
+        # print("Doing deferred ops", self.codelines)
         # find if any used ndarrays are still in scope, or were already remote_created
         #     create these remotely if needed
         #     these will need to be indexed (i.e., not a per element scalar temp)
-        live_gids = {k:v for (k,v) in self.use_gids.items() if bdarray.valid_gid(k) or k in self.preconstructed_gids}
-        dprint(3,"use_gids:", self.use_gids.keys(), "live_gids", live_gids.keys())
+        live_gids = {
+            k: v
+            for (k, v) in self.use_gids.items()
+            if bdarray.valid_gid(k) or k in self.preconstructed_gids
+        }
+        dprint(3, "use_gids:", self.use_gids.keys(), "live_gids", live_gids.keys())
         # Change distributions for any flexible arrays -- we should not have slices here
         for (_, (_, d, _, flex)) in live_gids.items():
             if flex:
                 dcopy = libcopy.deepcopy(self.distribution)
-                #d.clear()
-                for i,v in enumerate(dcopy): #deep copy distribution, but keep reference same as other arrays may be pointing to the same one
+                # d.clear()
+                for i, v in enumerate(
+                    dcopy
+                ):  # deep copy distribution, but keep reference same as other arrays may be pointing to the same one
                     d[i] = v
         times.append(timer())
         # substitute var_name with var_name[index] for ndarrays
-        for (k,v) in live_gids.items():
-            for (vn,ai) in v[0]:
+        for (k, v) in live_gids.items():
+            for (vn, ai) in v[0]:
                 for i in range(len(self.codelines)):
-                    self.codelines[i] = self.codelines[i].replace(vn,vn+"[index]")
+                    self.codelines[i] = self.codelines[i].replace(vn, vn + "[index]")
         times.append(timer())
         # compile into function, using unpickled variables (non-ndarrays)
         precode = []
         args = []
-        for i,(k,v) in enumerate(live_gids.items()):
-            #precode.append("  "+v+" = arrays["+str(i)+"]")
-            for (vn,ai) in v[0]:
+        for i, (k, v) in enumerate(live_gids.items()):
+            # precode.append("  "+v+" = arrays["+str(i)+"]")
+            for (vn, ai) in v[0]:
                 args.append(vn)
-        for i,(v, b) in enumerate(self.use_other.items()):
-            #precode.append("  "+v+" = vars["+str(i)+"]")
+        for i, (v, b) in enumerate(self.use_other.items()):
+            # precode.append("  "+v+" = vars["+str(i)+"]")
             args.append(v)
-        #precode.append("  import numpy as np")
-        #precode.append("\n".join(self.imports))
-        precode.append("  for index in numba.pndindex("+list(live_gids.items())[0][1][0][0][0]+".shape):")
-        code = "\n".join(precode)+"\n"+"\n".join(self.codelines)
-        fname = "ramba_deferred_ops_func_"+str(abs(hash(code)))
-        code = "def " + fname + "("+",".join(args)+"):\n" + code
-        #code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
-        dprint(2, "Updated code:\n"+code)
+        # precode.append("  import numpy as np")
+        # precode.append("\n".join(self.imports))
+        precode.append(
+            "  for index in numba.pndindex("
+            + list(live_gids.items())[0][1][0][0][0]
+            + ".shape):"
+        )
+        code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
+        fname = "ramba_deferred_ops_func_" + str(abs(hash(code)))
+        code = "def " + fname + "(" + ",".join(args) + "):\n" + code
+        # code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
+        dprint(2, "Updated code:\n" + code)
         times.append(timer())
         # execute on remote nodes
-        #[ remote_states[i].run_deferred_ops.remote(
+        # [ remote_states[i].run_deferred_ops.remote(
         #              self.uuid, live_gids, self.delete_gids, self.use_other.items(), self.distribution, fname, code, self.imports)
         #          for i in range(num_workers) ]
-        remote_exec_all("run_deferred_ops", self.uuid, live_gids, self.delete_gids, list(self.use_other.items()), self.distribution, fname, code, self.imports)
+        remote_exec_all(
+            "run_deferred_ops",
+            self.uuid,
+            live_gids,
+            self.delete_gids,
+            list(self.use_other.items()),
+            self.distribution,
+            fname,
+            code,
+            self.imports,
+        )
         times.append(timer())
         # all live arrays used should be constructed by now
         for k in live_gids.keys():
             if k not in self.delete_gids:
-                bdarray.get_by_gid(k).remote_constructed = True  # set remote_constructed
+                bdarray.get_by_gid(
+                    k
+                ).remote_constructed = True  # set remote_constructed
                 bdarray.get_by_gid(k).flex_dist = False  # not flexible anymore
         times.append(timer())
         if ntiming >= 1:
-            times = [int((times[i]-times[i-1])*1000000)/1000 for i in range(1,len(times))]
+            times = [
+                int((times[i] - times[i - 1]) * 1000000) / 1000
+                for i in range(1, len(times))
+            ]
             print("Deferred Ops execution", times)
             tprint(2, "deferred_ops::execute code", code)
 
@@ -3612,8 +5046,9 @@ class deferred_op:
     @classmethod
     def del_remote_array(cls, gid):
         if cls.ramba_deferred_ops is None:
-            #if ray.is_initialized(): [remote_states[i].destroy_array.remote(gid) for i in range(num_workers)]
-            if USE_MPI or ray.is_initialized(): remote_exec_all("destroy_array", gid)
+            # if ray.is_initialized(): [remote_states[i].destroy_array.remote(gid) for i in range(num_workers)]
+            if USE_MPI or ray.is_initialized():
+                remote_exec_all("destroy_array", gid)
         else:
             cls.ramba_deferred_ops.delete_gids.append(gid)
 
@@ -3625,68 +5060,121 @@ class deferred_op:
             cls.ramba_deferred_ops.execute()
             cls.ramba_deferred_ops = None
             t1 = timer()
-            dprint(1,"DO_OPS: ",(t0-cls.last_call_time)*1000," executs: ", (t1-t0)*1000)
+            dprint(
+                1,
+                "DO_OPS: ",
+                (t0 - cls.last_call_time) * 1000,
+                " executs: ",
+                (t1 - t0) * 1000,
+            )
             cls.last_call_time = t0
 
     # add operations to the deferred stack; if not compatible, execute what we have first
     @classmethod
-    def add_op( cls, oplist, write_array, imports=[] ):  # oplist is a list of alternating code string, variable reference, code ...
+    def add_op(
+        cls, oplist, write_array, imports=[]
+    ):  # oplist is a list of alternating code string, variable reference, code ...
         t0 = timer()
-        dprint(1, "ADD_OP: time from last", (t0-cls.last_add_time)*1000)
+        dprint(1, "ADD_OP: time from last", (t0 - cls.last_add_time) * 1000)
         # get code and variables from oplist
         codes = oplist[::2]
         operands = oplist[1::2]
         # find ndarray -- assume all are compatible (same size, divisions);  TODO: should check
-        arr = write_array if write_array is not None else next(filter(lambda x: isinstance(x,ndarray), operands), None)
-        assert(arr is not None), "Deferred op with no ndarray parameter"
+        arr = (
+            write_array
+            if write_array is not None
+            else next(filter(lambda x: isinstance(x, ndarray), operands), None)
+        )
+        assert arr is not None, "Deferred op with no ndarray parameter"
         size = arr.size
         distribution = arr.distribution
-        if ( (cls.ramba_deferred_ops is not None) and
-             (cls.ramba_deferred_ops.size != size or
-               (not shardview.compatible_distributions(cls.ramba_deferred_ops.distribution, distribution)
-                   and (arr.bdarray.remote_constructed or not arr.bdarray.flex_dist)
-                   and not cls.ramba_deferred_ops.flex_dist) )):
-            dprint(2, "deferred ops mismatch:", cls.ramba_deferred_ops.size, size, cls.ramba_deferred_ops.distribution, distribution)
+        if (cls.ramba_deferred_ops is not None) and (
+            cls.ramba_deferred_ops.size != size
+            or (
+                not shardview.compatible_distributions(
+                    cls.ramba_deferred_ops.distribution, distribution
+                )
+                and (arr.bdarray.remote_constructed or not arr.bdarray.flex_dist)
+                and not cls.ramba_deferred_ops.flex_dist
+            )
+        ):
+            dprint(
+                2,
+                "deferred ops mismatch:",
+                cls.ramba_deferred_ops.size,
+                size,
+                cls.ramba_deferred_ops.distribution,
+                distribution,
+            )
             cls.ramba_deferred_ops.do_ops()
-        if (cls.ramba_deferred_ops is None):
+        if cls.ramba_deferred_ops is None:
             dprint(2, "Create new deferred op set")
             cls.ramba_deferred_ops = cls(size, distribution, arr.bdarray.flex_dist)
-        if (not arr.bdarray.flex_dist):
+        if not arr.bdarray.flex_dist:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
-            dprint (2, "fixing distribution")
+            dprint(2, "fixing distribution")
         # TODO: Need to check for aliasing
         # add vars
-        for i,x in enumerate(operands):
+        for i, x in enumerate(operands):
             if isinstance(x, ndarray):
-                if x.size == (): # 0d check
-                    oplist[1+2*i] = cls.ramba_deferred_ops.add_var(x.distribution)
+                if x.size == ():  # 0d check
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
                 else:
                     bd = bdarray.get_by_gid(x.gid)
-                    oplist[1+2*i] = cls.ramba_deferred_ops.add_gid(x.gid, x.get_details(), bd.distribution, bd.pad, bd.flex_dist and not bd.remote_constructed)
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
+                        x.gid,
+                        x.get_details(),
+                        bd.distribution,
+                        bd.pad,
+                        bd.flex_dist and not bd.remote_constructed,
+                    )
                     # check if already remote_constructed
                     if bd.remote_constructed:
-                        cls.ramba_deferred_ops.preconstructed_gids[x.gid]=oplist[1+2*i]
+                        cls.ramba_deferred_ops.preconstructed_gids[x.gid] = oplist[
+                            1 + 2 * i
+                        ]
             else:
-                oplist[1+2*i] = cls.ramba_deferred_ops.add_var(x)
+                oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x)
         # add codeline to list
         codeline = "    " + "".join(oplist)
         cls.ramba_deferred_ops.codelines.append(codeline)
         cls.ramba_deferred_ops.imports.extend(imports)
-        t1=timer()
+        t1 = timer()
         cls.last_add_time = t0
-        dprint(2, "Added line:", codeline, "Time:", (t1-t0)*1000)
+        dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)
 
 
 def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
-    new_ndarray = ndarray(size, distribution=shardview.clean_dist(divisions), local_border=local_border, dtype=dtype)
+    new_ndarray = ndarray(
+        size,
+        distribution=shardview.clean_dist(divisions),
+        local_border=local_border,
+        dtype=dtype,
+    )
     dprint(3, "divisions:", divisions)
     return new_ndarray
 
-def create_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, filler_prepickled=False, **kwargs):
-    new_ndarray = ndarray(size, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
+
+def create_array(
+    size,
+    filler,
+    local_border=0,
+    dtype=None,
+    distribution=None,
+    tuple_arg=True,
+    filler_prepickled=False,
+    **kwargs
+):
+    new_ndarray = ndarray(
+        size,
+        local_border=local_border,
+        dtype=dtype,
+        distribution=distribution,
+        **kwargs
+    )
     if size == ():
-        if (isinstance(filler, str)):
+        if isinstance(filler, str):
             new_ndarray.distribution = np.array(eval(filler), dtype=new_ndarray.dtype)
         elif isinstance(filler, numbers.Number):
             new_ndarray.distribution = np.array(filler, dtype=new_ndarray.dtype)
@@ -3694,62 +5182,131 @@ def create_array(size, filler, local_border=0, dtype=None, distribution=None, tu
             new_ndarray.distribution = filler.copy()
         return new_ndarray
 
-    if (isinstance(filler, str)):
-        deferred_op.add_op(["", new_ndarray, " = "+filler], new_ndarray)
+    if isinstance(filler, str):
+        deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
     else:
         filler = filler if filler_prepickled else func_dumps(filler)
-        [remote_exec(i, "create_array", new_ndarray.gid,
-                                        new_ndarray.distribution[i],
-                                        size,
-                                        filler,
-                                        local_border,
-                                        dtype,
-                                        new_ndarray.distribution,
-                                        new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
-                                        new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
-                                        tuple_arg)
-            for i in range(num_workers)]
-        new_ndarray.bdarray.remote_constructed = True # set remote_constructed = True
-        new_ndarray.bdarray.flex_dist = False # distribution is fixed
+        [
+            remote_exec(
+                i,
+                "create_array",
+                new_ndarray.gid,
+                new_ndarray.distribution[i],
+                size,
+                filler,
+                local_border,
+                dtype,
+                new_ndarray.distribution,
+                new_ndarray.from_border[i]
+                if new_ndarray.from_border is not None
+                else None,
+                new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
+                tuple_arg,
+            )
+            for i in range(num_workers)
+        ]
+        new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+        new_ndarray.bdarray.flex_dist = False  # distribution is fixed
     return new_ndarray
 
-def init_array(size, filler, local_border=0, dtype=None, distribution=None, tuple_arg=True, **kwargs):
+
+def init_array(
+    size,
+    filler,
+    local_border=0,
+    dtype=None,
+    distribution=None,
+    tuple_arg=True,
+    **kwargs
+):
     if isinstance(size, int):
         size = (size,)
-    return create_array(size, filler, local_border=local_border, dtype=dtype, distribution=distribution, tuple_arg=tuple_arg, **kwargs)
+    return create_array(
+        size,
+        filler,
+        local_border=local_border,
+        dtype=dtype,
+        distribution=distribution,
+        tuple_arg=tuple_arg,
+        **kwargs
+    )
+
 
 def fromfunction(lfunc, size, dtype=None, **kwargs):
     return init_array(size, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
 
+
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
 def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
-    return init_array(size, None, local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
+    return init_array(
+        size,
+        None,
+        local_border=local_border,
+        dtype=dtype,
+        distribution=distribution,
+        **kwargs
+    )
+
 
 def empty_like(other_ndarray):
-    return empty(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
+    return empty(
+        other_ndarray.size,
+        local_border=other_ndarray.local_border,
+        dtype=other_ndarray.dtype,
+    )
+
 
 def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
-    return init_array(size, "0", local_border=local_border, dtype=dtype, distribution=distribution, **kwargs)
+    return init_array(
+        size,
+        "0",
+        local_border=local_border,
+        dtype=dtype,
+        distribution=distribution,
+        **kwargs
+    )
+
 
 def zeros_like(other_ndarray):
-    return zeros(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
+    return zeros(
+        other_ndarray.size,
+        local_border=other_ndarray.local_border,
+        dtype=other_ndarray.dtype,
+    )
+
 
 def ones(size, local_border=0, dtype=None, **kwargs):
     return init_array(size, "1", local_border=local_border, dtype=dtype, **kwargs)
 
+
 def ones_like(other_ndarray):
-    return ones(other_ndarray.size, local_border=other_ndarray.local_border, dtype=other_ndarray.dtype)
+    return ones(
+        other_ndarray.size,
+        local_border=other_ndarray.local_border,
+        dtype=other_ndarray.dtype,
+    )
+
 
 def full(size, v, local_border=0, **kwargs):
     return init_array(size, str(v), local_border=local_border, **kwargs)
 
+
 def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
     if M is None:
         M = N
-    return init_array((N,M), lambda x: 1 if x[0] == x[1] else 0, local_border=local_border, dtype=dtype, **kwargs)
+    return init_array(
+        (N, M),
+        lambda x: 1 if x[0] == x[1] else 0,
+        local_border=local_border,
+        dtype=dtype,
+        **kwargs
+    )
+
 
 def copy(arr, local_border=0):
-    new_ndarray = create_array_with_divisions(arr.size, arr.distribution, local_border=local_border)
+    new_ndarray = create_array_with_divisions(
+        arr.size, arr.distribution, local_border=local_border
+    )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
     """
     [remote_states[i].copy.remote(new_ndarray.gid,
@@ -3761,112 +5318,174 @@ def copy(arr, local_border=0):
     """
     return new_ndarray
 
+
 # TODO: should make this deferred;  need a njit function to provide global index
 def arange(size, local_border=0):
     return init_array(size, lambda x: x[0], local_border=local_border, dtype=int64)
 
+
 def asarray(x):
-    assert(isinstance(x, ndarray))
+    assert isinstance(x, ndarray)
     return x.asarray()
+
 
 def fromarray(x, local_border=0, dtype=None, **kwargs):
     if isinstance(x, numbers.Number):
         return create_array((), filler=x, dtype=dtype, **kwargs)
-    if isinstance(x, np.ndarray) and x.shape == (): # 0d array
+    if isinstance(x, np.ndarray) and x.shape == ():  # 0d array
         return create_array((), filler=x, dtype=dtype, **kwargs)
 
     size = x.shape
     if dtype is None:
         dtype = x.dtype
-    new_ndarray = create_array(size, None, local_border=local_border, dtype=dtype, **kwargs)
+    new_ndarray = create_array(
+        size, None, local_border=local_border, dtype=dtype, **kwargs
+    )
     distribution = new_ndarray.distribution
-    [remote_exec(i, "push_array", new_ndarray.gid,
-                                  distribution[i],
-                                  size,
-                                  x[shardview.to_slice(distribution[i])],
-                                  local_border,
-                                  distribution,
-                                  new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
-                                  new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
-                                  x.dtype)
-        for i in range(num_workers)]
+    [
+        remote_exec(
+            i,
+            "push_array",
+            new_ndarray.gid,
+            distribution[i],
+            size,
+            x[shardview.to_slice(distribution[i])],
+            local_border,
+            distribution,
+            new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
+            new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
+            x.dtype,
+        )
+        for i in range(num_workers)
+    ]
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+
 
 def array(*args):
     return fromarray(*args)
 
 
-def load(fname, dtype=None, local=False, ftype=None,  **kwargs):
+def load(fname, dtype=None, local=False, ftype=None, **kwargs):
     fldr = fileio.get_load_handler(fname, ftype)
     if local or not fldr.is_dist:
         print("efficient local file load has not yet been implemented")
         tmp = fldr.readall(fname, **kwargs)
-        if dtype is None: dtype = tmp.dtype
+        if dtype is None:
+            dtype = tmp.dtype
         arr = fromarray(tmp, dtype=dtype)
     else:
         shp, dt = fldr.getinfo(fname, **kwargs)
-        if dtype is None: dtype = dt
+        if dtype is None:
+            dtype = dt
         arr = empty(shp, dtype=dtype)
         deferred_op.do_ops()
-        remote_exec_all( "load", arr.gid, fname, **kwargs)
+        remote_exec_all("load", arr.gid, fname, **kwargs)
     return arr
 
 
 def transpose(a, *args):
     return a.transpose(*args)
 
+
 def _compute_remote_ranges(out_distribution, out_mapping):
     divisions = shardview.distribution_to_divisions(out_distribution)
-    dprint(2, "_compute_remote_ranges:", out_distribution, "out_mapping:", out_mapping, "\ndivisions:", divisions)
+    dprint(
+        2,
+        "_compute_remote_ranges:",
+        out_distribution,
+        "out_mapping:",
+        out_mapping,
+        "\ndivisions:",
+        divisions,
+    )
     from_ret = [[] for i in range(num_workers)]
     to_ret = [[] for i in range(num_workers)]
     for i in range(len(out_distribution)):
         out_on_i = out_distribution[i]
         out_on_i_end = shardview.get_start(out_on_i) + shardview.get_size(out_on_i) - 1
-        out_combined = np.concatenate([np.expand_dims(shardview.get_start(out_on_i), axis=0), np.expand_dims(out_on_i_end, axis=0)], axis=0)
+        out_combined = np.concatenate(
+            [
+                np.expand_dims(shardview.get_start(out_on_i), axis=0),
+                np.expand_dims(out_on_i_end, axis=0),
+            ],
+            axis=0,
+        )
         dprint(3, "out_on_i", i, out_on_i, out_on_i_end, out_combined)
-        for map_out_start, map_out_end, map_other_start, map_other_end, other_array in out_mapping:
-            map_out_combined = np.concatenate([np.expand_dims(map_out_start, axis=0), np.expand_dims(map_out_end, axis=0)-1], axis=0)
+        for (
+            map_out_start,
+            map_out_end,
+            map_other_start,
+            map_other_end,
+            other_array,
+        ) in out_mapping:
+            map_out_combined = np.concatenate(
+                [
+                    np.expand_dims(map_out_start, axis=0),
+                    np.expand_dims(map_out_end, axis=0) - 1,
+                ],
+                axis=0,
+            )
             bires = shardview.block_intersection(out_combined, map_out_combined)
-            dprint(3, "map_out_combined\n", out_combined, "\n", map_out_combined, "\n", bires)
+            dprint(
+                3,
+                "map_out_combined\n",
+                out_combined,
+                "\n",
+                map_out_combined,
+                "\n",
+                bires,
+            )
             if bires is not None:
                 diff = bires - map_out_combined[0]
                 dprint(3, "diff:", diff)
                 grrres = other_array.get_remote_ranges(diff)
                 for node_num, bi, sview in grrres:
                     dprint(3, "grres:", i, node_num, bi, sview)
-                    from_ret[i].append((other_array.gid, node_num, bi, map_out_combined))
+                    from_ret[i].append(
+                        (other_array.gid, node_num, bi, map_out_combined)
+                    )
                     to_ret[node_num].append((other_array.gid, i, bi, map_out_combined))
     return from_ret, to_ret
+
 
 def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
     first_dtype = arrayseq[0].dtype
 
-    origin_regions = [([0]*len(out_shape), out_shape.copy(), [0]*len(out_shape), out_shape.copy(), arrayseq[0])]
+    origin_regions = [
+        (
+            [0] * len(out_shape),
+            out_shape.copy(),
+            [0] * len(out_shape),
+            out_shape.copy(),
+            arrayseq[0],
+        )
+    ]
     for array in arrayseq[1:]:
         found_ndarray = found_ndarray or isinstance(array, ndarray)
-        assert(len(out_shape) == len(array.shape))
+        assert len(out_shape) == len(array.shape)
         start = origin_regions[-1][0].copy()
         start[axis] = out_shape[axis]
         for i in range(len(out_shape)):
             if axis == i:
                 out_shape[i] += array.shape[i]
             else:
-                assert(out_shape[i] == array.shape[i])
-        assert(first_dtype == array.dtype)
-        origin_regions.append((start, out_shape, [0]*len(out_shape), array.shape, array))
+                assert out_shape[i] == array.shape[i]
+        assert first_dtype == array.dtype
+        origin_regions.append(
+            (start, out_shape, [0] * len(out_shape), array.shape, array)
+        )
     out_shape = tuple(out_shape)
     dprint(2, "concatenate out_shape:", out_shape, first_dtype)
-    assert(found_ndarray)
+    assert found_ndarray
     if out is None:
         out = empty(out_shape, dtype=first_dtype, **kwargs)
         dprint(2, "Create concatenate output:", out.gid, out_shape, out.dtype)
     else:
-        assert(isinstance(out, ndarray))
-        assert(out.shape == out_shape)
+        assert isinstance(out, ndarray)
+        assert out.shape == out_shape
     deferred_op.do_ops()
 
     from_ranges, to_ranges = _compute_remote_ranges(out.distribution, origin_regions)
@@ -3875,27 +5494,48 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
     deferred_op.do_ops()
 
     send_recv_uuid = uuid.uuid4()
-    #[remote_states[i].push_pull_copy.remote(out.gid,
+    # [remote_states[i].push_pull_copy.remote(out.gid,
     #                                        from_ranges[i],
     #                                        to_ranges[i])
     #    for i in range(num_workers)]
-    [remote_exec(i, "push_pull_copy", out.gid,
-                                      from_ranges[i],
-                                      to_ranges[i],
-                                      send_recv_uuid)
-        for i in range(num_workers)]
+    [
+        remote_exec(
+            i, "push_pull_copy", out.gid, from_ranges[i], to_ranges[i], send_recv_uuid
+        )
+        for i in range(num_workers)
+    ]
     return out
+
 
 def implements(numpy_function, uses_self):
     numpy_function = "np." + numpy_function
+
     def decorator(func):
         HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
         return func
+
     return decorator
 
-mod_to_array = ["sum", "prod", "exp", "log", "isnan", "abs", "square", "sqrt", "mean", "sin", "cos", "tan", "arcsin", "arccos", "arctan"]
+
+mod_to_array = [
+    "sum",
+    "prod",
+    "exp",
+    "log",
+    "isnan",
+    "abs",
+    "square",
+    "sqrt",
+    "mean",
+    "sin",
+    "cos",
+    "tan",
+    "arcsin",
+    "arccos",
+    "arctan",
+]
 for mfunc in mod_to_array:
-    mcode =  "def " + mfunc + "(the_array, *args, **kwargs):\n"
+    mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
     mcode += "    if isinstance(the_array, ndarray):\n"
     mcode += "        return the_array." + mfunc + "(*args, **kwargs)\n"
     mcode += "    else:\n"
@@ -3903,46 +5543,68 @@ for mfunc in mod_to_array:
     exec(mcode)
     implements(mfunc, False)(eval(mfunc))
 
-#def isnan(the_array, *args, **kwargs):
+# def isnan(the_array, *args, **kwargs):
 #    if isinstance(the_array, ndarray):
 #        return the_array.isnan(*args, **kwargs)
 #    else:
 #        return np.isnan(the_array)
 #
-#def abs(the_array, *args, **kwargs):
+# def abs(the_array, *args, **kwargs):
 #    if isinstance(the_array, ndarray):
 #        return the_array.abs(*args, **kwargs)
 #    else:
 #        return np.abs(the_array)
 #
-#def mean(the_array, *args, **kwargs):
+# def mean(the_array, *args, **kwargs):
 #    if isinstance(the_array, ndarray):
 #        return the_array.sum(*args, **kwargs)/np.prod(the_array.shape)
 #    else:
 #        return np.mean(the_array, *args, **kwargs)
 
+
 def power(a, b):
     if isinstance(a, ndarray) or isinstance(b, ndarray):
-        return a**b
+        return a ** b
     else:
-        return np.power(a,b)
+        return np.power(a, b)
+
 
 @implements("where", False)
 def where(cond, a, b):
-    assert(isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray))
-    dprint(2,"where:", cond.shape, a.shape, b.shape, cond, a, b)
+    assert (
+        isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray)
+    )
+    dprint(2, "where:", cond.shape, a.shape, b.shape, cond, a, b)
 
     lb = max(a.local_border, b.local_border)
     ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
-    conda_new_array_size, conda_condview, conda_aview = ndarray.broadcast(cond, ab_aview)
-    condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(cond, ab_bview)
-    assert(conda_new_array_size == condb_new_array_size)
+    conda_new_array_size, conda_condview, conda_aview = ndarray.broadcast(
+        cond, ab_aview
+    )
+    condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(
+        cond, ab_bview
+    )
+    assert conda_new_array_size == condb_new_array_size
 
-    dprint(2,"newsize:", ab_new_array_size)
+    dprint(2, "newsize:", ab_new_array_size)
     new_ndarray = empty(conda_new_array_size, dtype=a.dtype, local_border=lb)
-    #new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
-    deferred_op.add_op(["", new_ndarray, " = ", conda_aview, " if ", conda_condview, " else ", condb_bview], new_ndarray, imports=[])
+    # new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
+    deferred_op.add_op(
+        [
+            "",
+            new_ndarray,
+            " = ",
+            conda_aview,
+            " if ",
+            conda_condview,
+            " else ",
+            condb_bview,
+        ],
+        new_ndarray,
+        imports=[],
+    )
     return new_ndarray
+
 
 @implements("result_type", False)
 def result_type(*args):
@@ -3954,6 +5616,7 @@ def result_type(*args):
             new_args.append(arg)
     return np.result_type(*new_args)
 
+
 def sync():
     sync_start_time = timer()
     deferred_op.do_ops()
@@ -3961,54 +5624,88 @@ def sync():
     sync_end_time = timer()
     tprint(1, "sync_func_time", sync_end_time - sync_start_time)
 
+
 class ReshapeError(Exception):
     pass
 
+
 def reshape(arr, newshape):
     # first check if this is just for adding / removing dinmensions of size 1 -- this will require no data movement
-    realshape = tuple([i for i in arr.shape if i!=1])
-    realnewshape = tuple([i for i in newshape if i!=1])
-    dprint (2,arr.shape,realshape,newshape,realnewshape)
-    if realshape==realnewshape:
-        dprint (1,"reshape can be done")
+    realshape = tuple([i for i in arr.shape if i != 1])
+    realnewshape = tuple([i for i in newshape if i != 1])
+    dprint(2, arr.shape, realshape, newshape, realnewshape)
+    if realshape == realnewshape:
+        dprint(1, "reshape can be done")
         # make sure array distribution can't change (ie, not flexible or is already constructed)
         if arr.bdarray.flex_dist or not arr.bdarray.remote_constructed:
             deferred_op.do_ops()
-        realaxes = [shardview._axis_map(arr.distribution[0])[i] for i,v in enumerate(arr.shape) if v!=1]
-        junkaxes = [shardview._axis_map(arr.distribution[0])[i] for i,v in enumerate(arr.shape) if v==1]
+        realaxes = [
+            shardview._axis_map(arr.distribution[0])[i]
+            for i, v in enumerate(arr.shape)
+            if v != 1
+        ]
+        junkaxes = [
+            shardview._axis_map(arr.distribution[0])[i]
+            for i, v in enumerate(arr.shape)
+            if v == 1
+        ]
         dist = arr.distribution
         oldsize = arr.shape
-        dprint(2,realaxes,junkaxes,dist)
-        if len(arr.shape)<len(newshape):
-            dprint(1,"need to add axes")
-            newdims = len(newshape)-len(arr.shape)
-            bcastdim = [True if i<newdims else False for i in range(len(newshape))]
-            bcastsize = [1 if i<newdims else arr.shape[i-newdims] for i in range(len(newshape))]
+        dprint(2, realaxes, junkaxes, dist)
+        if len(arr.shape) < len(newshape):
+            dprint(1, "need to add axes")
+            newdims = len(newshape) - len(arr.shape)
+            bcastdim = [True if i < newdims else False for i in range(len(newshape))]
+            bcastsize = [
+                1 if i < newdims else arr.shape[i - newdims]
+                for i in range(len(newshape))
+            ]
             dist = shardview.broadcast(dist, bcastdim, bcastsize)
-            realaxes = [i+newdims for i in realaxes]
-            junkaxes = [i for i in range(newdims)] + [i+newdims for i in junkaxes]
+            realaxes = [i + newdims for i in realaxes]
+            junkaxes = [i for i in range(newdims)] + [i + newdims for i in junkaxes]
             oldsize = tuple(bcastsize)
-        dprint(2,realaxes,junkaxes,dist)
-        newmap = [junkaxes.pop(0) if v==1 else realaxes.pop(0) for v in newshape]
+        dprint(2, realaxes, junkaxes, dist)
+        newmap = [junkaxes.pop(0) if v == 1 else realaxes.pop(0) for v in newshape]
         sz, dist = shardview.remap_axis(oldsize, dist, newmap)
-        dprint(2,sz, dist)
-        return ndarray(sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly)
+        dprint(2, sz, dist)
+        return ndarray(
+            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
+        )
     # general reshape
     global reshape_forwarding
     if reshape_forwarding:
         return reshape_copy(arr, newshape)
     else:
-        raise ReshapeError("ramba.reshape not supported as distributed array reshape cannot be done inplace.  Use reshape_copy instead to create a non-inplace reshape or set RAMBA_RESHAPE_COPY environment variable to convert all reshape calls to reshape_copy.")
+        raise ReshapeError(
+            "ramba.reshape not supported as distributed array reshape cannot be done inplace.  Use reshape_copy instead to create a non-inplace reshape or set RAMBA_RESHAPE_COPY environment variable to convert all reshape calls to reshape_copy."
+        )
+
 
 def reshape_copy(arr, newshape):
-    assert(np.prod(arr.size) == np.prod(newshape))
+    assert np.prod(arr.size) == np.prod(newshape)
     new_arr = empty(newshape, dtype=arr.dtype)
 
     deferred_op.do_ops()
-    dprint(2, "reshape_copy", arr.size, newshape, shardview.distribution_to_divisions(arr.distribution), shardview.distribution_to_divisions(new_arr.distribution))
-    reshape_workers = remote_call_all("reshape", new_arr.gid, new_arr.size, new_arr.distribution,
-                                      arr.gid, arr.size, arr.distribution, uuid.uuid4())
+    dprint(
+        2,
+        "reshape_copy",
+        arr.size,
+        newshape,
+        shardview.distribution_to_divisions(arr.distribution),
+        shardview.distribution_to_divisions(new_arr.distribution),
+    )
+    reshape_workers = remote_call_all(
+        "reshape",
+        new_arr.gid,
+        new_arr.size,
+        new_arr.distribution,
+        arr.gid,
+        arr.size,
+        arr.distribution,
+        uuid.uuid4(),
+    )
     return new_arr
+
 
 class MgridGen:
     def __getitem__(self, index):
@@ -4018,7 +5715,7 @@ class MgridGen:
             if isinstance(index[i], int):
                 dim_sizes.append(index[i])
             elif isinstance(index[i], slice):
-                assert(index[i].step is None)
+                assert index[i].step is None
                 dim_sizes.append(index[i].stop - index[i].start)
         dim_sizes = tuple(dim_sizes)
         dprint(2, "MgridGen:", index)
@@ -4027,88 +5724,125 @@ class MgridGen:
         reshape_workers = remote_call_all("mgrid", res.gid, res.size, res.distribution)
         return res
 
+
 mgrid = MgridGen()
 
+
 def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
-    assert(num > 0)
+    assert num > 0
     length = stop - start
     if endpoint:
-        step = length / (num-1)
+        step = length / (num - 1)
     else:
         step = length / num
 
     def impl(bcontainer, dim_lens, starts):
         local_start = start + (starts[0] * step)
         local_stop = start + ((starts[0] + dim_lens[0]) * step)
-        bcontainer[:] = np.linspace(local_start, local_stop, num=dim_lens[0], endpoint=False, dtype=dtype)
+        bcontainer[:] = np.linspace(
+            local_start, local_stop, num=dim_lens[0], endpoint=False, dtype=dtype
+        )
 
-    res = init_array(num, Filler(impl, mode=Filler.WHOLE_ARRAY_INPLACE, do_compile=False), dtype=dtype)
+    res = init_array(
+        num,
+        Filler(impl, mode=Filler.WHOLE_ARRAY_INPLACE, do_compile=False),
+        dtype=dtype,
+    )
 
     if retstep:
         return (res, step)
     else:
         return res
 
+
 def triu_internal(index, m, k):
     return m if (index[1] - index[0] >= k) else 0
 
+
 def triu(m, k=0):
-    assert(len(m.shape) == 2)
-    #return smap_index(triu_internal, m, k)
+    assert len(m.shape) == 2
+    # return smap_index(triu_internal, m, k)
     deferred_op.do_ops()
-    new_ndarray = create_array_with_divisions(m.size, m.distribution, local_border=m.local_border)
-    remote_exec_all("triu", new_ndarray.gid, m.gid, k, new_ndarray.local_border,
-                            new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
-                            new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
+    new_ndarray = create_array_with_divisions(
+        m.size, m.distribution, local_border=m.local_border
+    )
+    remote_exec_all(
+        "triu",
+        new_ndarray.gid,
+        m.gid,
+        k,
+        new_ndarray.local_border,
+        new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
+        new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
+    )
     return new_ndarray
 
+
 ##### Skeletons ######
+
 
 def smap_internal(func, attr, *args, dtype=None):
     # TODO: should see if this can be converted into a deferred op
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
-    assert(len(partitioned) > 0)
+    assert len(partitioned) > 0
     size = partitioned[0].size
     dist = partitioned[0].distribution
     for arg in partitioned:
-        assert(shardview.dist_is_eq(arg.distribution,dist))
+        assert shardview.dist_is_eq(arg.distribution, dist)
 
     if dtype is None:
         dtype = partitioned[0].dtype
-    new_ndarray = create_array_with_divisions(size, dist, partitioned[0].local_border, dtype=dtype)
+    new_ndarray = create_array_with_divisions(
+        size, dist, partitioned[0].local_border, dtype=dtype
+    )
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #[getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
-    remote_exec_all(attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func))
+    # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
+    remote_exec_all(
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func)
+    )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+
 
 def smap(func, *args, dtype=None):
     return smap_internal(func, "smap", *args, dtype=dtype)
 
+
 def smap_index(func, *args, dtype=None):
     return smap_internal(func, "smap_index", *args, dtype=dtype)
+
 
 def sreduce(func, reducer, *args):
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
-    assert(len(partitioned) > 0)
+    assert len(partitioned) > 0
     size = partitioned[0].size
     for arg in partitioned:
-        assert(arg.size == size)
+        assert arg.size == size
 
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
-    worker_results = remote_call_all("sreduce", partitioned[0].gid, args_to_remote, func_dumps(func), func_dumps(reducer))
+    # worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
+    worker_results = remote_call_all(
+        "sreduce",
+        partitioned[0].gid,
+        args_to_remote,
+        func_dumps(func),
+        func_dumps(reducer),
+    )
     final_result = worker_results[0]
     for result in worker_results[1:]:
         final_result = reducer(final_result, result)
     return final_result
 
+
 def sstencil(func, *args, **kwargs):
     deferred_op.do_ops()
     if func.neighborhood is None:
-        fake_args = [np.empty(tuple([1]*len(x.size))) if isinstance(x, ndarray) else x for x in args]
+        fake_args = [
+            np.empty(tuple([1] * len(x.size))) if isinstance(x, ndarray) else x
+            for x in args
+        ]
         slocal = func.compile_local()
         try:
             slocal(*fake_args)
@@ -4123,13 +5857,13 @@ def sstencil(func, *args, **kwargs):
         nmax = max(nmax, abs(n[1]))
 
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
-    assert(len(partitioned) > 0)
+    assert len(partitioned) > 0
     size = partitioned[0].size
     border = partitioned[0].local_border
     for arg in partitioned:
-        assert(arg.size == size)
-        assert(arg.local_border == border)
-    assert(border >= nmax)
+        assert arg.size == size
+        assert arg.local_border == border
+    assert border >= nmax
 
     stencil_op_uuid = uuid.uuid4()
     if "out" in kwargs:
@@ -4137,45 +5871,74 @@ def sstencil(func, *args, **kwargs):
         create_flag = False
         # TODO:  Check sizes
     else:
-        new_ndarray = create_array_with_divisions(size, partitioned[0].distribution, partitioned[0].local_border)
-        create_flag=True
+        new_ndarray = create_array_with_divisions(
+            size, partitioned[0].distribution, partitioned[0].local_border
+        )
+        create_flag = True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #[remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(num_workers)]
-    remote_exec_all("sstencil", stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func_dumps(func), create_flag)
+    # [remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(num_workers)]
+    remote_exec_all(
+        "sstencil",
+        stencil_op_uuid,
+        new_ndarray.gid,
+        neighborhood,
+        partitioned[0].gid,
+        args_to_remote,
+        func_dumps(func),
+        create_flag,
+    )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
+
 def scumulative(local_func, final_func, array):
     deferred_op.do_ops()
-    assert(isinstance(array, ndarray))
+    assert isinstance(array, ndarray)
     size = array.size
-    assert(len(size) == 1)
+    assert len(size) == 1
 
-    new_ndarray = create_array_with_divisions(size, array.distribution, array.local_border)
+    new_ndarray = create_array_with_divisions(
+        size, array.distribution, array.local_border
+    )
     # Can we do this without ray.get?
-    #ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
-    remote_exec_all("scumulative_local", new_ndarray.gid, array.gid, func_dumps(local_func))
-    end_index = shardview.get_start(array.distribution[0])[0] + shardview.get_size(array.distribution[0])[0] - 1
+    # ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
+    remote_exec_all(
+        "scumulative_local", new_ndarray.gid, array.gid, func_dumps(local_func)
+    )
+    end_index = (
+        shardview.get_start(array.distribution[0])[0]
+        + shardview.get_size(array.distribution[0])[0]
+        - 1
+    )
     slice_to_get = (slice(end_index, end_index + 1),)
     dprint(3, "slice_to_get:", slice_to_get)
-    #boundary_val = ray.get(remote_states[0].get_partial_array.remote(new_ndarray.gid, slice_to_get))
+    # boundary_val = ray.get(remote_states[0].get_partial_array.remote(new_ndarray.gid, slice_to_get))
     boundary_val = remote_call(0, "get_partial_array", new_ndarray.gid, slice_to_get)
     dprint(3, "boundary_val:", boundary_val, type(boundary_val))
     for i in range(1, num_workers):
         # TODO: combine these into one?
-        #ray.get(remote_states[i].scumulative_final.remote(new_ndarray.gid, boundary_val, final_func))
-        remote_exec(i, "scumulative_final", new_ndarray.gid, boundary_val, func_dumps(final_func))
+        # ray.get(remote_states[i].scumulative_final.remote(new_ndarray.gid, boundary_val, final_func))
+        remote_exec(
+            i,
+            "scumulative_final",
+            new_ndarray.gid,
+            boundary_val,
+            func_dumps(final_func),
+        )
         local_element = shardview.get_size(array.distribution[i])[0] - 1
         slice_to_get = (slice(local_element, local_element + 1),)
-        #boundary_val = ray.get(remote_states[i].get_partial_array.remote(new_ndarray.gid, slice_to_get))
-        boundary_val = remote_call(i, "get_partial_array", new_ndarray.gid, slice_to_get)
+        # boundary_val = ray.get(remote_states[i].get_partial_array.remote(new_ndarray.gid, slice_to_get))
+        boundary_val = remote_call(
+            i, "get_partial_array", new_ndarray.gid, slice_to_get
+        )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+
 
 def spmd(func, *args):
     deferred_op.do_ops()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    #ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(num_workers)])
+    # ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(num_workers)])
     dprint(2, "Before exec_all spmd")
     remote_exec_all("spmd", func_dumps(func), args_to_remote)
     dprint(2, "After exec_all spmd")

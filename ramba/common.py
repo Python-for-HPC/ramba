@@ -1,4 +1,3 @@
-
 """
 Copyright 2021 Intel Corporation
 
@@ -19,32 +18,35 @@ import math
 import operator
 
 distribute_min_size = 100
-NUM_WORKERS_FOR_BCAST=100
+NUM_WORKERS_FOR_BCAST = 100
 
 try:
     from mpi4py import MPI
+
     comm = MPI.COMM_WORLD
     nranks = comm.Get_size()
     rank = comm.Get_rank()
-    assert(nranks>1)
-    USE_MPI=True
-    if (rank==nranks-1): print("Using MPI with",nranks-1,"workers, 1 driver")
-    num_workers = int(os.environ.get('RAMBA_WORKERS', "-1"))
-    if (num_workers != -1 and rank==0): print("RAMBA_WORKERS setting ignored.")
-    num_workers = nranks-1
+    assert nranks > 1
+    USE_MPI = True
+    if rank == nranks - 1:
+        print("Using MPI with", nranks - 1, "workers, 1 driver")
+    num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+    if num_workers != -1 and rank == 0:
+        print("RAMBA_WORKERS setting ignored.")
+    num_workers = nranks - 1
     numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
-    #print ("MPI rank", rank, os.uname()[1])
-    USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "0"))!=0
+    # print ("MPI rank", rank, os.uname()[1])
+    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
     default_bcast = None if USE_ZMQ else "1"
 except:
-    USE_MPI=False
-    USE_ZMQ= int(os.environ.get("RAMBA_USE_ZMQ", "1"))!=0
-    default_bcast=None
+    USE_MPI = False
+    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
+    default_bcast = None
 
 
-#USE_RAY_CALLS=True
-#USE_RAY_CALLS=False
-USE_RAY_CALLS= int(os.environ.get("RAMBA_USE_RAY_CALLS", "0"))!=0
+# USE_RAY_CALLS=True
+# USE_RAY_CALLS=False
+USE_RAY_CALLS = int(os.environ.get("RAMBA_USE_RAY_CALLS", "0")) != 0
 
 fast_reduction = True
 
@@ -59,27 +61,27 @@ else:
     from timeit import default_timer as timer
 
 # If RAMBA_DEBUG environment variable set to True, will print detailed debugging messages.
-ndebug = int(os.environ.get('RAMBA_DEBUG', "0"))
+ndebug = int(os.environ.get("RAMBA_DEBUG", "0"))
 if ndebug != 0:
     debug = True
 else:
     debug = False
 
 # If RAMBA_RESHAPE_COPY environment variable set to non-zero then reshape calls forward to reshape_copy.
-nreshape_forwarding = int(os.environ.get('RAMBA_RESHAPE_COPY', "0"))
+nreshape_forwarding = int(os.environ.get("RAMBA_RESHAPE_COPY", "0"))
 if nreshape_forwarding != 0:
     reshape_forwarding = True
 else:
     reshape_forwarding = False
 
 # If RAMBA_TIMING environment variable set to True, will print detailed timing messages.
-ntiming = int(os.environ.get('RAMBA_TIMING', "0"))
+ntiming = int(os.environ.get("RAMBA_TIMING", "0"))
 if ntiming != 0:
     timing = True
 else:
     timing = False
 
-timing_debug_worker = int(os.environ.get('RAMBA_TIMING_WORKER',"0"))
+timing_debug_worker = int(os.environ.get("RAMBA_TIMING_WORKER", "0"))
 
 
 def tprint(level, *args):
@@ -87,33 +89,55 @@ def tprint(level, *args):
         print(*args)
         sys.stdout.flush()
 
+
 def dprint(level, *args):
     if ndebug >= level:
         print(*args)
         sys.stdout.flush()
 
-if not USE_MPI: num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
-num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1')) # number of threads per worker
-hint_ip     = os.environ.get('RAMBA_IP_HINT', None)    # IP address used to hint which interface to bind queues
-if not USE_MPI: numa_zones  = os.environ.get('RAMBA_NUMA_ZONES', None) # override detected numa zones
+
+if not USE_MPI:
+    num_workers = int(os.environ.get("RAMBA_WORKERS", "4"))  # number of machines
+num_threads = int(
+    os.environ.get("RAMBA_NUM_THREADS", "1")
+)  # number of threads per worker
+hint_ip = os.environ.get(
+    "RAMBA_IP_HINT", None
+)  # IP address used to hint which interface to bind queues
+if not USE_MPI:
+    numa_zones = os.environ.get(
+        "RAMBA_NUMA_ZONES", None
+    )  # override detected numa zones
 
 if default_bcast is None:
-    default_bcast = "1" if num_workers>NUM_WORKERS_FOR_BCAST else "0"
-USE_BCAST= int(os.environ.get("RAMBA_USE_BCAST", default_bcast))!=0
+    default_bcast = "1" if num_workers > NUM_WORKERS_FOR_BCAST else "0"
+USE_BCAST = int(os.environ.get("RAMBA_USE_BCAST", default_bcast)) != 0
 
 # RAMBA_BIG_DATA environment variable MUST be set to 1 if the application will use arrays
 # larger than 2**32 in size.
-ramba_big_data = int(os.environ.get('RAMBA_BIG_DATA', "0"))
+ramba_big_data = int(os.environ.get("RAMBA_BIG_DATA", "0"))
 if ramba_big_data != 0:
     ramba_big_data = True
 else:
     ramba_big_data = False
 
+
 def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
+
 def get_common_state():
-    return (num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, hint_ip, numa_zones)
+    return (
+        num_workers,
+        num_threads,
+        timing,
+        ntiming,
+        timing_debug_worker,
+        ndebug,
+        hint_ip,
+        numa_zones,
+    )
+
 
 def set_common_state(st):
     global num_workers
@@ -124,19 +148,33 @@ def set_common_state(st):
     global timing_debug_worker
     global hint_ip
     global numa_zones
-    num_workers, num_threads, timing, ntiming, timing_debug_worker, ndebug, hint_ip, numa_zones = st
+    (
+        num_workers,
+        num_threads,
+        timing,
+        ntiming,
+        timing_debug_worker,
+        ndebug,
+        hint_ip,
+        numa_zones,
+    ) = st
 
 
 # -------------------------------------------------------------------------
 # Code to calculate regular divisions of work across an array's dimensions.
 # -------------------------------------------------------------------------
 def compute_regular_schedule(size, divisions, dims_do_not_distribute=[]):
-    divisions[:] = compute_regular_schedule_internal(num_workers, size, tuple(dims_do_not_distribute))
+    divisions[:] = compute_regular_schedule_internal(
+        num_workers, size, tuple(dims_do_not_distribute)
+    )
+
 
 @functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute, mode="surface"):
+def compute_regular_schedule_internal(
+    num_workers, size, dims_do_not_distribute, mode="surface"
+):
     num_dim = len(size)
-    divisions = np.empty((num_workers,2,num_dim), dtype=np.int64)
+    divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
     # Get the combinations of the prime factorization of the number of workers.
     the_factors = dim_factor_dict[num_dim]
     best = None
@@ -150,10 +188,10 @@ def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute,
         if dim_len % num_div == 0:
             return low, low, low, low
 
-        rem = dim_len - (low * (num_div-1))
+        rem = dim_len - (low * (num_div - 1))
         if rem >= num_div:
             main = low + 1
-            rem = dim_len - (main * (num_div-1))
+            rem = dim_len - (main * (num_div - 1))
         else:
             main = low
         if rem == 0:
@@ -164,11 +202,11 @@ def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute,
         not_possible = False
         for i in range(num_dim):
             if factored[i] != 1 and i in dims_do_not_distribute:
-               not_possible = True
-               break
+                not_possible = True
+                break
             if factored[i] > size[i]:
-               not_possible = True
-               break
+                not_possible = True
+                break
             if mode == "ratio":
                 _, _, largest[i], smallest[i] = get_div_sizes(size[i], factored[i])
         if not_possible:
@@ -193,7 +231,7 @@ def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute,
 
             surface_area = 0
             # List of the dimensions of each block on average.
-            blockSize = [size[i]/factored[i] for i in range(len(factored))]
+            blockSize = [size[i] / factored[i] for i in range(len(factored))]
 
             for i in range(num_dim):
                 # Saves the average length of the block for the current dimension.
@@ -217,9 +255,9 @@ def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute,
     if mode == "surface":
         dprint(3, "Best:", best, "Smallest surface area:", best_value)
 
-    assert(best is not None)
+    assert best is not None
     divshape = divisions.shape
-    assert(divshape[2] == len(best))
+    assert divshape[2] == len(best)
     main_divs = [0] * num_dim
     for j in range(num_dim):
         main_divs[j], _, _, _ = get_div_sizes(size[j], best[j])
@@ -232,38 +270,72 @@ def compute_regular_schedule_internal(num_workers, size, dims_do_not_distribute,
         chunks_here = total_workers // best[index]
         last = -1
 
-        dprint(3, "crsi_div:", "best", best, "main_divs", main_divs, "index", index, "min_worker", min_worker, "max_worker", max_worker, "size", size, "chunks_here", chunks_here, "total_workers", total_workers)
+        dprint(
+            3,
+            "crsi_div:",
+            "best",
+            best,
+            "main_divs",
+            main_divs,
+            "index",
+            index,
+            "min_worker",
+            min_worker,
+            "max_worker",
+            max_worker,
+            "size",
+            size,
+            "chunks_here",
+            chunks_here,
+            "total_workers",
+            total_workers,
+        )
         for i in range(min_worker, max_worker + 1, chunks_here):
             num_left = size[index] - last
             this_div = num_left // ((max_worker + 1 - i) // chunks_here)
             for j in range(chunks_here):
-                divisions[i+j,0,index] = last + 1
-                divisions[i+j,1,index] = last + this_div
-                #divisions[i+j,1,index] = last + main_divs[index]
-                if divisions[i+j,1,index] > size[index]:
-                    divisions[i+j,1,index] = size[index]
+                divisions[i + j, 0, index] = last + 1
+                divisions[i + j, 1, index] = last + this_div
+                # divisions[i+j,1,index] = last + main_divs[index]
+                if divisions[i + j, 1, index] > size[index]:
+                    divisions[i + j, 1, index] = size[index]
             last += this_div
-            #last += main_divs[index]
-            crsi_div(divisions, best, main_divs, index + 1, i, i + chunks_here - 1, size)
+            # last += main_divs[index]
+            crsi_div(
+                divisions, best, main_divs, index + 1, i, i + chunks_here - 1, size
+            )
 
-    crsi_div(divisions, best, main_divs, 0, 0, num_workers-1, np.array(size) - 1)
+    crsi_div(divisions, best, main_divs, 0, 0, num_workers - 1, np.array(size) - 1)
     return divisions
+
 
 def exps_to_factor(factors, exps):
     rest = 1
     for i in range(len(factors)):
-        rest *= (factors[i] ** exps[i])
+        rest *= factors[i] ** exps[i]
     return rest
 
-def gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, index, part_exps):
+
+def gen_ind_factor_internal(
+    fset, factors, exps, remaining_len, thus_far, index, part_exps
+):
     if index >= len(exps):
         rest = exps_to_factor(factors, part_exps)
         new_thus = thus_far + [rest]
-        gen_ind_factors(fset, factors, list(map(operator.sub, exps, part_exps)), remaining_len - 1, new_thus)
+        gen_ind_factors(
+            fset,
+            factors,
+            list(map(operator.sub, exps, part_exps)),
+            remaining_len - 1,
+            new_thus,
+        )
     else:
-        for i in range(exps[index]+1):
+        for i in range(exps[index] + 1):
             part_exps[index] = i
-            gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, index + 1, part_exps)
+            gen_ind_factor_internal(
+                fset, factors, exps, remaining_len, thus_far, index + 1, part_exps
+            )
+
 
 def gen_ind_factors(fset, factors, exps, remaining_len, thus_far):
     if remaining_len == 1:
@@ -271,10 +343,13 @@ def gen_ind_factors(fset, factors, exps, remaining_len, thus_far):
         complete_factors = thus_far + [rest]
         fset.add(tuple(complete_factors))
     else:
-        gen_ind_factor_internal(fset, factors, exps, remaining_len, thus_far, 0, [0]*len(exps))
+        gen_ind_factor_internal(
+            fset, factors, exps, remaining_len, thus_far, 0, [0] * len(exps)
+        )
+
 
 def gen_dim_factor_dict(factors, exps):
-    dim_factor = {1:set(), 2:set(), 3:set(), 4:set()}
+    dim_factor = {1: set(), 2: set(), 3: set(), 4: set()}
 
     gen_ind_factors(dim_factor[1], factors, exps, 1, [])
     gen_ind_factors(dim_factor[2], factors, exps, 2, [])
@@ -282,6 +357,7 @@ def gen_dim_factor_dict(factors, exps):
     gen_ind_factors(dim_factor[4], factors, exps, 4, [])
 
     return dim_factor
+
 
 def gen_prime_factors(n):
     factors = []
@@ -309,6 +385,6 @@ def gen_prime_factors(n):
 
     return factors, exps
 
+
 num_worker_factors, num_worker_exps = gen_prime_factors(num_workers)
 dim_factor_dict = gen_dim_factor_dict(num_worker_factors, num_worker_exps)
-
