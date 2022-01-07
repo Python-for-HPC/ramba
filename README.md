@@ -11,7 +11,7 @@ Ramba lets Numpy programs make use of multiple cores and multiple nodes with lit
 
 ## Example
 Consider this simple example of a large computation in Numpy:
-~~~
+~~~python
 # test-numpy.py
 import numpy as np
 import time
@@ -27,7 +27,7 @@ print (t1-t0)
 ~~~
 
 Here is the ramba version of this code:
-~~~
+~~~python
 # test-ramba.py
 import ramba as np  # Use ramba in place of numpy
 import time
@@ -88,6 +88,44 @@ Thus the requirements are:
 
 # Usage
 Coming soon!
+
+# Numpy Compatibility
+Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
+
+|Feature/API | Function/type |Status          | Notes
+|:-----------|:--------------|:---------------|:-----
+|Array Types | Numerical | &#x1f7e2; works | complex not tested
+|            | Boolean   | &#x1f7e2; works |
+|            | String    | &#x1f534; not implemented |
+|            | Objects   | &#x1f7e1; partial |
+|Creation    | from size/value | &#x1f7e1; partial | empty, ones_like, etc.;  missing: full, eye, identity
+|            | from data | &#x1f7e1; partial | fromfunction, fromarray
+|            | ranges    | &#x1f7e1; partial | arange, linspace, mgrid
+|Array Manipulation| reshape | &#x1f7e1; partial | reshape is very expensive in distributed context, so only very limited support;  use reshape_copy
+|            | axis manipulation | &#x1f7e1; partial | T, transpose; missing: swapaxes, rollaxis, moveaxis 
+|            | dimensionality | &#x1f7e1; partial | only broadcast_to
+|            | joining arrays | &#x1f7e1; partial | only concatenate
+|            | splitting arrays | &#x1f534; not implemented |
+|            | tiling         | &#x1f534; not implemented |
+|            | insert/remove elements | &#x1f534; not implemented
+|            | rearrange elements | &#x1f534; not implemented
+|Math        | arithmetic operations | &#x1f7e2; works | +, -, +=, //, etc. 
+|            | comparisons           | &#x1f7e2; works | 
+|            | logical operations    | &#x1f534; not implemented |
+|            | trig functions        | &#x1f7e1; partial |
+|            | power                 | &#x1f7e1; partial | pow, exp, log, sqrt, square
+|            | floating manip.       | &#x1f534; not implemented | (isnan works, though)
+|            | bit twiddling         | &#x1f534; not implemented |
+|            | reductions            | &#x1f7e1; partial | sum, prod, min, max; axis parameter works
+|            | matmul                | &#x1f7e1; partial | dot not implemented
+| ufunc      |                       | &#x1f7e2; works  |
+| FFT        |                       | &#x1f534; not implemented |
+| linalg     |                       | &#x1f534; not implemented |
+| random     |                       | &#x1f7e1; partial |
+| matlib     |                       | &#x1f534; not implemented |
+
+It can be assumed that Numpy features not mentioned in this table are not implemented.
+
 
 ## Security Note
 Please note that this work is a research prototype and that it internally uses Ray and/or ZeroMQ for
