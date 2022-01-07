@@ -11,7 +11,7 @@ Ramba lets Numpy programs make use of multiple cores and multiple nodes with lit
 
 ## Example
 Consider this simple example of a large computation in Numpy:
-~~~
+~~~python
 # test-numpy.py
 import numpy as np
 import time
@@ -27,7 +27,7 @@ print (t1-t0)
 ~~~
 
 Here is the ramba version of this code:
-~~~
+~~~python
 # test-ramba.py
 import ramba as np  # Use ramba in place of numpy
 import time
@@ -71,8 +71,8 @@ change to the code.
 # Installation
 We suggest using conda to setup an environment for running ramba.  
 ## Prerequisites
-Ramba was developed and tested on Linux, usng both Ray and MPI backends.  Ray may work on Windows using MPI, though this has not been extensively tested.  ZeroMQ is needed for the communication layer.  
-Ramba uses pickle version 5 for serializtion of objects.  This should already be available if running Python 3.8 or higher.  If not, please installe the pickle5 package.  In addition, cloudpickle is also needed to serialize functions (as this is not possible through the normal pickle package).  
+Ramba was developed and tested on Linux, usng both Ray and MPI backends.  Ramba may work on Windows using MPI, though this has not been extensively tested.  ZeroMQ is needed for the communication layer.  
+Ramba uses pickle version 5 for serializtion of objects.  This should already be available if running Python 3.8 or higher.  If not, please install the pickle5 package.  In addition, cloudpickle is also needed to serialize functions (as this is not possible through the normal pickle package).  
 Finally, ramba uses numba for JIT compilation.  
 
 Thus the requirements are:
@@ -88,6 +88,49 @@ Thus the requirements are:
 
 # Usage
 Coming soon!
+
+# Numpy Compatibility
+Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
+
+|Feature/API | Function/type |Status&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| Notes
+|:-----------|:--------------  |:--------------------------|:-----
+|Array Types | Numerical       | &#x1f7e2; works           | complex not tested
+|            | Boolean         | &#x1f7e2; works           |
+|            | String          | &#x1f534; not implemented |
+|            | Objects         | &#x1f7e1; partial         |
+|Creation    | from size/value | &#x1f7e1; partial         | empty, ones_like, etc.;  missing: full, identity
+|            | from data       | &#x1f7e1; partial         | fromfunction, fromarray
+|            | ranges          | &#x1f7e1; partial         | arange, linspace, mgrid
+|Array Manipulation| reshape   | &#x1f7e1; partial         | reshape is very expensive in distributed context, so only very limited support;  use reshape_copy
+|            | axis manipulation | &#x1f7e1; partial       | T, transpose; missing: swapaxes, rollaxis, moveaxis 
+|            | dimensionality  | &#x1f7e1; partial         | only broadcast_to
+|            | joining arrays  | &#x1f7e1; partial         | only concatenate
+|            | splitting arrays| &#x1f534; not implemented |
+|            | tiling          | &#x1f534; not implemented |
+|            | insert/remove elements | &#x1f534; not implemented |
+|            | rearrange elements | &#x1f534; not implemented |
+|Index/slice | range slice     | &#x1f7e1; partial         | produces view like in numpy; skips not supported
+|            | masked arrays   | &#x1f534; not implemented |
+|            | fancy indexing  | &#x1f534; not implemented |
+|            | index routines  | &#x1f534; not implemented | ("where" partly works)
+|Math        | arithmetic operations | &#x1f7e2; works     | +, -, +=, //, etc. 
+|            | comparisons     | &#x1f7e2; works           | 
+|            | logical operations | &#x1f534; not implemented |
+|            | trig functions  | &#x1f7e1; partial         |
+|            | power           | &#x1f7e1; partial         | pow, exp, log, sqrt, square
+|            | floating manip. | &#x1f534; not implemented | (isnan works, though)
+|            | bit twiddling   | &#x1f534; not implemented |
+|            | reductions      | &#x1f7e1; partial         | sum, prod, min, max; axis parameter works
+|            | matmul          | &#x1f7e1; partial         | matmul / dot for 1D and 2D only
+| ufunc      |                 | &#x1f7e2; works           |
+| FFT        |                 | &#x1f534; not implemented |
+| linalg     |                 | &#x1f534; not implemented |
+| random     |                 | &#x1f7e1; partial         |
+| matlib     |                 | &#x1f534; not implemented |
+| statistics |                 | &#x1f534; not implemented | (except: bincount is implemented)
+
+It can be assumed that Numpy features not mentioned in this table are not implemented.
+
 
 ## Security Note
 Please note that this work is a research prototype and that it internally uses Ray and/or ZeroMQ for

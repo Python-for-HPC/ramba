@@ -16,6 +16,7 @@ from collections.abc import Iterable
 
 import ray
 
+
 class Empty(Exception):
     pass
 
@@ -55,12 +56,18 @@ class Queue:
         >>> q = Queue(actor_options={"num_cpus": 1})
     """
 
-    def __init__(self, maxsize: int = 0, hint_ip=None, tag=0,
-                 actor_options: Optional[Dict] = None) -> None:
+    def __init__(
+        self,
+        maxsize: int = 0,
+        hint_ip=None,
+        tag=0,
+        actor_options: Optional[Dict] = None,
+    ) -> None:
         actor_options = actor_options or {}
         self.maxsize = maxsize
-        self.actor = ray.remote(_QueueActor).options(**actor_options).remote(
-            self.maxsize)
+        self.actor = (
+            ray.remote(_QueueActor).options(**actor_options).remote(self.maxsize)
+        )
         self.prefiltered = []
 
     def __len__(self) -> int:
@@ -70,26 +77,21 @@ class Queue:
         """The size of the queue."""
         return ray.get(self.actor.qsize.remote())
 
-
     def qsize(self) -> int:
         """The size of the queue."""
         return self.size()
-
 
     def empty(self) -> bool:
         """Whether the queue is empty."""
         return ray.get(self.actor.empty.remote())
 
-
     def full(self) -> bool:
         """Whether the queue is full."""
         return ray.get(self.actor.full.remote())
 
-
-    def put(self,
-            item: Any,
-            block: bool = True,
-            timeout: Optional[float] = None) -> None:
+    def put(
+        self, item: Any, block: bool = True, timeout: Optional[float] = None
+    ) -> None:
         """Adds an item to the queue.
 
         If block is True and the queue is full, blocks until the queue is no
@@ -114,11 +116,9 @@ class Queue:
             else:
                 ray.get(self.actor.put.remote(item, timeout))
 
-
-    async def put_async(self,
-                        item: Any,
-                        block: bool = True,
-                        timeout: Optional[float] = None) -> None:
+    async def put_async(
+        self, item: Any, block: bool = True, timeout: Optional[float] = None
+    ) -> None:
         """Adds an item to the queue.
 
         If block is True and the queue is full,
@@ -143,11 +143,12 @@ class Queue:
             else:
                 await self.actor.put.remote(item, timeout)
 
-
-    def get(self,
-            block: bool = True,
-            gfilter = lambda x: True,
-            timeout: Optional[float] = None) -> Any:
+    def get(
+        self,
+        block: bool = True,
+        gfilter=lambda x: True,
+        timeout: Optional[float] = None,
+    ) -> Any:
         """Gets an item from the queue.
 
         If block is True and the queue is empty, blocks until the queue is no
@@ -191,11 +192,9 @@ class Queue:
                     else:
                         self.prefiltered.append(msg)
 
-
-    def multi_get(self,
-            n: int = 1,
-            gfilter = lambda x: True,
-            timeout: Optional[float] = None) -> Any:
+    def multi_get(
+        self, n: int = 1, gfilter=lambda x: True, timeout: Optional[float] = None
+    ) -> Any:
         """Get multiple items from the queue.
         Blocking call.  
         There is no guarantee of order if multiple consumers get from the
@@ -209,22 +208,23 @@ class Queue:
         """
         if timeout is not None and timeout < 0:
             raise ValueError("'timeout' must be a non-negative number")
-        if n<0:
+        if n < 0:
             raise ValueError("'n' must be a non-negative number")
         res = []
 
-        if n>0:
+        if n > 0:
             j = 0
             for i in range(len(self.prefiltered)):
-                if gfilter(self.prefiltered[i-j]):
-                    res.append(self.prefiltered[i-j])
-                    del self.prefiltered[i-j]
-                    j+=1
-                    n-=1
-                    if n==0: break
+                if gfilter(self.prefiltered[i - j]):
+                    res.append(self.prefiltered[i - j])
+                    del self.prefiltered[i - j]
+                    j += 1
+                    n -= 1
+                    if n == 0:
+                        break
 
-        if n>0:
-            msgs = ray.get(self.actor.mf_get.remote(n,gfilter,timeout))
+        if n > 0:
+            msgs = ray.get(self.actor.mf_get.remote(n, gfilter, timeout))
             for m in msgs:
                 if gfilter(m):
                     res.append(m)
@@ -233,10 +233,12 @@ class Queue:
 
         return res
 
-    async def get_async(self,
-                        block: bool = True,
-                        gfilter = lambda x: True,
-                        timeout: Optional[float] = None) -> Any:
+    async def get_async(
+        self,
+        block: bool = True,
+        gfilter=lambda x: True,
+        timeout: Optional[float] = None,
+    ) -> Any:
         """Gets an item from the queue.
 
         There is no guarantee of order if multiple consumers get from the
@@ -260,7 +262,6 @@ class Queue:
             else:
                 return await self.actor.get.remote(timeout)
 
-
     def put_nowait(self, item: Any) -> None:
         """Equivalent to put(item, block=False).
 
@@ -268,7 +269,6 @@ class Queue:
             Full: if the queue is full.
         """
         return self.put(item, block=False)
-
 
     def put_nowait_batch(self, items: Iterable) -> None:
         """Takes in a list of items and puts them into the queue in order.
@@ -281,7 +281,6 @@ class Queue:
 
         ray.get(self.actor.put_nowait_batch.remote(items))
 
-
     def get_nowait(self) -> Any:
         """Equivalent to get(block=False).
 
@@ -289,7 +288,6 @@ class Queue:
             Empty: if the queue is empty.
         """
         return self.get(block=False)
-
 
     def get_nowait_batch(self, num_items: int) -> List[Any]:
         """Gets items from the queue and returns them in a
@@ -304,7 +302,6 @@ class Queue:
             raise ValueError("'num_items' must be nonnegative")
 
         return ray.get(self.actor.get_nowait_batch.remote(num_items))
-
 
     def shutdown(self, force: bool = False, grace_period_s: int = 5) -> None:
         """Terminates the underlying QueueActor.
@@ -329,7 +326,6 @@ class Queue:
                 if not_done:
                     ray.kill(self.actor, no_restart=True)
         self.actor = None
-
 
 
 class _QueueActor:
@@ -361,10 +357,11 @@ class _QueueActor:
     # Returns all messages up to and including the nth one matching condition filt
     async def mf_get(self, n, filt=lambda x: True, timeout=None):
         res = []
-        while n>0:
+        while n > 0:
             try:
                 m = await asyncio.wait_for(self.queue.get(), timeout)
-                if filt(m): n-=1
+                if filt(m):
+                    n -= 1
                 res.append(m)
             except asyncio.TimeoutError:
                 break
@@ -376,8 +373,10 @@ class _QueueActor:
     def put_nowait_batch(self, items):
         # If maxsize is 0, queue is unbounded, so no need to check size.
         if self.maxsize > 0 and len(items) + self.qsize() > self.maxsize:
-            raise Full(f"Cannot add {len(items)} items to queue of size "
-                       f"{self.qsize()} and maxsize {self.maxsize}.")
+            raise Full(
+                f"Cannot add {len(items)} items to queue of size "
+                f"{self.qsize()} and maxsize {self.maxsize}."
+            )
         for item in items:
             self.queue.put_nowait(item)
 
@@ -386,6 +385,7 @@ class _QueueActor:
 
     def get_nowait_batch(self, num_items):
         if num_items > self.qsize():
-            raise Empty(f"Cannot get {num_items} items from queue of size "
-                        f"{self.qsize()}.")
+            raise Empty(
+                f"Cannot get {num_items} items from queue of size " f"{self.qsize()}."
+            )
         return [self.queue.get_nowait() for _ in range(num_items)]

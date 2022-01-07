@@ -14,13 +14,16 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 import asyncio
 from typing import Optional, Any, List, Dict
 from collections.abc import Iterable
-#import cloudpickle as cp
-#import pyarrow
+
+# import cloudpickle as cp
+# import pyarrow
 import pickle as pick
+
 if pick.HIGHEST_PROTOCOL < 5:
     import pickle5 as pick
 
 import zmq
+
 context = zmq.Context()
 sockets = {}
 prefiltered = {}
@@ -28,12 +31,15 @@ prefiltered = {}
 import time
 
 import socket
+
+
 def get_my_ip(hint_ip=None):
     hint_ip = "172.13.1.1" if hint_ip is None else hint_ip
-    #hint_ip = "192.168.8.1" if hint_ip is None else hint_ip
+    # hint_ip = "192.168.8.1" if hint_ip is None else hint_ip
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect((hint_ip,1))
+    s.connect((hint_ip, 1))
     return s.getsockname()[0]
+
 
 class Empty(Exception):
     pass
@@ -42,21 +48,24 @@ class Empty(Exception):
 class Full(Exception):
     pass
 
+
 def pickle(item: Any) -> Any:
-    #return cp.dumps(item)
-    #return pyarrow.serialize(item).to_buffer()
-    #return pick.dumps(item,protocol=5)
+    # return cp.dumps(item)
+    # return pyarrow.serialize(item).to_buffer()
+    # return pick.dumps(item,protocol=5)
     rv = [0]
-    rv0 = pick.dumps(item,protocol=5,buffer_callback=rv.append)
+    rv0 = pick.dumps(item, protocol=5, buffer_callback=rv.append)
     rv[0] = rv0
     return rv
 
+
 def unpickle(msg0):
-    #msg = cp.loads(msg0)
-    #msg = pick.loads(msg0)
-    msg = pick.loads(msg0[0],buffers=msg0[1:])
-    #msg = pyarrow.deserialize(msg0)
+    # msg = cp.loads(msg0)
+    # msg = pick.loads(msg0)
+    msg = pick.loads(msg0[0], buffers=msg0[1:])
+    # msg = pyarrow.deserialize(msg0)
     return msg
+
 
 class Queue:
     """A first-in, first-out queue implementation on Ray.
@@ -90,18 +99,25 @@ class Queue:
         self.maxsize = maxsize
         self.ip = get_my_ip(hint_ip)
         s = context.socket(zmq.PULL)
-        self.port = s.bind_to_random_port('tcp://'+self.ip)
+        self.port = s.bind_to_random_port("tcp://" + self.ip)
         sockets[self] = s
-        self.address = "tcp://"+self.ip+":"+str(self.port)
+        self.address = "tcp://" + self.ip + ":" + str(self.port)
         prefiltered[self] = []
-        self.sent_data=0
-        self.recv_data=0
+        self.sent_data = 0
+        self.recv_data = 0
         self.pickle_time = 0.0
         self.unpickle_time = 0.0
-        #print ("Created Queue ADDR:",self.ip,self.port, "HINT:",hint_ip)
+        # print ("Created Queue ADDR:",self.ip,self.port, "HINT:",hint_ip)
 
     def get_stats(self):
-        return (self.ip, self.port, self.recv_data, self.sent_data, self.unpickle_time, self.pickle_time)
+        return (
+            self.ip,
+            self.port,
+            self.recv_data,
+            self.sent_data,
+            self.unpickle_time,
+            self.pickle_time,
+        )
 
     '''
     def __len__(self) -> int:
@@ -127,11 +143,13 @@ class Queue:
         return ray.get(self.actor.full.remote())
     '''
 
-    def put(self,
-            item: Any,
-            block: bool = True,
-            timeout: Optional[float] = None,
-            raw: Optional[bool] =False) -> None:
+    def put(
+        self,
+        item: Any,
+        block: bool = True,
+        timeout: Optional[float] = None,
+        raw: Optional[bool] = False,
+    ) -> None:
         """Adds an item to the queue.
 
         If block is True and the queue is full, blocks until the queue is no
@@ -145,7 +163,7 @@ class Queue:
             Full: if the queue is full, blocking is True, and it timed out.
             ValueError: if timeout is negative.
         """
-        '''
+        """
         if not block:
             try:
                 ray.get(self.actor.put_nowait.remote(item))
@@ -156,7 +174,7 @@ class Queue:
                 raise ValueError("'timeout' must be a non-negative number")
             else:
                 ray.get(self.actor.put.remote(item, timeout))
-        '''
+        """
         if self not in sockets:
             s = context.socket(zmq.PUSH)
             s.connect(self.address)
@@ -166,15 +184,17 @@ class Queue:
         t = -time.time()
         msg = item if raw else pickle(item)
         t += time.time()
-        #s.send(msg,copy=False)
-        s.send_multipart(msg,copy=False)
-        #s.send_multipart(msg)
-        #self.sent_data+=len(msg)
-        #self.sent_data+=len(msg[0])
+        # s.send(msg,copy=False)
+        s.send_multipart(msg, copy=False)
+        # s.send_multipart(msg)
+        # self.sent_data+=len(msg)
+        # self.sent_data+=len(msg[0])
         for d in msg:
-            self.sent_data+=len(d.raw()) if isinstance(d,pick.PickleBuffer) else len(d)
+            self.sent_data += (
+                len(d.raw()) if isinstance(d, pick.PickleBuffer) else len(d)
+            )
         if not raw:
-            self.pickle_time+=t
+            self.pickle_time += t
 
     '''
     async def put_async(self,
@@ -206,13 +226,15 @@ class Queue:
                 await self.actor.put.remote(item, timeout)
     '''
 
-    def get(self,
-            block: bool = True,
-            gfilter = lambda x: True,
-            timeout: Optional[float] = None,
-            print_times: Optional[bool] = False,
-            raw: Optional[bool] = False,
-            msginfo = lambda x: "") -> Any:
+    def get(
+        self,
+        block: bool = True,
+        gfilter=lambda x: True,
+        timeout: Optional[float] = None,
+        print_times: Optional[bool] = False,
+        raw: Optional[bool] = False,
+        msginfo=lambda x: "",
+    ) -> Any:
         """Gets an item from the queue.
 
         If block is True and the queue is empty, blocks until the queue is no
@@ -238,37 +260,73 @@ class Queue:
                     msg = pf[i]
                     del pf[i]
                     t1 = time.time()
-                    if print_times: print("Get msg:  from prefiltered ",(t1-t0)*1000, msginfo(msg))
+                    if print_times:
+                        print(
+                            "Get msg:  from prefiltered ",
+                            (t1 - t0) * 1000,
+                            msginfo(msg),
+                        )
                     return msg
         while True:
-            #msg0 = s.recv()
+            # msg0 = s.recv()
             msg0 = s.recv_multipart(copy=False)
-            #success=False
-            #while not success:
+            # success=False
+            # while not success:
             #    try:
             #        msg0 = s.recv_multipart(copy=False,flags=zmq.NOBLOCK)
             #        success=True
             #    except:
             #        sucess=False
-            #self.recv_data+=len(msg0)
+            # self.recv_data+=len(msg0)
             for d in msg0:
-                self.recv_data+=len(d)
+                self.recv_data += len(d)
             t1 = time.time()
             if not raw:
                 msg = unpickle(msg0)
                 t2 = time.time()
-                self.unpickle_time+=t2-t1
+                self.unpickle_time += t2 - t1
                 if gfilter(msg):
-                    #if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
-                    if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms", msginfo(msg))
+                    # if print_times: print("Get msg: from queue ", len(msg0),"bytes",(t1-t0)*1000, "ms,  unpickle ", (t2-t1)*1000,"ms")
+                    if print_times:
+                        print(
+                            "Get msg: from queue ",
+                            sum(
+                                [
+                                    len(i.raw())
+                                    if isinstance(i, pick.PickleBuffer)
+                                    else len(i)
+                                    for i in msg0
+                                ]
+                            ),
+                            "bytes",
+                            (t1 - t0) * 1000,
+                            "ms,  unpickle ",
+                            (t2 - t1) * 1000,
+                            "ms",
+                            msginfo(msg),
+                        )
                     return msg
                 else:
                     pf.append(msg)
             else:
-                if print_times: print("Get msg: from queue ", sum([len(i.raw()) if isinstance(i, pick.PickleBuffer) else len(i) for i in msg0]),"bytes",(t1-t0)*1000, "ms,  raw message")
+                if print_times:
+                    print(
+                        "Get msg: from queue ",
+                        sum(
+                            [
+                                len(i.raw())
+                                if isinstance(i, pick.PickleBuffer)
+                                else len(i)
+                                for i in msg0
+                            ]
+                        ),
+                        "bytes",
+                        (t1 - t0) * 1000,
+                        "ms,  raw message",
+                    )
                 return msg0
 
-        '''
+        """
         if not block:
             try:
                 msg = ray.get(self.actor.get_nowait.remote())
@@ -289,15 +347,16 @@ class Queue:
                         return msg
                     else:
                         self.prefiltered.append(msg)
-        '''
+        """
 
-
-    def multi_get(self,
-            n: int = 1,
-            gfilter = lambda x: True,
-            timeout: Optional[float] = None,
-            print_times=False,
-            msginfo = lambda x: "") -> Any:
+    def multi_get(
+        self,
+        n: int = 1,
+        gfilter=lambda x: True,
+        timeout: Optional[float] = None,
+        print_times=False,
+        msginfo=lambda x: "",
+    ) -> Any:
         """Get multiple items from the queue.
         Blocking call.  
         There is no guarantee of order if multiple consumers get from the
@@ -311,9 +370,12 @@ class Queue:
         """
         if timeout is not None and timeout < 0:
             raise ValueError("'timeout' must be a non-negative number")
-        if n<0:
+        if n < 0:
             raise ValueError("'n' must be a non-negative number")
-        return [self.get(gfilter=gfilter,print_times=print_times,msginfo=msginfo) for _ in range(n)]
+        return [
+            self.get(gfilter=gfilter, print_times=print_times, msginfo=msginfo)
+            for _ in range(n)
+        ]
 
 
 '''
