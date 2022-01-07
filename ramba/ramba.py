@@ -61,7 +61,7 @@ try:
     import dpctl
 
     dpctl_present = True
-except:
+except Exception:
     dpctl_present = False
 
 dprint(3, "dpctl present =", dpctl_present)
@@ -170,10 +170,10 @@ class FunctionMetadata:
         in npfunc or nfunc so that we don't try the failed case again.  If
         neither of those work then fall back to Python.
         """
+        dprint(2, "FunctionMetadata::__call__", self.func.__name__)
         dprint(
-            2,
-            "FunctionMetadata::__call__",
-            self.func.__name__,
+            4,
+            "FunctionMetadata::__call__ args",
             args,
             kwargs,
             self.numba_args,
@@ -181,6 +181,13 @@ class FunctionMetadata:
         atypes = tuple([type(x) for x in args])
         try_again = True
         count = 0
+        args_for_numba = []
+        for arg in args:
+            if inspect.isfunction(arg):
+                args_for_numba.append(numba.njit(arg))
+            else:
+                args_for_numba.append(arg)
+
         if not self.numba_pfunc:
             if len(self.numba_args) == 0 and not self.no_global_cache:
                 self.numba_pfunc = get_fm(FillerFunc(self.func), True)
@@ -200,7 +207,7 @@ class FunctionMetadata:
                     try_again = False
                     if self.ngfunc.get(atypes, True):
                         try:
-                            ret = self.numba_pfunc(*args, **kwargs)
+                            ret = self.numba_pfunc(*args_for_numba, **kwargs)
                             self.ngfunc[atypes] = True
                             return ret
                         except numba.core.errors.TypingError as te:
@@ -236,7 +243,7 @@ class FunctionMetadata:
                                     "Numba GPU ParallelAccelerator attempt failed for",
                                     self.func,
                                 )
-                        except:
+                        except Exception:
                             self.ngfunc[atypes] = False
                             dprint(
                                 1,
@@ -249,7 +256,7 @@ class FunctionMetadata:
             try_again = False
             if self.npfunc.get(atypes, True):
                 try:
-                    ret = self.numba_pfunc(*args, **kwargs)
+                    ret = self.numba_pfunc(*args_for_numba, **kwargs)
                     self.npfunc[atypes] = True
                     return ret
                 except numba.core.errors.TypingError as te:
@@ -284,7 +291,7 @@ class FunctionMetadata:
                             self.func,
                             atypes,
                         )
-                except:
+                except Exception:
                     traceback.print_exc()
                     self.npfunc[atypes] = False
                     dprint(
@@ -295,12 +302,12 @@ class FunctionMetadata:
                     )
                     try:
                         dprint(1, inspect.getsource(self.func))
-                    except:
+                    except Exception:
                         pass
 
         if self.nfunc.get(atypes, True):
             try:
-                ret = self.numba_func(*args, **kwargs)
+                ret = self.numba_func(*args_for_numba, **kwargs)
                 self.nfunc[atypes] = True
                 dprint(3, "Numba attempt succeeded.")
                 return ret
@@ -308,7 +315,7 @@ class FunctionMetadata:
                 print("Ramba TypingError:", te, type(te))
                 self.npfunc[atypes] = False
                 dprint(1, "Numba attempt failed for", self.func, atypes)
-            except:
+            except Exception:
                 self.nfunc[atypes] = False
                 dprint(1, "Numba attempt failed for", self.func, atypes)
                 raise
@@ -716,7 +723,7 @@ if not USE_MPI:
                 new_func += '        print("AttributeError:", ae.args)\n'
                 new_func += "    except NameError as ae:\n"
                 new_func += '        print("NameError:", ae.args)\n'
-                new_func += "    except:\n"
+                new_func += "    except Exception:\n"
                 new_func += '        print("error calling deobj", sys.exc_info()[0])\n'
                 new_func += "    return rv\n"
                 dprint(2, "new_func:", new_func)
@@ -779,7 +786,7 @@ if not USE_MPI:
             else:
                 try:
                     self.cndvar.wait(timeout=5)
-                except:
+                except Exception:
                     exp = sys.exc_info()[0]
                     print("cndvar.wait exception", exp, type(exp))
                     pass
@@ -787,7 +794,7 @@ if not USE_MPI:
 
     try:
         ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
-    except:
+    except Exception:
         ramba_spmd_barrier = BarrierActor.options(
             name="RambaSpmdBarrier", max_concurrency=num_workers
         ).remote(num_workers)
@@ -1042,7 +1049,7 @@ class LocalNdarray:
                         incoming_slice, incoming_data, ruuid = self.remote.comm_queues[
                             self.remote.worker_num
                         ].get(timeout=5)
-                except:
+                except Exception:
                     print("some exception!", sys.exc_info()[0])
                     assert 0
                 # local_slice = slice_to_local(incoming_slice, self.subspace)
@@ -1263,7 +1270,7 @@ def reduce_list(x):
 @functools.lru_cache()
 def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
-    dprint(2, "get_do_fill", filler)
+    dprint(2, "get_do_fill", filler, num_dim)
     # FIX ME: What if njit(filler) fails during compile or runtime?
     njfiller = (
         filler
@@ -1322,6 +1329,134 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
 
+smap_func = 0
+
+#@functools.lru_cache()
+def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
+    filler = filler.func
+    dprint(2, "get_smap_fill", filler, num_dim, ramba_array_args)
+    #njfiller = filler
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
+
+    if num_dim > 1:
+
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, *args):
+            for i in numba.pndindex(sz):
+                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
+                A[i] = njfiller(*fargs)
+
+        return do_fill
+    else:
+
+        global smap_func
+        fname = f"smap_fill{smap_func}"
+        smap_func += 1 
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(A, sz, {arg_names}):\n"
+        fill_txt += "    for i in numba.prange(sz[0]):\n"
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt += "        A[i] = njfiller(" + ",".join(arg_list) + ")\n" 
+        dprint(2, "fill_txt:")
+        dprint(2, fill_txt)
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        exec(fill_txt, gdict, ldict)
+        #return ldict[fname]
+        return FunctionMetadata(ldict[fname], [], {})
+
+        """
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, *args):
+            for i in numba.prange(sz[0]):
+                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
+                A[i] = njfiller(*fargs)
+
+        return do_fill
+        """
+
+
+#@functools.lru_cache()
+def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
+    filler = filler.func
+    dprint(2, "get_smap_fill_index", filler, num_dim, ramba_array_args)
+    #njfiller = filler
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
+
+    global smap_func
+
+    if num_dim > 1:
+
+        fname = f"smap_fill_index{smap_func}"
+        smap_func += 1 
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
+        fill_txt += "    for i in numba.pndindex(sz):\n"
+        fill_txt += "        si = ("
+        for nd in range(num_dim):
+            fill_txt += f"i[{nd}] + starts[{nd}]"
+            if nd < num_dim - 1:
+                fill_txt += ","
+        fill_txt += ")\n" 
+        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n" 
+        dprint(2, "fill_txt:", num_dim)
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
+
+        """
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, *args):
+            for i in numba.pndindex(sz):
+                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
+                A[i] = njfiller(*fargs)
+
+        return do_fill
+        """
+    else:
+
+        fname = f"smap_fill_index{smap_func}"
+        smap_func += 1 
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
+        fill_txt += "    for i in numba.prange(sz[0]):\n"
+        fill_txt += "        si = i + starts[0]\n" 
+        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n" 
+        dprint(2, "fill_txt:")
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
+
+        """
+        @numba.njit  # (parallel=True) # using parallel causes compile to fail
+        def do_fill(A, sz, *args):
+            for i in numba.prange(sz[0]):
+                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
+                A[i] = njfiller(*fargs)
+
+        return do_fill
+        """
+
+"""
 @functools.lru_cache()
 def get_smap_index(filler: FillerFunc, num_dim):
     filler = filler.func
@@ -1354,6 +1489,74 @@ def get_smap_index(filler: FillerFunc, num_dim):
                 A[i] = njfiller((i + starts[0],), *fargs)
 
         return do_fill
+"""
+
+
+#@functools.lru_cache()
+def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args):
+    filler = filler.func
+    reducer = reducer.func
+    dprint(2, "get_sreduce_fill_index", filler, reducer, num_dim, ramba_array_args)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.njit(filler)
+    )
+    njreducer = (
+        reducer 
+        if isinstance(reducer, numba.core.registry.CPUDispatcher)
+        else numba.njit(reducer)
+    )
+
+    global smap_func
+
+    if num_dim > 1:
+        fname = f"sreduce_fill_index{smap_func}"
+        smap_func += 1 
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+        fill_txt +=  "    result = identity\n" 
+        fill_txt +=  "    for i in numba.pndindex(sz):\n"
+        fill_txt +=  "        si = ("
+        for nd in range(num_dim):
+            fill_txt += f"i[{nd}] + starts[{nd}]"
+            if nd < num_dim - 1:
+                fill_txt += ","
+        fill_txt +=  ")\n" 
+        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n" 
+        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n" 
+        fill_txt +=  "    return result\n"
+        dprint(2, "fill_txt:", num_dim)
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        gdict["njreducer"] = njreducer
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
+    else:
+        fname = f"sreduce_fill_index{smap_func}"
+        smap_func += 1 
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+        fill_txt +=  "    result = identity\n" 
+        fill_txt +=  "    for i in numba.prange(sz[0]):\n"
+        fill_txt +=  "        si = i + starts[0]\n" 
+        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n" 
+        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n" 
+        fill_txt +=  "    return result\n"
+        dprint(2, "fill_txt:")
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        gdict["njreducer"] = njreducer
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
 
 
 def rec_buf_summary(rec_buf):
@@ -1402,6 +1605,12 @@ def get_aggregators(comm_queues):
         aggregators = [x[0] for _, x in w.items()]
         return aggregators
     return []
+
+
+def unpickle_args(args):
+    for idx, value in enumerate(args):
+        if isinstance(value, bytes):
+            args[idx] = func_loads(value)
 
 
 class RemoteState:
@@ -1543,7 +1752,7 @@ class RemoteState:
                             do_fill = get_do_fill_non_tuple(FillerFunc(filler), num_dim)
 
                         do_fill(new_bcontainer, dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         if ndebug >= 2:
                             traceback.print_exc()
@@ -1559,7 +1768,7 @@ class RemoteState:
                             else FunctionMetadata(filler, (), {})
                         )
                         filler_res = njfiller(dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         traceback.print_exc()
                         filler_res = filler(dim_lens, starts)
@@ -1578,7 +1787,7 @@ class RemoteState:
                             else FunctionMetadata(filler, (), {})
                         )
                         njfiller(new_bcontainer, dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         traceback.print_exc()
                         filler(new_bcontainer, dim_lens, starts)
@@ -1718,14 +1927,23 @@ class RemoteState:
         lnd = first.init_like(out_gid)
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
+        unpickle_args(args)
         # uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
         # bcontainers = [self.numpy_map[x][0] for x in uuids]
-        for index in np.ndindex(first.dim_lens):
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            new_bcontainer[index] = func(*fargs)
+
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), ramba_array_args)
+            #fargs = tuple([self.numpy_map[x].get_view() if isinstance(x, uuid.UUID) else x for x in args])
+            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            do_fill(new_bcontainer, first.dim_lens, *fargs)
+        else:
+            for index in np.ndindex(first.dim_lens):
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                new_bcontainer[index] = func(*fargs)
 
     # TODO: should use get_view
     def smap_index(self, out_gid, first_gid, args, func):
@@ -1734,27 +1952,35 @@ class RemoteState:
         self.numpy_map[out_gid] = first.init_like(out_gid)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         starts = tuple(shardview.get_start(first.subspace))
+        unpickle_args(args)
 
         #        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
         #        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
         #        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
         #        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
-        for index in np.ndindex(first.dim_lens):
-            index_arg = tuple(map(operator.add, index, starts))
-            # index_arg = tuple(shardview.base_to_index(first.subspace,index))
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            new_bcontainer[index] = func(index_arg, *fargs)
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), ramba_array_args)
+            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
+        else:
+            for index in np.ndindex(first.dim_lens):
+                index_arg = tuple(map(operator.add, index, starts))
+                # index_arg = tuple(shardview.base_to_index(first.subspace,index))
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                new_bcontainer[index] = func(index_arg, *fargs)
 
     # TODO: should use get_view
-    def sreduce(self, first_gid, args, func, reducer):
+    def sreduce(self, first_gid, args, func, reducer, identity):
         func = func_loads(func)
         reducer = func_loads(reducer)
         first = self.numpy_map[first_gid]
         result = None
-        assert len(args) == 1
+        unpickle_args(args)
+        #assert len(args) == 1
         for index in np.ndindex(first.dim_lens):
             fargs = [
                 self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
@@ -1763,8 +1989,41 @@ class RemoteState:
             if result is None:
                 result = func(*fargs)
             else:
-                result = reducer(result, func(*fargs))
+                result = reducer(result, func(*fargs), *fargs)
         return result
+
+    def sreduce_index(self, first_gid, args, func, reducer, identity):
+        func = func_loads(func)
+        reducer = func_loads(reducer)
+        first = self.numpy_map[first_gid]
+        result = None
+        starts = tuple(shardview.get_start(first.subspace))
+        unpickle_args(args)
+        #assert len(args) == 1
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), ramba_array_args)
+            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            for farg in fargs:
+                print("farg:", farg, type(farg))
+                if isinstance(farg, np.ndarray):
+                    print("shape:", farg.shape)
+            res = do_fill(first.dim_lens, starts, identity, *fargs)
+            print("worker do_fill res:", res, res[0].shape, res[1].shape)
+            return res
+        else:
+            for index in np.ndindex(first.dim_lens):
+                # Make the global index.
+                index_arg = tuple(map(operator.add, index, starts))
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                if result is None:
+                    result = func(index_arg, *fargs)
+                else:
+                    result = reducer(result, func(index_arg, *fargs), *fargs)
+            return result
 
     def reshape(
         self,
@@ -1958,7 +2217,7 @@ class RemoteState:
                         ret.append((in_block_intersection, incoming_data))
                         end_time = timer()
                         recv_stats.append((end_time - start_time, incoming_data.size))
-                    except:
+                    except Exception:
                         print("some exception!", sys.exc_info()[0])
                         assert 0
             # print ("ret: ", ret)
@@ -2090,7 +2349,7 @@ class RemoteState:
                                 incoming_uuid, incoming_partial = self.comm_queues[
                                     self.worker_num
                                 ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
-                            except:
+                            except Exception:
                                 print("some exception!", sys.exc_info()[0])
                                 assert 0
                             partial_numpy += incoming_partial
@@ -2315,7 +2574,7 @@ class RemoteState:
                                 bstartcol - cstartcol : bendcol - cstartcol,
                             ]
                             # d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
-                    except:
+                    except Exception:
                         print("subfail", cremote, sys.exc_info()[0])
 
                     try:
@@ -2355,7 +2614,7 @@ class RemoteState:
                             d += ashifted @ bshifted
                             # d += np.dot(ashifted, bshifted)
                     #                            print("general dot:", ashifted.shape, bshifted.shape)
-                    except:
+                    except Exception:
                         print(self.worker_num, sys.exc_info()[0])
                         print(
                             "shifted shapes exception:",
@@ -2465,7 +2724,7 @@ class RemoteState:
                     else:
                         received_b.append((in_block_intersection, incoming_data))
                         await push_ready_pairs(received_a, received_b, ready, False)
-                except:
+                except Exception:
                     print("some exception!", sys.exc_info()[0])
                     assert(0)
 
@@ -2507,7 +2766,7 @@ class RemoteState:
             if kend > kstart:
                 try:
                     d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
-                except:
+                except Exception:
                     print("subfail", sys.exc_info()[0])
 
                 try:
@@ -2521,7 +2780,7 @@ class RemoteState:
                         ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
                         bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal,:]
                         d += np.dot(ashifted, bshifted)
-                except:
+                except Exception:
                     print(self.worker_num, sys.exc_info()[0])
                     print("shifted shapes exception:", adataarray.shape, bdataarray.shape, ashifted.shape, bshifted.shape, "kstart", kstart, "kend", kend, "ktotal", ktotal, adata[0][0,1], bdata[0][0,0], adata[0][0,1]-kstart, bdata[0][0,0]-kstart)
                     print("cross-ranges:", self.worker_num, clocal.whole, adata, bdata, "astartrow", astartrow, aendrow, "bstartcol", bstartcol, bendcol, "kstart", kstart, kend, "cstart", cstartrow, cstartcol, "indices", astartrow-cstartrow, aendrow-cstartrow, bstartcol-cstartcol, bendcol-bstartcol)
@@ -2678,7 +2937,7 @@ class RemoteState:
                 )
                 in_send_recv_uuid, incoming_data, map_out_combined, region = get_result
                 # incoming_data, map_out_combined, region = self.comm_queues[self.worker_num].get(timeout = 5)
-            except:
+            except Exception:
                 print("some exception!", sys.exc_info()[0])
                 print("get_result:", get_result)
                 assert 0
@@ -2784,7 +3043,7 @@ class RemoteState:
             dprint(3, "Before local spmd fmfunc call")
             fmfunc(*fargs)
             dprint(3, "After local spmd fmfunc call")
-        except:
+        except Exception:
             print("some exception in remote spmd")
             traceback.print_exc()
             pass
@@ -2953,7 +3212,7 @@ class RemoteState:
         #    try:
         #        _, v, part, sl = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==uuid, timeout=5)
         #        arr_parts[v].append( (part, sl) )
-        #    except:
+        #    except Exception:
         #        print("some exception", sys.exc_info()[0])
         #        assert(0)
         msgs = []
@@ -3148,7 +3407,7 @@ class RemoteState:
             try:
                 op = getattr(self, method)
                 retval = op(*args, **kwargs)
-            except:
+            except Exception:
                 traceback.print_exc()
                 rvq.put(("ERROR", self.worker_num, traceback.format_exc()))
                 break
@@ -3740,7 +3999,7 @@ class ndarray:
             else:
                 try:
                     rhs_dtype = np.dtype(rhs)
-                except:
+                except Exception:
                     rhs_dtype = None
             if dtype is None:
                 dtype = np.result_type(self.dtype, rhs_dtype)
@@ -3906,7 +4165,18 @@ class ndarray:
                 dtype=self.dtype,
             )
 
-        print("Don't know how to get index", index, " of dist array of size", self.size)
+        if (isinstance(index, tuple) and
+            all([isinstance(i, np.ndarray) for i in index]) and
+            all([i.ndim == self.ndim for i in index])):
+            # Advanced indexing always creates a copy.
+            if len(index) == 1 and self.ndim == 1:
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of size", self.size)
+                assert 0
+            else: 
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of size", self.size)
+                assert 0
+
+        print("Don't know how to get index", index, type(index), " of dist array of size", self.size)
         assert 0  # Handle other types
 
     def get_remote_ranges(self, required_division):
@@ -3997,6 +4267,9 @@ class ndarray:
             return sreduce(lambda x: x, ufunc, *inputs)
         else:
             return NotImplemented
+
+    def groupby(self, dim, value_to_group, num_groups=None):
+        return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 
 # We only have to put functions here where the ufunc name is different from the
@@ -5306,6 +5579,8 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
         return create_array((), filler=x, dtype=dtype, **kwargs)
     if isinstance(x, np.ndarray) and x.shape == ():  # 0d array
         return create_array((), filler=x, dtype=dtype, **kwargs)
+    if isinstance(x, list):
+        x = np.array(x)
 
     size = x.shape
     if dtype is None:
@@ -5785,27 +6060,45 @@ def smap_index(func, *args, dtype=None):
     return smap_internal(func, "smap_index", *args, dtype=dtype)
 
 
-def sreduce(func, reducer, *args):
+class SreduceReducer:
+    def __init__(self, worker_func, driver_func):
+        self.worker_func = worker_func
+        self.driver_func = driver_func
+
+
+def sreduce_internal(func, reducer, identity, attr, *args):
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
     size = partitioned[0].size
     for arg in partitioned:
         assert arg.size == size
+    if not isinstance(reducer, SreduceReducer):
+        reducer = SreduceReducer(reducer, reducer)
 
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
     worker_results = remote_call_all(
-        "sreduce",
+        attr,
         partitioned[0].gid,
         args_to_remote,
         func_dumps(func),
-        func_dumps(reducer),
+        func_dumps(reducer.worker_func),
+        identity
     )
     final_result = worker_results[0]
+    print("final-result:", final_result, final_result[0].shape, final_result[1].shape)
     for result in worker_results[1:]:
-        final_result = reducer(final_result, result)
+        final_result = reducer.driver_func(final_result, result, *args)
     return final_result
+
+
+def sreduce(func, reducer, identity, *args):
+    return sreduce_internal(func, reducer, identity, "sreduce", *args)
+
+
+def sreduce_index(func, reducer, identity, *args):
+    return sreduce_internal(func, reducer, identity, "sreduce_index", *args)
 
 
 def sstencil(func, *args, **kwargs):
@@ -5818,7 +6111,7 @@ def sstencil(func, *args, **kwargs):
         slocal = func.compile_local()
         try:
             slocal(*fake_args)
-        except:
+        except Exception:
             pass
         func.neighborhood = slocal.neighborhood
     neighborhood = func.neighborhood
@@ -5914,3 +6207,85 @@ def spmd(func, *args):
     dprint(2, "Before exec_all spmd")
     remote_exec_all("spmd", func_dumps(func), args_to_remote)
     dprint(2, "After exec_all spmd")
+
+
+#-------------------------------------------------------------------------------
+
+
+class RambaGroupby:
+    def __init__(self, array_to_group, dim, group_array, num_groups=None):
+        self.array_to_group = array_to_group
+        self.dim = dim
+        self.group_array = group_array
+        self.num_groups = num_groups
+        # performance warning that ndarray partitioned only on groupby dimension.
+        if isinstance(self.group_array, ndarray):
+            self.np_group = asarray(self.group_array)
+        else:
+            self.np_group = self.group_array
+        assert(isinstance(self.np_group, np.ndarray))
+
+    def mean(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        print("sumout and countout size:", drop_groupdim)
+        sumout = np.zeros(drop_groupdim, dtype=self.array_to_group.dtype)
+        countout = np.zeros(drop_groupdim, dtype=int)
+
+        mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
+        mean_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        mean_func_txt +=  "    sumout[groupid] += value\n"
+        mean_func_txt +=  "    countout[groupid] += 1\n"
+        mean_func_txt +=  "    return (sumout, countout)\n"
+        ldict = {}
+        gdict = globals()
+        print("mean_func_txt:")
+        print(mean_func_txt)
+        exec(mean_func_txt, gdict, ldict)
+
+        def mean_func(idx, value, group_array, sumout, countout, dim):
+            groupid = (group_array[idx[dim]],) + idx[:dim] + idx[dim+1:]
+            sumout[groupid] += value
+            countout[groupid] += 1
+            return (sumout, countout)
+
+        def mean_reducer_driver(result, fres, value, groupid, sumout, countout):
+            print("mean_reducer_driver:", result[0].shape, fres[0].shape, result[1].shape, fres[1].shape)
+            return (result[0] + fres[0], result[1] + fres[1])
+
+        def mean_reducer_worker(result, fres, value, groupid, sumout, countout):
+            return result
+
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), (sumout, countout), self.array_to_group, self.np_group, sumout, countout)
+        print("res[0]:", res[0].shape)
+        print("res[1]:", res[1].shape)
+        return res[0] / res[1]
+
+
+def groupby_attr(item, itxt, imports, dtype):
+    func_txt =  f"def gba{item}(self, rhs):\n"
+    #func_txt += f"    def group{item}(idx, value, rhs, groupid, dim):\n"
+    #func_txt +=  "        drop_groupdim = (groupid[idx[dim]],) + idx[:dim] + idx[dim+1:]\n"
+    #func_txt += f"        return value{itxt}rhs[drop_groupdim]\n"
+    func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
+    func_txt +=  "    gtext += \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
+    func_txt += f"    gtext += \"    return value{itxt}rhs[drop_groupdim]\\n\"\n"
+    func_txt +=  "    ldict = {}\n"
+    func_txt +=  "    gdict = globals()\n"
+    func_txt +=  "    print(\"running gtext\", gtext)\n"
+    func_txt +=  "    exec(gtext, gdict, ldict)\n"
+    func_txt += f"    return smap_index(ldict[\"group{item}\"], self.array_to_group, rhs, self.np_group, self.dim)\n"
+    #func_txt += f"    return smap_index(group{item}, self.array_to_group, rhs, self.np_group, self.dim)\n"
+    #print("groupby_attr:", func_txt)
+    ldict = {}
+    gdict = globals()
+    exec(func_txt, gdict, ldict)
+    return ldict[f"gba{item}"]
+
+
+# Add array binop style support to groupby's.
+for (abf, code) in array_binop_funcs.items():
+    new_func = groupby_attr(abf, code.code, imports=code.imports, dtype=code.dtype)
+    setattr(RambaGroupby, abf, new_func)
