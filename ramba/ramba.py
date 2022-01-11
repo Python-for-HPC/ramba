@@ -815,7 +815,6 @@ def distindex_internal(dist, dim, accum):
 def distindex(dist):
     yield from distindex_internal(dist, 0, [])
 
-
 # class that represents the base distributed array (set of bcontainers on remotes)
 # this has a unique GID, and a distribution to specify the actual partition
 # multiple ndarrays (arrays and slices) can refer to the same bdarray
@@ -841,6 +840,15 @@ class bdarray:
         dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set))
         if self.remote_constructed:  # check remote constructed flag
             deferred_op.del_remote_array(self.gid)
+
+    @staticmethod
+    def atexit():
+        def alternate_del(self):
+            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set))
+
+        dprint(2,"at exit -- disabling del handing")
+        bdarray.__del__ = alternate_del
+
 
     def add_nd(self, nd):
         self.nd_set.add(nd)
@@ -894,6 +902,8 @@ class bdarray:
     def valid_gid(cls, gid):
         return gid in cls.gid_map
 
+
+atexit.register(bdarray.atexit)
 
 # Hmm -- does not seem to be used
 def make_padded_shard(core, boundary):
