@@ -26,7 +26,14 @@ t1 = time.time()
 print (t1-t0)
 ~~~
 
-Here is the ramba version of this code:
+Let us try running this code on a dual-socket server with 36 cores/72 threads and 128GB of DRAM:
+~~~
+% python test-numpy.py
+47.55583119392395
+~~~
+This takes over 47 seconds, but if we monitor resource usage, we will see that only a single core is used.  All others remains idle.  
+
+We can very easily modify the code to use Ramba instead of Numpy:
 ~~~python
 # test-ramba.py
 import ramba as np  # Use ramba in place of numpy
@@ -42,30 +49,47 @@ np.sync()           # Ensure any remote work is complete to get accurate times
 t1 = time.time()
 print (t1-t0)
 ~~~
-Note that the only changes are the iport line, and the addition of the `np.sync()`.  This is only needed to wait for 
+Note that the only changes are the import line, and the addition of the `np.sync()`.  The latter is only needed to wait for 
 all remote work to complete, so we can get an accurate measure of execution time.
 
-Let us try running this code on a dual-socket server with 36 cores/72 threads and 128GB of DRAM.  First the numpy version:
-~~~
-% python test-numpy.py
-47.55583119392395
-~~~
-This takes over 47 seconds, but if we monitor resource usage, we will see that only a single core is used.  All others remains idle.  
-
-Now let us try the ramba version:
+Now let us try running the ramba version:
 ~~~
 % python test-ramba.py
-13.224438905715942
-~~~
-Much faster!  However, by default, ramba uses 4 processes with 1 thread each.  We have a lot more cores available.  Let us try again, 
-with 18 threads per process (i.e., use all 72 hyperthreads):
-~~~
-% RAMBA_NUM_THREADS=18 python test-ramba.py
 3.860828161239624
 ~~~
-This saturates all of the cores, and results in about 12x speedup over the original numpy version. (Why only 12x?  This is because the code is likely 
-memory-bandwidth bound at this point, so additional parallel cores will just end up waiting on memory).  This gain is achieved with no significant 
-change to the code.
+The Ramba version saturates all of the cores, and results in about 12x speedup over the original numpy version. (Why only 12x?  Three factors 
+contribute to this: 1) this total includes some of the intiialization time; 2) Time for JIT compile (~1 second here); 3) This code is 
+memory-bandwidth bound, so after a point, additional cores will just end up waiting on memory).  Importantly, this performance gain 
+is achieved with no significant change to the code.
+
+
+# Quick Start
+
+Quick install with Conda / Miniconda and git:
+~~~
+conda create --name ramba -y
+conda activate ramba
+conda install "python<3.9" numba cloudpickle pyzmq -y
+pip install -U ray
+git clone https://github.com/Python-for-HPC/ramba
+cd ramba
+python setup.py install 
+~~~
+
+Now run the provided sample file:
+~~~
+python sample/test-ramba.py
+~~~
+
+The first time you use Ramba, it will compile some internal functions, so the first run may be slow.  Let's run it again to see typical run times:
+~~~
+python sample/test-ramba.py
+~~~
+
+Finally, let's compare to the numpy version:
+~~~
+python sampe/test-numpy.py
+~~~
 
 
 # Installation
@@ -74,6 +98,7 @@ We suggest using conda to setup an environment for running ramba.
 Ramba was developed and tested on Linux, usng both Ray and MPI backends.  Ramba may work on Windows using MPI, though this has not been extensively tested.  ZeroMQ is needed for the communication layer.  
 Ramba uses pickle version 5 for serializtion of objects.  This should already be available if running Python 3.8 or higher.  If not, please install the pickle5 package.  In addition, cloudpickle is also needed to serialize functions (as this is not possible through the normal pickle package).  
 Finally, ramba uses numba for JIT compilation.  
+Note: Ray requires Python <3.9 (Update: Python 3.9 is now supported experimentally by Ray)
 
 Thus the requirements are:
 - mpi4py and/or ray
@@ -81,6 +106,10 @@ Thus the requirements are:
 - cloudpickle
 - pickle5 (if using python < 3.8)
 - numba
+
+Optional packages:
+- h5py
+- PIL
 
 ## Installation process
 - Download / clone this repository
