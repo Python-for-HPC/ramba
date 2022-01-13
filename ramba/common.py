@@ -98,16 +98,10 @@ def dprint(level, *args):
 
 if not USE_MPI:
     num_workers = int(os.environ.get("RAMBA_WORKERS", "4"))  # number of machines
-num_threads = int(
-    os.environ.get("RAMBA_NUM_THREADS", "1")
-)  # number of threads per worker
-hint_ip = os.environ.get(
-    "RAMBA_IP_HINT", None
-)  # IP address used to hint which interface to bind queues
-if not USE_MPI:
-    numa_zones = os.environ.get(
-        "RAMBA_NUMA_ZONES", None
-    )  # override detected numa zones
+    numa_zones = os.environ.get("RAMBA_NUMA_ZONES", None)  # override detected numa zones
+
+num_threads = int(os.environ.get("RAMBA_NUM_THREADS", "1"))  # number of threads per worker
+hint_ip = os.environ.get("RAMBA_IP_HINT", None)  # IP address used to hint which interface to bind queues
 
 if default_bcast is None:
     default_bcast = "1" if num_workers > NUM_WORKERS_FOR_BCAST else "0"
