@@ -184,7 +184,8 @@ class FunctionMetadata:
         args_for_numba = []
         for arg in args:
             if inspect.isfunction(arg):
-                args_for_numba.append(numba.njit(arg))
+                args_for_numba.append(numba.extending.register_jitable(arg))
+                #args_for_numba.append(numba.njit(arg))
             else:
                 args_for_numba.append(arg)
 
@@ -1277,7 +1278,8 @@ def get_do_fill(filler: FillerFunc, num_dim):
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     if num_dim > 1:
@@ -1308,7 +1310,8 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     if num_dim > 1:
@@ -1333,7 +1336,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 
 smap_func = 0
 
-#@functools.lru_cache()
+@functools.lru_cache()
 def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
     filler = filler.func
     dprint(2, "get_smap_fill", filler, num_dim, ramba_array_args)
@@ -1341,7 +1344,8 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     if num_dim > 1:
@@ -1383,7 +1387,7 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
         """
 
 
-#@functools.lru_cache()
+@functools.lru_cache()
 def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
     filler = filler.func
     dprint(2, "get_smap_fill_index", filler, num_dim, ramba_array_args)
@@ -1391,7 +1395,8 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     global smap_func
@@ -1494,7 +1499,70 @@ def get_smap_index(filler: FillerFunc, num_dim):
 """
 
 
-#@functools.lru_cache()
+@functools.lru_cache()
+def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args):
+    filler = filler.func
+    reducer = reducer.func
+    dprint(2, "get_sreduce_fill", filler, reducer, num_dim, ramba_array_args)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
+    )
+    njreducer = (
+        reducer
+        if isinstance(reducer, numba.core.registry.CPUDispatcher)
+        else numba.extending.register_jitable(reducer)
+        #else numba.njit(reducer)
+    )
+
+    global smap_func
+
+    if num_dim > 1:
+        fname = f"sreduce_fill{smap_func}"
+        smap_func += 1
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+        fill_txt +=  "    result = identity\n"
+        fill_txt +=  "    for i in numba.pndindex(sz):\n"
+        fill_txt +=  ")\n"
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "    return result\n"
+        dprint(2, "fill_txt:", num_dim)
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        gdict["njreducer"] = njreducer
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
+    else:
+        fname = f"sreduce_fill{smap_func}"
+        smap_func += 1
+        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+        fill_txt +=  "    result = identity\n"
+        fill_txt +=  "    for i in numba.prange(sz[0]):\n"
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "    return result\n"
+        dprint(2, "fill_txt:")
+        dprint(2, fill_txt)
+        sys.stdout.flush()
+        ldict = {}
+        gdict = globals()
+        gdict["njfiller"] = njfiller
+        gdict["njreducer"] = njreducer
+        exec(fill_txt, gdict, ldict)
+        return FunctionMetadata(ldict[fname], [], {})
+
+
+@functools.lru_cache()
 def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args):
     filler = filler.func
     reducer = reducer.func
@@ -1502,12 +1570,14 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
     njreducer = (
         reducer
         if isinstance(reducer, numba.core.registry.CPUDispatcher)
-        else numba.njit(reducer)
+        else numba.extending.register_jitable(reducer)
+        #else numba.njit(reducer)
     )
 
     global smap_func
@@ -1525,7 +1595,7 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
             if nd < num_dim - 1:
                 fill_txt += ","
         fill_txt +=  ")\n"
-        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
@@ -1546,7 +1616,7 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
         fill_txt +=  "    result = identity\n"
         fill_txt +=  "    for i in numba.prange(sz[0]):\n"
         fill_txt +=  "        si = i + starts[0]\n"
-        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
@@ -1576,7 +1646,7 @@ def rec_buf_summary(rec_buf):
             depth -= 1
             if depth == 0:
                 total += rec[0] - start
-                # print("rec_buf_summary ending", rec[0], rec[0] - start, total)
+                #print("rec_buf_summary ending", rec, rec[0], rec[0] - start, total, rec[1].data["dispatcher"])
 
     return (num_compiled, total)
 
@@ -1935,7 +2005,7 @@ class RemoteState:
 
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), ramba_array_args)
+            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args))
             #fargs = tuple([self.numpy_map[x].get_view() if isinstance(x, uuid.UUID) else x for x in args])
             fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
             do_fill(new_bcontainer, first.dim_lens, *fargs)
@@ -1962,7 +2032,7 @@ class RemoteState:
         #        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), ramba_array_args)
+            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args))
             fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
             do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         else:
@@ -1976,23 +2046,84 @@ class RemoteState:
                 new_bcontainer[index] = func(index_arg, *fargs)
 
     # TODO: should use get_view
-    def sreduce(self, first_gid, args, func, reducer, identity):
+    def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv):
         func = func_loads(func)
         reducer = func_loads(reducer)
+        reducer = func_loads(reducer_driver)
         first = self.numpy_map[first_gid]
         result = None
         unpickle_args(args)
         #assert len(args) == 1
-        for index in np.ndindex(first.dim_lens):
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            if result is None:
-                result = func(*fargs)
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args))
+            def fix_args(x):
+                if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x].bcontainer
+                elif callable(x):
+                    res = x()
+                    return res
+                else:
+                    return x
+            fargs = tuple([fix_args(x) for x in args])
+            """
+            for farg in fargs:
+                print("farg:", farg, type(farg))
+                if isinstance(farg, np.ndarray):
+                    print("shape:", farg.shape)
+            """
+            res = do_fill(first.dim_lens, starts, identity, *fargs)
+            #print("worker do_fill res:", res, res[0].shape, res[1].shape)
+            #return res
+            after_map_time = timer()
+
+            # Distributed and Parallel Reduction
+            max_worker = num_workers
+            while max_worker > 1:
+                # midpoint is the index of the first worker that needs to send
+                midpoint = (max_worker + 1) // 2
+                # this worker will send
+                if self.worker_num >= midpoint:
+                    send_to = self.worker_num - midpoint
+                    self.comm_queues[send_to].put((a_send_recv, res))
+                    break
+                else:
+                    # If the remaining workers is odd and this worker is the last one then it won't receive
+                    # any communication or needs to do any compute but just goes to the next iteration where
+                    # it will send.
+                    if not (
+                        max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                    ):
+                        try:
+                            incoming_uuid, incoming_res = self.comm_queues[
+                                    self.worker_num
+                            ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
+                        except Exception:
+                            print("some exception!", sys.exc_info()[0])
+                            assert 0
+                        res = reducer_driver(res, incoming_res, None, None, None, None)
+
+                max_worker = midpoint
+
+            after_reduce_time = timer()
+            tprint(2, "sreduce_index map time:", self.worker_num, after_map_time - start_time)
+            tprint(2, "sreduce_index distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+
+            if self.worker_num == 0:
+                return res
             else:
-                result = reducer(result, func(*fargs), *fargs)
-        return result
+                return None
+        else:
+            for index in np.ndindex(first.dim_lens):
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                if result is None:
+                    result = func(*fargs)
+                else:
+                    result = reducer(result, func(*fargs), *fargs)
+            return result
 
     def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv):
         start_time = timer()
@@ -2003,11 +2134,21 @@ class RemoteState:
         result = None
         starts = tuple(shardview.get_start(first.subspace))
         unpickle_args(args)
+        if callable(identity):
+            identity = identity()
         #assert len(args) == 1
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), ramba_array_args)
-            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args))
+            def fix_args(x):
+                if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x].bcontainer
+                elif callable(x):
+                    res = x()
+                    return res
+                else:
+                    return x
+            fargs = tuple([fix_args(x) for x in args])
             """
             for farg in fargs:
                 print("farg:", farg, type(farg))
@@ -6279,6 +6420,28 @@ def spmd(func, *args):
 
 #-------------------------------------------------------------------------------
 
+class mean_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
+
+class mean_sum:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+
+class mean_count:
+    def __init__(self, drop_groupdim):
+        self.drop_groupdim = drop_groupdim
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=int)
 
 class RambaGroupby:
     def __init__(self, array_to_group, dim, group_array, num_groups=None):
@@ -6301,8 +6464,8 @@ class RambaGroupby:
         orig_dims = self.array_to_group.shape
         drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
         #print("sumout and countout size:", drop_groupdim)
-        sumout = np.zeros(drop_groupdim, dtype=self.array_to_group.dtype)
-        countout = np.zeros(drop_groupdim, dtype=int)
+        #sumout = np.zeros(drop_groupdim, dtype=self.array_to_group.dtype)
+        #countout = np.zeros(drop_groupdim, dtype=int)
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
         mean_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
@@ -6326,9 +6489,10 @@ class RambaGroupby:
             return (result[0] + fres[0], result[1] + fres[1])
 
         def mean_reducer_worker(result, fres, value, groupid, sumout, countout):
-            return result
+            return fres
 
-        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), (sumout, countout), self.array_to_group, self.np_group, sumout, countout)
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
+        #res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), (sumout, countout), self.array_to_group, self.np_group, sumout, countout)
         #print("res[0]:", res[0].shape)
         #print("res[1]:", res[1].shape)
         tprint(2, "groupby mean time:", timer() - mean_start)
