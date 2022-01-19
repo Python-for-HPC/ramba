@@ -112,44 +112,7 @@ if not USE_MPI:
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
 
-    def ray_init():
-        if ray.is_initialized():
-            return False
-
-        ray_address = os.getenv("ray_address")
-        ray_redis_pass = os.getenv("ray_redis_password")
-        if ray_address == None:
-            ray_address = "auto"
-        if ray_redis_pass == None:
-            ray_redis_pass = ""
-        try:
-            ray.init(address=ray_address, _redis_password=ray_redis_pass)
-        except Exception:
-            print("Failed to connect to existing cluster; starting local Ray")
-            ray.init(_redis_password=str(uuid.uuid4()))
-        assert ray.is_initialized() == True
-        import time
-
-        time.sleep(1)
-        cores = ray.available_resources()["CPU"]
-        dprint(2, "Ray initialized;  available cores:", cores)
-        global num_workers
-        if cores < num_workers:
-            num_workers = int(cores)
-        return True
-
-    ray_first_init = ray_init()
-
-
-def in_driver():
-    if not USE_MPI:
-        return ray_first_init
-    else:
-        comm = mpi4py.MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        return rank == num_workers
-
-
+    
 class Filler:
     PER_ELEMENT = 0
     WHOLE_ARRAY_NEW = 1
@@ -863,7 +826,6 @@ def distindex_internal(dist, dim, accum):
 def distindex(dist):
     yield from distindex_internal(dist, 0, [])
 
-
 # class that represents the base distributed array (set of bcontainers on remotes)
 # this has a unique GID, and a distribution to specify the actual partition
 # multiple ndarrays (arrays and slices) can refer to the same bdarray
@@ -889,6 +851,15 @@ class bdarray:
         dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set))
         if self.remote_constructed:  # check remote constructed flag
             deferred_op.del_remote_array(self.gid)
+
+    @staticmethod
+    def atexit():
+        def alternate_del(self):
+            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set))
+
+        dprint(2,"at exit -- disabling del handing")
+        bdarray.__del__ = alternate_del
+
 
     def add_nd(self, nd):
         self.nd_set.add(nd)
@@ -942,6 +913,8 @@ class bdarray:
     def valid_gid(cls, gid):
         return gid in cls.gid_map
 
+
+atexit.register(bdarray.atexit)
 
 # Hmm -- does not seem to be used
 def make_padded_shard(core, boundary):
