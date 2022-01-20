@@ -1415,7 +1415,7 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
             if nd < num_dim - 1:
                 fill_txt += ","
         fill_txt += ")\n"
-        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n"
         dprint(2, "fill_txt:", num_dim)
         dprint(2, fill_txt)
@@ -1443,7 +1443,7 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
         fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
         fill_txt += "    for i in numba.prange(sz[0]):\n"
         fill_txt += "        si = i + starts[0]\n"
-        arg_list = [ f"arg{idx}[si]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n"
         dprint(2, "fill_txt:")
         dprint(2, fill_txt)
@@ -3861,6 +3861,25 @@ def find_index(distribution, index):
 HANDLED_FUNCTIONS = {}
 
 
+def unify_args(lhs, rhs, dtype):
+    if hasattr(rhs, "dtype"):
+        rhs_dtype = rhs.dtype
+    else:
+        try:
+            rhs_dtype = np.dtype(rhs)
+        except Exception:
+            rhs_dtype = None
+    if dtype is None:
+        dtype = np.result_type(lhs, rhs_dtype)
+    elif dtype == "float":
+        dtype = (
+            np.float32
+            if rhs_dtype == np.float32 and lhs == np.float32
+            else np.float64
+        )
+    return dtype
+
+
 class ndarray:
     def __init__(
         self,
@@ -4180,6 +4199,9 @@ class ndarray:
                 self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
             )
             new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
+
+            dtype = unify_args(self.dtype, rhs, dtype)
+            """
             if hasattr(rhs, "dtype"):
                 rhs_dtype = rhs.dtype
             else:
@@ -4195,6 +4217,7 @@ class ndarray:
                     if rhs_dtype == np.float32 and self.dtype == np.float32
                     else np.float64
                 )
+            """
 
             if isinstance(new_array_size, tuple):
                 if len(new_array_size) > 0:
@@ -6427,7 +6450,7 @@ class mean_identity:
         self.dtype = dtype
 
     def __call__(self, *args, **kwargs):
-        return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
+        return (np.zeros(self.drop_groupdim, dtype=np.float64), np.zeros(self.drop_groupdim, dtype=int))
 
 class mean_sum:
     def __init__(self, drop_groupdim, dtype):
@@ -6435,7 +6458,7 @@ class mean_sum:
         self.dtype = dtype
 
     def __call__(self, *args, **kwargs):
-        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+        return np.zeros(self.drop_groupdim, dtype=np.float64)
 
 class mean_count:
     def __init__(self, drop_groupdim):
@@ -6509,12 +6532,14 @@ def groupby_attr(item, itxt, imports, dtype):
         func_txt +=  "    start_time = timer()\n"
     func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
     func_txt +=  "    gtext += \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
+#    func_txt +=  "    gtext += \"    print('group:', idx, value, drop_groupdim, rhs[drop_groupdim], dim)\\n\"\n"
     func_txt += f"    gtext += \"    return value{itxt}rhs[drop_groupdim]\\n\"\n"
     func_txt +=  "    ldict = {}\n"
     func_txt +=  "    gdict = globals()\n"
 #    func_txt +=  "    print(\"running gtext\", gtext)\n"
     func_txt +=  "    exec(gtext, gdict, ldict)\n"
-    func_txt += f"    res = smap_index(ldict[\"group{item}\"], self.array_to_group, rhs, self.np_group, self.dim)\n"
+    func_txt +=  "    new_dtype = unify_args(self.array_to_group.dtype, rhs, None)\n"
+    func_txt += f"    res = smap_index(ldict[\"group{item}\"], self.array_to_group, rhs, self.np_group, self.dim, dtype=new_dtype)\n"
     if ntiming:
         func_txt +=  "    print(\"gba time:\", timer() - start_time)\n"
     func_txt +=  "    return res\n"
