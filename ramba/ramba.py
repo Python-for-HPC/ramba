@@ -963,7 +963,7 @@ class LocalNdarray:
             else:
                 self.bcontainer = gnp.empty(self.allocated_size, **gnpargs)
 
-    def init_like(self, gid):
+    def init_like(self, gid, dtype=None):
         return LocalNdarray(
             gid,
             self.remote,
@@ -974,7 +974,7 @@ class LocalNdarray:
             self.whole_space,
             self.from_border,
             self.to_border,
-            self.dtype,
+            self.dtype if dtype is None else dtype,
         )
 
     def getlocal(self, width=None):
@@ -2019,10 +2019,10 @@ class RemoteState:
                 new_bcontainer[index] = func(*fargs)
 
     # TODO: should use get_view
-    def smap_index(self, out_gid, first_gid, args, func):
+    def smap_index(self, out_gid, first_gid, args, func, dtype):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
-        self.numpy_map[out_gid] = first.init_like(out_gid)
+        self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         starts = tuple(shardview.get_start(first.subspace))
         unpickle_args(args)
@@ -6270,7 +6270,7 @@ def smap_internal(func, attr, *args, dtype=None):
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
-        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func)
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype
     )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
@@ -6520,6 +6520,9 @@ class RambaGroupby:
         #print("res[0]:", res[0].shape)
         #print("res[1]:", res[1].shape)
         tprint(2, "groupby mean time:", timer() - mean_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
         return res[0] / res[1]
 
 
