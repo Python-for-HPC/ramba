@@ -1530,7 +1530,8 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
         fill_txt +=  ")\n"
         arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres)\n"
+        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
         dprint(2, "fill_txt:", num_dim)
         dprint(2, fill_txt)
@@ -1550,7 +1551,8 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
         fill_txt +=  "    for i in numba.prange(sz[0]):\n"
         arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres)\n"
+        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
         dprint(2, "fill_txt:")
         dprint(2, fill_txt)
@@ -1598,7 +1600,8 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
         fill_txt +=  ")\n"
         arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres)\n"
+        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
         dprint(2, "fill_txt:", num_dim)
         dprint(2, fill_txt)
@@ -1619,7 +1622,8 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
         fill_txt +=  "        si = i + starts[0]\n"
         arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
         fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
+        fill_txt +=  "        result = njreducer(result, fres)\n"
+        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
         fill_txt +=  "    return result\n"
         dprint(2, "fill_txt:")
         dprint(2, fill_txt)
@@ -2102,7 +2106,7 @@ class RemoteState:
                         except Exception:
                             print("some exception!", sys.exc_info()[0])
                             assert 0
-                        res = reducer_driver(res, incoming_res, None, None, None, None)
+                        res = reducer_driver(res, incoming_res)
 
                 max_worker = midpoint
 
@@ -2123,7 +2127,7 @@ class RemoteState:
                 if result is None:
                     result = func(*fargs)
                 else:
-                    result = reducer(result, func(*fargs), *fargs)
+                    result = reducer(result, func(*fargs))
             return result
 
     def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv):
@@ -2185,7 +2189,7 @@ class RemoteState:
                         except Exception:
                             print("some exception!", sys.exc_info()[0])
                             assert 0
-                        res = reducer_driver(res, incoming_res, None, None, None, None)
+                        res = reducer_driver(res, incoming_res)
 
                 max_worker = midpoint
 
@@ -2208,7 +2212,7 @@ class RemoteState:
                 if result is None:
                     result = func(index_arg, *fargs)
                 else:
-                    result = reducer(result, func(index_arg, *fargs), *fargs)
+                    result = reducer(result, func(index_arg, *fargs))
             return result
 
     def reshape(
@@ -6450,7 +6454,8 @@ class mean_identity:
         self.dtype = dtype
 
     def __call__(self, *args, **kwargs):
-        return (np.zeros(self.drop_groupdim, dtype=np.float64), np.zeros(self.drop_groupdim, dtype=int))
+        return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
+        #return (np.zeros(self.drop_groupdim, dtype=np.float64), np.zeros(self.drop_groupdim, dtype=int))
 
 class mean_sum:
     def __init__(self, drop_groupdim, dtype):
@@ -6458,7 +6463,8 @@ class mean_sum:
         self.dtype = dtype
 
     def __call__(self, *args, **kwargs):
-        return np.zeros(self.drop_groupdim, dtype=np.float64)
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+        #return np.zeros(self.drop_groupdim, dtype=np.float64)
 
 class mean_count:
     def __init__(self, drop_groupdim):
@@ -6466,6 +6472,63 @@ class mean_count:
 
     def __call__(self, *args, **kwargs):
         return np.zeros(self.drop_groupdim, dtype=int)
+
+#-------------------------------------------------------------------------------
+
+class sum_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+
+class sum_sum:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+class count_identity:
+    def __init__(self, drop_groupdim):
+        self.drop_groupdim = drop_groupdim
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=int)
+
+class count_count:
+    def __init__(self, drop_groupdim):
+        self.drop_groupdim = drop_groupdim
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=int)
+
+#-------------------------------------------------------------------------------
+
+class prod_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.ones(self.drop_groupdim, dtype=self.dtype)
+
+class prod_prod:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.ones(self.drop_groupdim, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+# aggregations done: mean, sum, count, prod
+# aggregations to do: var, std, min, max, argmin, argmax, first, last, all, any
 
 class RambaGroupby:
     def __init__(self, array_to_group, dim, group_array, num_groups=None):
@@ -6487,9 +6550,6 @@ class RambaGroupby:
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
         drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
-        #print("sumout and countout size:", drop_groupdim)
-        #sumout = np.zeros(drop_groupdim, dtype=self.array_to_group.dtype)
-        #countout = np.zeros(drop_groupdim, dtype=int)
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
         mean_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
@@ -6498,32 +6558,106 @@ class RambaGroupby:
         mean_func_txt +=  "    return (sumout, countout)\n"
         ldict = {}
         gdict = globals()
-        #print("mean_func_txt:")
-        #print(mean_func_txt)
         exec(mean_func_txt, gdict, ldict)
 
-        def mean_func(idx, value, group_array, sumout, countout, dim):
-            groupid = (group_array[idx[dim]],) + idx[:dim] + idx[dim+1:]
-            sumout[groupid] += value
-            countout[groupid] += 1
-            return (sumout, countout)
-
-        def mean_reducer_driver(result, fres, value, groupid, sumout, countout):
+        def mean_reducer_driver(result, fres):
             #print("mean_reducer_driver:", result[0].shape, fres[0].shape, result[1].shape, fres[1].shape)
             return (result[0] + fres[0], result[1] + fres[1])
 
-        def mean_reducer_worker(result, fres, value, groupid, sumout, countout):
+        def mean_reducer_worker(result, fres):
             return fres
 
         res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
-        #res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), (sumout, countout), self.array_to_group, self.np_group, sumout, countout)
-        #print("res[0]:", res[0].shape)
-        #print("res[1]:", res[1].shape)
         tprint(2, "groupby mean time:", timer() - mean_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res[0])
         #    print("count last:", res[1])
         return res[0] / res[1]
+
+    def sum(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby sum.")
+        sum_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+
+        sum_func_txt  =  "def sum_func(idx, value, group_array, sumout):\n"
+        sum_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        sum_func_txt +=  "    sumout[groupid] += value\n"
+        sum_func_txt +=  "    return sumout\n"
+        ldict = {}
+        gdict = globals()
+        exec(sum_func_txt, gdict, ldict)
+
+        def sum_reducer_driver(result, fres):
+            return result + fres
+
+        def sum_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["sum_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_sum(drop_groupdim, self.array_to_group.dtype))
+        tprint(2, "groupby sum time:", timer() - sum_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res)
+        return res
+
+    def count(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby count.")
+        count_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+
+        count_func_txt  =  "def count_func(idx, value, group_array, countout):\n"
+        count_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        count_func_txt +=  "    countout[groupid] += 1\n"
+        count_func_txt +=  "    return countout\n"
+        ldict = {}
+        gdict = globals()
+        exec(count_func_txt, gdict, ldict)
+
+        def count_reducer_driver(result, fres):
+            return result + fres
+
+        def count_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_count(drop_groupdim))
+        tprint(2, "groupby count time:", timer() - count_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
+        return res
+
+    def prod(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby prod.")
+        prod_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+
+        prod_func_txt  =  "def prod_func(idx, value, group_array, prodout):\n"
+        prod_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        prod_func_txt +=  "    prodout[groupid] *= value\n"
+        prod_func_txt +=  "    return prodout\n"
+        ldict = {}
+        gdict = globals()
+        exec(prod_func_txt, gdict, ldict)
+
+        def prod_reducer_driver(result, fres):
+            return result * fres
+
+        def prod_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["prod_func"], SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_prod(drop_groupdim, self.array_to_group.dtype))
+        tprint(2, "groupby prod time:", timer() - prod_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("prod last:", res)
+        return res
 
 
 def groupby_attr(item, itxt, imports, dtype):
