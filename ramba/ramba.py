@@ -3426,6 +3426,7 @@ class ndarray:
         dtype=None,
         flex_dist=True,
         readonly=False,
+        maskarray=None,
         **kwargs
     ):
         t0 = timer()
@@ -3459,6 +3460,7 @@ class ndarray:
         #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
+        self.maskarray = maskarray
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "size", size, "time", (t1 - t0) * 1000)
 
@@ -3646,6 +3648,14 @@ class ndarray:
             )
             return new_ndarray
 
+    def broadcastable_to(self, size):
+        new_dims = len(size) - len(self.size)
+        sslice = size[-len(self.size) :]
+        z1 = zip(sslice, self.size)
+        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+            return False
+        return True
+
     def broadcast_to(self, size):
         dprint(4, "broadcast_to:", self.size, size)
         new_dims = len(size) - len(self.size)
@@ -3786,18 +3796,20 @@ class ndarray:
         dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
         if self.readonly:
             raise ValueError("assignment destination is read-only")
-        if not isinstance(key, tuple):
+        is_mask = False
+        if isinstance(key, ndarray) and key.dtype==np.bool and key.broadcastable_to(self.shape):
+            is_mask = True
+        elif not isinstance(key, tuple):
             key = (key,)
-        if all([isinstance(i, int) for i in key]) and len(key) == len(self.size):
-            print("Setting individual element is not handled yet!")
-            assert 0
 
-        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
+        if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
             view = self[key]
             if isinstance(value, (int, bool, float, complex)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
-            elif view.size == value.size:
+            elif value.broadcastable_to(view.size):
+                if (value.size!=view.size):
+                    value = value.broadcast_to(view.size)
                 # avoid adding code in case of inplace operations
                 if not (
                     view.gid == value.gid
@@ -3806,9 +3818,13 @@ class ndarray:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                # TODO:  Should try to broadcast value to view.size before giving up
+                # TODO:  Should try to broadcast value to view.size before giving up; Done?
                 print("Mismatched sizes", view.size, value.size)
                 assert 0
+
+        if all([isinstance(i, int) for i in key]) and len(key) == len(self.size):
+            print("Setting individual element is not handled yet!")
+            assert 0
 
         """
         if isinstance(key[0], slice):
@@ -3832,13 +3848,24 @@ class ndarray:
         assert 0
 
     def __getitem__(self, index):
-        indhash = pickle.dumps(index)
+        if isinstance(index, ndarray):
+            indhash = index
+        else:
+            indhash = pickle.dumps(index)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
 
     def __getitem__real(self, index):
         dprint(1, "ndarray::__getitem__:", index, type(index))
+
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.size):
+            if index.size != self.size:
+                index = index.broadcast_to(self.size)
+            return ndarray( self.size, gid=self.gid, distribution=self.distribution, local_border=0, 
+                    readonly=self.readonly, dtype=self.dtype, maskarray=index)
+
         if not isinstance(index, tuple):
             index = (index,)
 
@@ -5086,6 +5113,10 @@ class deferred_op:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
             dprint(2, "fixing distribution")
+        # Handle masked array write
+        if write_array.maskarray is not None:
+            oplist = [ "if ", write_array.maskarray, ": "+oplist[0] ] + oplist[1:]
+            operands = [ write_array.maskarray ] + operands
         # TODO: Need to check for aliasing
         # add vars
         for i, x in enumerate(operands):
