@@ -180,6 +180,7 @@ class FunctionMetadata:
             self.numba_args,
         )
         atypes = tuple([type(x) for x in args])
+        dprint(2, "types:", atypes)
         try_again = True
         count = 0
         args_for_numba = []
@@ -1349,50 +1350,34 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
         #else numba.njit(filler)
     )
 
+    global smap_func
+
+    fname = f"smap_fill{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(A, sz, {arg_names}):\n"
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+
     if num_dim > 1:
-
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, *args):
-            for i in numba.pndindex(sz):
-                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
-                A[i] = njfiller(*fargs)
-
-        return do_fill
+        fill_txt += "    for i in numba.pndindex(sz[0]):\n"
     else:
-
-        global smap_func
-        fname = f"smap_fill{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(A, sz, {arg_names}):\n"
         fill_txt += "    for i in numba.prange(sz[0]):\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt += "        A[i] = njfiller(" + ",".join(arg_list) + ")\n"
-        dprint(2, "fill_txt:")
-        dprint(2, fill_txt)
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        exec(fill_txt, gdict, ldict)
-        #return ldict[fname]
-        return FunctionMetadata(ldict[fname], [], {})
 
-        """
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, *args):
-            for i in numba.prange(sz[0]):
-                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
-                A[i] = njfiller(*fargs)
-
-        return do_fill
-        """
+    fill_txt += f"        A[i] = {fillername}(" + ",".join(arg_list) + ")\n"
+    dprint(2, "fill_txt:")
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
 
 
 @functools.lru_cache()
 def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
     filler = filler.func
-    dprint(2, "get_smap_fill_index", filler, num_dim, ramba_array_args)
-    #njfiller = filler
+    dprint(2, "get_smap_fill_index", filler, type(filler), num_dim, ramba_array_args)
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
@@ -1402,12 +1387,14 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
 
     global smap_func
 
+    fname = f"smap_fill_index{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
+
     if num_dim > 1:
 
-        fname = f"smap_fill_index{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
         fill_txt += "    for i in numba.pndindex(sz):\n"
         fill_txt += "        si = ("
         for nd in range(num_dim):
@@ -1415,89 +1402,21 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
             if nd < num_dim - 1:
                 fill_txt += ","
         fill_txt += ")\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n"
-        dprint(2, "fill_txt:", num_dim)
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
 
-        """
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, *args):
-            for i in numba.pndindex(sz):
-                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
-                A[i] = njfiller(*fargs)
-
-        return do_fill
-        """
     else:
 
-        fname = f"smap_fill_index{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
         fill_txt += "    for i in numba.prange(sz[0]):\n"
         fill_txt += "        si = i + starts[0]\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt += "        A[i] = njfiller(si, " + ",".join(arg_list) + ")\n"
-        dprint(2, "fill_txt:")
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
 
-        """
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, *args):
-            for i in numba.prange(sz[0]):
-                fargs = tuple([args[x][i] if ramba_array_args[x] else args[x] for x in range(len(args))])
-                A[i] = njfiller(*fargs)
-
-        return do_fill
-        """
-
-"""
-@functools.lru_cache()
-def get_smap_index(filler: FillerFunc, num_dim):
-    filler = filler.func
-    dprint(2, "get_smap_index", filler)
-    njfiller = (
-        filler
-        if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
-    )
-
-    if num_dim > 1:
-
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, starts, *args):
-            for i in numba.pndindex(sz):
-                arg = sz
-                # Construct the global index.
-                for j in range(len(starts)):
-                    arg = UT.tuple_setitem(arg, j, i[j] + starts[j])
-                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
-                A[i] = njfiller(arg, *fargs)
-
-        return do_fill
-    else:
-
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, starts, *args):
-            for i in numba.prange(sz[0]):
-                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
-                A[i] = njfiller((i + starts[0],), *fargs)
-
-        return do_fill
-"""
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+    fill_txt += f"        A[i] = {fillername}(si, " + ",".join(arg_list) + ")\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
 
 
 @functools.lru_cache()
@@ -1520,49 +1439,31 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
 
     global smap_func
 
+    fname = f"sreduce_fill{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    reducername = f"njreducer{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+    fill_txt +=  "    result = identity\n"
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+
     if num_dim > 1:
-        fname = f"sreduce_fill{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
-        fill_txt +=  "    result = identity\n"
         fill_txt +=  "    for i in numba.pndindex(sz):\n"
-        fill_txt +=  ")\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres)\n"
-        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "    return result\n"
-        dprint(2, "fill_txt:", num_dim)
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        gdict["njreducer"] = njreducer
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
     else:
-        fname = f"sreduce_fill{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
-        fill_txt +=  "    result = identity\n"
         fill_txt +=  "    for i in numba.prange(sz[0]):\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt +=  "        fres = njfiller(" + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres)\n"
-        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "    return result\n"
-        dprint(2, "fill_txt:")
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        gdict["njreducer"] = njreducer
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
+
+    fill_txt += f"        fres = {fillername}(" + ",".join(arg_list) + ")\n"
+    fill_txt += f"        result = {reducername}(result, fres)\n"
+    fill_txt +=  "    return result\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    gdict[reducername] = njreducer
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
 
 
 @functools.lru_cache()
@@ -1585,12 +1486,15 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
 
     global smap_func
 
+    fname = f"sreduce_fill_index{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    reducername = f"njreducer{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+    fill_txt +=  "    result = identity\n"
+
     if num_dim > 1:
-        fname = f"sreduce_fill_index{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
-        fill_txt +=  "    result = identity\n"
         fill_txt +=  "    for i in numba.pndindex(sz):\n"
         fill_txt +=  "        si = ("
         for nd in range(num_dim):
@@ -1598,42 +1502,22 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
             if nd < num_dim - 1:
                 fill_txt += ","
         fill_txt +=  ")\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres)\n"
-        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "    return result\n"
-        dprint(2, "fill_txt:", num_dim)
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        gdict["njreducer"] = njreducer
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
     else:
-        fname = f"sreduce_fill_index{smap_func}"
-        smap_func += 1
-        arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-        fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
-        fill_txt +=  "    result = identity\n"
         fill_txt +=  "    for i in numba.prange(sz[0]):\n"
         fill_txt +=  "        si = i + starts[0]\n"
-        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
-        fill_txt +=  "        fres = njfiller(si, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "        result = njreducer(result, fres)\n"
-        #fill_txt +=  "        result = njreducer(result, fres, " + ",".join(arg_list) + ")\n"
-        fill_txt +=  "    return result\n"
-        dprint(2, "fill_txt:")
-        dprint(2, fill_txt)
-        sys.stdout.flush()
-        ldict = {}
-        gdict = globals()
-        gdict["njfiller"] = njfiller
-        gdict["njreducer"] = njreducer
-        exec(fill_txt, gdict, ldict)
-        return FunctionMetadata(ldict[fname], [], {})
+
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+    fill_txt += f"        fres = {fillername}(si, " + ",".join(arg_list) + ")\n"
+    fill_txt += f"        result = {reducername}(result, fres)\n"
+    fill_txt +=  "    return result\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    gdict[reducername] = njreducer
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
 
 
 def rec_buf_summary(rec_buf):
@@ -2031,10 +1915,6 @@ class RemoteState:
         starts = tuple(shardview.get_start(first.subspace))
         unpickle_args(args)
 
-        #        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
-        #        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
-        #        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-        #        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
             do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args))
@@ -2111,8 +1991,8 @@ class RemoteState:
                 max_worker = midpoint
 
             after_reduce_time = timer()
-            tprint(2, "sreduce_index map time:", self.worker_num, after_map_time - start_time)
-            tprint(2, "sreduce_index distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+            tprint(2, "sreduce map time:", self.worker_num, after_map_time - start_time)
+            tprint(2, "sreduce distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
 
             if self.worker_num == 0:
                 return res
@@ -6455,7 +6335,6 @@ class mean_identity:
 
     def __call__(self, *args, **kwargs):
         return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
-        #return (np.zeros(self.drop_groupdim, dtype=np.float64), np.zeros(self.drop_groupdim, dtype=int))
 
 class mean_sum:
     def __init__(self, drop_groupdim, dtype):
@@ -6464,7 +6343,6 @@ class mean_sum:
 
     def __call__(self, *args, **kwargs):
         return np.zeros(self.drop_groupdim, dtype=self.dtype)
-        #return np.zeros(self.drop_groupdim, dtype=np.float64)
 
 class mean_count:
     def __init__(self, drop_groupdim):
@@ -6613,6 +6491,7 @@ class RambaGroupby:
         count_func_txt  =  "def count_func(idx, value, group_array, countout):\n"
         count_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
         count_func_txt +=  "    countout[groupid] += 1\n"
+#        count_func_txt +=  "    print(idx, value, groupid, countout[groupid])\n"
         count_func_txt +=  "    return countout\n"
         ldict = {}
         gdict = globals()
@@ -6627,8 +6506,7 @@ class RambaGroupby:
         res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_count(drop_groupdim))
         tprint(2, "groupby count time:", timer() - count_start)
         #with np.printoptions(threshold=np.inf):
-        #    print("sum last:", res[0])
-        #    print("count last:", res[1])
+        #    print("count last:", res)
         return res
 
     def prod(self, dim=None):
@@ -6662,9 +6540,6 @@ class RambaGroupby:
 
 def groupby_attr(item, itxt, imports, dtype):
     func_txt =  f"def gba{item}(self, rhs):\n"
-    #func_txt += f"    def group{item}(idx, value, rhs, groupid, dim):\n"
-    #func_txt +=  "        drop_groupdim = (groupid[idx[dim]],) + idx[:dim] + idx[dim+1:]\n"
-    #func_txt += f"        return value{itxt}rhs[drop_groupdim]\n"
     if ntiming:
         func_txt +=  "    start_time = timer()\n"
     func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
@@ -6680,8 +6555,6 @@ def groupby_attr(item, itxt, imports, dtype):
     if ntiming:
         func_txt +=  "    print(\"gba time:\", timer() - start_time)\n"
     func_txt +=  "    return res\n"
-    #func_txt += f"    return smap_index(group{item}, self.array_to_group, rhs, self.np_group, self.dim)\n"
-    #print("groupby_attr:", func_txt)
     ldict = {}
     gdict = globals()
     exec(func_txt, gdict, ldict)
