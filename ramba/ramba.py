@@ -3849,9 +3849,8 @@ class ndarray:
 
     def __getitem__(self, index):
         if isinstance(index, ndarray):
-            indhash = index
-        else:
-            indhash = pickle.dumps(index)
+            return self.__getitem__real(index)
+        indhash = pickle.dumps(index)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
