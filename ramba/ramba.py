@@ -5158,7 +5158,7 @@ def create_array(
     if isinstance(filler, str):
         deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
     elif filler is None:
-        pass
+        deferred_op.add_op(["#", new_ndarray], new_ndarray) # deferred op no op, just to make sure empty array is constructed
     else:
         filler = filler if filler_prepickled else func_dumps(filler)
         [
