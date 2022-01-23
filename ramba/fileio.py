@@ -13,7 +13,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 # import multiprocessing as mp
 # import threading
 import numpy as np
-
+from ramba.common import in_driver
 
 loaders = {}
 
@@ -70,7 +70,7 @@ try:
 
     loader("hdf5", True, aliases=["h5ad"])
 except:
-    print("No HDF5 support")
+    if in_driver(): print("No HDF5 support")
 
 try:
     from PIL import Image
@@ -98,4 +98,4 @@ try:
     loader("pil", False, aliases=["jpg", "jpeg", "png", "tif", "tiff"])
 
 except:
-    print("No PIL support")
+    if in_driver(): print("No PIL support")
