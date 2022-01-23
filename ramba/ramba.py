@@ -900,6 +900,7 @@ class bdarray:
 
     @classmethod
     def valid_gid(cls, gid):
+        dprint(3, "bdarray: testing existence of gid", gid,": ",(gid in cls.gid_map))
         return gid in cls.gid_map
 
 
@@ -4941,7 +4942,7 @@ class deferred_op:
             for (k, v) in self.use_gids.items()
             if bdarray.valid_gid(k) or k in self.preconstructed_gids
         }
-        dprint(3, "use_gids:", self.use_gids.keys(), "live_gids", live_gids.keys())
+        dprint(3, "use_gids:", self.use_gids.keys(), "\nlive_gids", live_gids.keys(), "\npreconstructed gids", self.preconstructed_gids)
         # Change distributions for any flexible arrays -- we should not have slices here
         for (_, (_, d, _, flex)) in live_gids.items():
             if flex:
@@ -5156,6 +5157,8 @@ def create_array(
 
     if isinstance(filler, str):
         deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
+    elif filler is None:
+        pass
     else:
         filler = filler if filler_prepickled else func_dumps(filler)
         [
