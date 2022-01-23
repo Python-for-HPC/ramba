@@ -412,6 +412,15 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_masked(self):
+        # Test boolean mask indexing
+        def impl(app):
+            a = app.arange(200)
+            a[a%5==1] -= 50
+            return a
+
+        run_both(impl)
+
     def test_where1(self):
         # Test of "where" in which cond,a,b are all the same size
         def impl(app):
