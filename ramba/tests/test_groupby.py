@@ -239,3 +239,151 @@ class TestGroupby:
         #    print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
+    def test_min_groupby1(self):
+        def ramba_impl(x):
+            rlin = ramba.fromarray(x)
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=366)
+            gbprod = gb.min()
+            final = gb - gbprod
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin):
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbprod = gb.min("time")
+            final = gb - gbprod
+            return final.data
+
+        size = (1, 1827)
+        rlin = np.arange(size[0] * size[1]).reshape(size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin)
+        rres = ramba_impl(rlin)
+        with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+            print("xnres:", xnres.dtype, xnres)
+            print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_max_groupby1(self):
+        def ramba_impl(x):
+            rlin = ramba.fromarray(x)
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=366)
+            gbprod = gb.max()
+            final = gb - gbprod
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin):
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbprod = gb.max("time")
+            final = gb - gbprod
+            return final.data
+
+        size = (2, 1827)
+        rlin = np.arange(size[0] * size[1]).reshape(size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin)
+        rres = ramba_impl(rlin)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres)
+        #    print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_var_groupby1(self):
+        def ramba_impl(x):
+            rlin = ramba.fromarray(x)
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=366)
+            gbvar = gb.var()
+            return np.moveaxis(gbvar, 0, -1)
+
+        def xarray_numpy_impl(rlin):
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbvar = gb.var("time")
+            return gbvar.data
+
+        size = (1, 1827)
+        rlin = np.arange(size[0] * size[1]).reshape(size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin)
+        rres = ramba_impl(rlin)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres.shape, xnres)
+        #    print("rres:", rres.dtype, rres.shape, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_std_groupby1(self):
+        def ramba_impl(x):
+            rlin = ramba.fromarray(x)
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=366)
+            gbstd = gb.std()
+            return np.moveaxis(gbstd, 0, -1)
+
+        def xarray_numpy_impl(rlin):
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbstd = gb.std("time")
+            return gbstd.data
+
+        size = (1, 1827)
+        rlin = np.arange(size[0] * size[1]).reshape(size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin)
+        rres = ramba_impl(rlin)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres.shape, xnres)
+        #    print("rres:", rres.dtype, rres.shape, rres)
+        assert np.allclose(xnres, rres)
+
