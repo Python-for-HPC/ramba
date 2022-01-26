@@ -137,7 +137,11 @@ class FillerFunc:
         return ret
 
     def __eq__(self, other):
-        return self.func.__code__.co_code == other.func.__code__.co_code
+        return (self.func.__code__.co_code == other.func.__code__.co_code and
+                self.func.__code__.co_argcount == other.func.__code__.co_argcount and
+                self.func.__code__.co_consts == other.func.__code__.co_consts and
+                self.func.__code__.co_freevars == other.func.__code__.co_freevars and
+                self.func.__code__.co_names == other.func.__code__.co_names)
 
 
 @functools.lru_cache()
