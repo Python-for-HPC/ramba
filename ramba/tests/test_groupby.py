@@ -270,11 +270,11 @@ class TestGroupby:
         #rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin)
         rres = ramba_impl(rlin)
-        with np.printoptions(threshold=np.inf):
+        #with np.printoptions(threshold=np.inf):
         #    #print("xnres:", xnres.dtype)
         #    #print("rres:", rres.dtype)
-            print("xnres:", xnres.dtype, xnres)
-            print("rres:", rres.dtype, rres)
+        #    print("xnres:", xnres.dtype, xnres)
+        #    print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
     def test_max_groupby1(self):
