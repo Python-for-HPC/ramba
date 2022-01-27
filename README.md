@@ -139,7 +139,7 @@ Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   
 |            | insert/remove elements | &#x1f534; not implemented |
 |            | rearrange elements | &#x1f534; not implemented |
 |Index/slice | range slice     | &#x1f7e1; partial         | produces view like in numpy; skips not supported
-|            | masked arrays   | &#x1f534; not implemented |
+|            | masked arrays   | &#x1f7e1; partial         | only in assignments / in-place operations;  see below for details
 |            | fancy indexing  | &#x1f534; not implemented |
 |            | index routines  | &#x1f534; not implemented | ("where" partly works)
 |Math        | arithmetic operations | &#x1f7e2; works     | +, -, +=, //, etc. 
@@ -159,6 +159,16 @@ Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   
 | statistics |                 | &#x1f534; not implemented | (except: bincount is implemented)
 
 It can be assumed that Numpy features not mentioned in this table are not implemented.
+
+## Masked Arrays
+Numpy supports indeixing an array with a mask array, i.e., a boolean array of same shape.  There are two distinct usages supported.  
+
+(a) When the masked array appears on the left hand side of an assignment or in-place operator (i.e., setitem call), the True elements of the mask indicates that the 
+corresponding elements of the array should be updated;  other elements remain unchanged.  
+
+(b)  When the masked array appears in any other expression, an output 1D array is constructed, containing all of the elements for which the mask is True.  The output is always 1D and a copy, regardless of the dimensionality of the original array.  
+
+Ramba currently only supports the first use case.  
 
 
 ## Security Note
