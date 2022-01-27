@@ -3804,7 +3804,7 @@ class ndarray:
             key = (key,)
 
         if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
-            view = self.__getitem__(key, from_setitem=True)
+            view = self[key]
             if isinstance(value, (int, bool, float, complex)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
@@ -3848,21 +3848,19 @@ class ndarray:
         print("Don't know how to set index", key, " of dist array of size", self.size)
         assert 0
 
-    def __getitem__(self, index, **kwargs):
+    def __getitem__(self, index):
         if isinstance(index, ndarray):
-            return self.__getitem__real(index, **kwargs)
+            return self.__getitem__real(index)
         indhash = pickle.dumps(index)
         if indhash not in self.getitem_cache:
-            self.getitem_cache[indhash] = self.__getitem__real(index, **kwargs)
+            self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
 
-    def __getitem__real(self, index, from_setitem=False):
+    def __getitem__real(self, index):
         dprint(1, "ndarray::__getitem__:", index, type(index))
 
         # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.size):
-            if not from_setitem:
-                raise NotImplementedError("Mask indexing not implemented")
             if index.size != self.size:
                 index = index.broadcast_to(self.size)
             return ndarray( self.size, gid=self.gid, distribution=self.distribution, local_border=0, 
