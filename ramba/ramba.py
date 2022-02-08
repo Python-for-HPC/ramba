@@ -917,6 +917,7 @@ class bdarray:
 
     @classmethod
     def valid_gid(cls, gid):
+        dprint(3, "bdarray: testing existence of gid", gid,": ",(gid in cls.gid_map))
         return gid in cls.gid_map
 
 
@@ -1094,6 +1095,7 @@ class LocalNdarray:
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
+        arr.flags.writeable = True  # Force enable writes -- TODO:  Need to check if safe!! May want to set only if ndarray is not readonly
         return arr
 
     def get_view(self, shard):
@@ -3958,7 +3960,7 @@ class ndarray:
                 dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
                 k = dsz[axis]
                 red_arr = empty(
-                    dsz, dtype=dtype, distribution=dist
+                    dsz, dtype=dtype, distribution=dist, no_defer=True
                 )  # should create immediately
                 remote_exec_all(
                     "array_unaryop",
@@ -4510,7 +4512,7 @@ def matmul(a, b, reduction=False, out=None):
         assert out.shape == out_shape
         out_ndarray = out
     else:
-        out_ndarray = empty(out_shape, dtype=np.result_type(a.dtype, b.dtype))
+        out_ndarray = empty(out_shape, dtype=np.result_type(a.dtype, b.dtype), no_defer=True)
 
     pre_matmul_end_time = timer()
     tprint(
@@ -5313,7 +5315,7 @@ class deferred_op:
             for (k, v) in self.use_gids.items()
             if bdarray.valid_gid(k) or k in self.preconstructed_gids
         }
-        dprint(3, "use_gids:", self.use_gids.keys(), "live_gids", live_gids.keys())
+        dprint(3, "use_gids:", self.use_gids.keys(), "\nlive_gids", live_gids.keys(), "\npreconstructed gids", self.preconstructed_gids)
         # Change distributions for any flexible arrays -- we should not have slices here
         for (_, (_, d, _, flex)) in live_gids.items():
             if flex:
@@ -5342,14 +5344,15 @@ class deferred_op:
             args.append(v)
         # precode.append("  import numpy as np")
         # precode.append("\n".join(self.imports))
-        precode.append(
-            "  for index in numba.pndindex("
-            + list(live_gids.items())[0][1][0][0][0]
-            + ".shape):"
-        )
+        if len(self.codelines)>0:
+            precode.append(
+                "  for index in numba.pndindex("
+                + list(live_gids.items())[0][1][0][0][0]
+                + ".shape):"
+            )
         code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
         fname = "ramba_deferred_ops_func_" + str(abs(hash(code)))
-        code = "def " + fname + "(" + ",".join(args) + "):\n" + code
+        code = "def " + fname + "(" + ",".join(args) + "):\n" + code + "\n  pass"
         # code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
         dprint(2, "Updated code:\n" + code)
         times.append(timer())
@@ -5482,7 +5485,8 @@ class deferred_op:
                 oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x)
         # add codeline to list
         codeline = "    " + "".join(oplist)
-        cls.ramba_deferred_ops.codelines.append(codeline)
+        if oplist[0]!="#":   # avoid adding empty comment -- should really check if starts with #
+            cls.ramba_deferred_ops.codelines.append(codeline)
         cls.ramba_deferred_ops.imports.extend(imports)
         t1 = timer()
         cls.last_add_time = t0
@@ -5508,6 +5512,7 @@ def create_array(
     distribution=None,
     tuple_arg=True,
     filler_prepickled=False,
+    no_defer=False,
     **kwargs
 ):
     new_ndarray = ndarray(
@@ -5526,8 +5531,10 @@ def create_array(
             new_ndarray.distribution = filler.copy()
         return new_ndarray
 
-    if isinstance(filler, str):
+    if isinstance(filler, str): # ignore no_defer
         deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
+    elif filler is None and no_defer==False:
+        deferred_op.add_op(["#", new_ndarray], new_ndarray) # deferred op no op, just to make sure empty array is constructed
     else:
         filler = filler if filler_prepickled else func_dumps(filler)
         [
@@ -5592,11 +5599,12 @@ def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
     )
 
 
-def empty_like(other_ndarray):
+def empty_like(other_ndarray,**kwargs):
     return empty(
         other_ndarray.size,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
+        **kwargs
     )
 
 
@@ -5827,7 +5835,7 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
     dprint(2, "concatenate out_shape:", out_shape, first_dtype)
     assert found_ndarray
     if out is None:
-        out = empty(out_shape, dtype=first_dtype, **kwargs)
+        out = empty(out_shape, dtype=first_dtype, **kwargs, no_defer=True)
         dprint(2, "Create concatenate output:", out.gid, out_shape, out.dtype)
     else:
         assert isinstance(out, ndarray)
@@ -6001,12 +6009,12 @@ def reshape(arr, newshape):
         if arr.bdarray.flex_dist or not arr.bdarray.remote_constructed:
             deferred_op.do_ops()
         realaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v != 1
         ]
         junkaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v == 1
         ]
@@ -6081,7 +6089,7 @@ class MgridGen:
         dim_sizes = tuple(dim_sizes)
         dprint(2, "MgridGen:", index)
         res_dist = shardview.default_distribution(dim_sizes, dims_do_not_distribute=[0])
-        res = empty(dim_sizes, dtype=np.int64, distribution=res_dist)
+        res = empty(dim_sizes, dtype=np.int64, distribution=res_dist, no_defer=True)
         reshape_workers = remote_call_all("mgrid", res.gid, res.size, res.distribution)
         return res
 
