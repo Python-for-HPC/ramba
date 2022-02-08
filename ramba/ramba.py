@@ -1095,6 +1095,7 @@ class LocalNdarray:
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
+        arr.flags.writeable = True  # Force enable writes -- TODO:  Need to check if safe!! May want to set only if ndarray is not readonly
         return arr
 
     def get_view(self, shard):
@@ -6008,12 +6009,12 @@ def reshape(arr, newshape):
         if arr.bdarray.flex_dist or not arr.bdarray.remote_constructed:
             deferred_op.do_ops()
         realaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v != 1
         ]
         junkaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v == 1
         ]
