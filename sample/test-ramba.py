@@ -5,8 +5,8 @@ import time
 np.sync()
 t0 = time.time()
 A = np.arange(100*1000*1000)/1000.0
-t1 = time.time()
 np.sync()
+t1 = time.time()
 print ("Intitialize array time:",t1-t0)
 
 for i in range(5):
