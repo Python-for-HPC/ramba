@@ -1582,10 +1582,12 @@ def unpickle_args(args):
         if isinstance(value, bytes):
             args[idx] = func_loads(value)
 
+def external_set_common_state(st):
+    set_common_state(st, globals())
 
 class RemoteState:
     def __init__(self, worker_num, common_state):
-        set_common_state(common_state)
+        external_set_common_state(common_state)
         z = numa.set_affinity(worker_num, numa_zones)
         dprint(
             1,

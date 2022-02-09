@@ -149,10 +149,13 @@ def get_common_state():
         ndebug,
         hint_ip,
         numa_zones,
+        USE_ZMQ,
+        USE_BCAST,
+        USE_RAY_CALLS,
     )
 
 
-def set_common_state(st):
+def set_common_state2(st):
     global num_workers
     global num_threads
     global timing
@@ -161,6 +164,9 @@ def set_common_state(st):
     global timing_debug_worker
     global hint_ip
     global numa_zones
+    global USE_ZMQ
+    global USE_BCAST
+    global USE_RAY_CALLS
     (
         num_workers,
         num_threads,
@@ -170,7 +176,26 @@ def set_common_state(st):
         ndebug,
         hint_ip,
         numa_zones,
+        USE_ZMQ,
+        USE_BCAST,
+        USE_RAY_CALLS,
     ) = st
+
+def set_common_state(st,gl):
+    (
+        gl['num_workers'],
+        gl['num_threads'],
+        gl['timing'],
+        gl['ntiming'],
+        gl['timing_debug_worker'],
+        gl['ndebug'],
+        gl['hint_ip'],
+        gl['numa_zones'],
+        gl['USE_ZMQ'],
+        gl['USE_BCAST'],
+        gl['USE_RAY_CALLS'],
+    ) = st
+    set_common_state2(st)
 
 
 # -------------------------------------------------------------------------
@@ -521,7 +546,4 @@ def workers_per_node():
     return num_workers // num_nodes
 
 
-if default_bcast is None:
-    default_bcast = "1" if num_workers>NUM_WORKERS_FOR_BCAST else "0"
-USE_BCAST= int(os.environ.get("RAMBA_USE_BCAST", default_bcast))!=0
 
