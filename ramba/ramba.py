@@ -112,7 +112,7 @@ if not USE_MPI:
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
 
-    
+
 class Filler:
     PER_ELEMENT = 0
     WHOLE_ARRAY_NEW = 1
@@ -818,6 +818,13 @@ if not USE_MPI:
 ######### End Barrier code ##############
 
 
+def get_advindex_dim(index):
+    for i in range(len(index)):
+        if isinstance(index[i], np.ndarray):
+            return i
+    assert 0
+
+
 def distindex_internal(dist, dim, accum):
     if dim >= len(shardview.get_size(dist)):
         yield tuple(accum)
@@ -1346,14 +1353,15 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 smap_func = 0
 
 @functools.lru_cache()
-def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
+def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
     filler = filler.func
     dprint(2, "get_smap_fill", filler, num_dim, ramba_array_args)
     #njfiller = filler
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(filler)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
         #else numba.njit(filler)
     )
 
@@ -1378,17 +1386,18 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args):
     gdict = globals()
     gdict[fillername] = njfiller
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
 
 
 @functools.lru_cache()
-def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
+def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
     filler = filler.func
     dprint(2, "get_smap_fill_index", filler, type(filler), num_dim, ramba_array_args)
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(filler)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
         #else numba.njit(filler)
     )
 
@@ -1423,18 +1432,19 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args):
     gdict = globals()
     gdict[fillername] = njfiller
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
 
 
 @functools.lru_cache()
-def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args):
+def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True):
     filler = filler.func
     reducer = reducer.func
     dprint(2, "get_sreduce_fill", filler, reducer, num_dim, ramba_array_args)
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(filler)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
         #else numba.njit(filler)
     )
     njreducer = (
@@ -1470,19 +1480,19 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     gdict[fillername] = njfiller
     gdict[reducername] = njreducer
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
 
 
 @functools.lru_cache()
-def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args):
+def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True):
     filler = filler.func
     reducer = reducer.func
     dprint(2, "get_sreduce_fill_index", filler, reducer, num_dim, ramba_array_args)
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(filler)
-        #else numba.extending.register_jitable(inline="always")(filler)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
         #else numba.njit(filler)
     )
     njreducer = (
@@ -1526,7 +1536,7 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
     gdict[fillername] = njfiller
     gdict[reducername] = njreducer
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
 
 
 def rec_buf_summary(rec_buf):
@@ -1893,7 +1903,7 @@ class RemoteState:
             return ret
 
     # TODO: should use get_view
-    def smap(self, out_gid, first_gid, args, func):
+    def smap(self, out_gid, first_gid, args, func, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         lnd = first.init_like(out_gid)
@@ -1905,7 +1915,7 @@ class RemoteState:
 
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args))
+            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             #fargs = tuple([self.numpy_map[x].get_view() if isinstance(x, uuid.UUID) else x for x in args])
             fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
             do_fill(new_bcontainer, first.dim_lens, *fargs)
@@ -1918,7 +1928,7 @@ class RemoteState:
                 new_bcontainer[index] = func(*fargs)
 
     # TODO: should use get_view
-    def smap_index(self, out_gid, first_gid, args, func, dtype):
+    def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
@@ -1928,7 +1938,7 @@ class RemoteState:
 
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args))
+            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
             do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
         else:
@@ -1942,7 +1952,7 @@ class RemoteState:
                 new_bcontainer[index] = func(index_arg, *fargs)
 
     # TODO: should use get_view
-    def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv):
+    def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
         func = func_loads(func)
         reducer = func_loads(reducer)
         reducer = func_loads(reducer_driver)
@@ -1952,7 +1962,7 @@ class RemoteState:
         #assert len(args) == 1
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args))
+            do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
                 if isinstance(x, uuid.UUID):
                     return self.numpy_map[x].bcontainer
@@ -2021,7 +2031,7 @@ class RemoteState:
                     result = reducer(result, func(*fargs))
             return result
 
-    def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv):
+    def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
         start_time = timer()
         func = func_loads(func)
         reducer = func_loads(reducer)
@@ -2035,7 +2045,7 @@ class RemoteState:
         #assert len(args) == 1
         if True:
             ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args))
+            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
                 if isinstance(x, uuid.UUID):
                     return self.numpy_map[x].bcontainer
@@ -3169,7 +3179,7 @@ class RemoteState:
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
-            dprint(2, "function does not exist, creating it")
+            dprint(2, "function does not exist, creating it\n", code)
             exec(code, gdict, ldict)
             gdict[fname] = FunctionMetadata(ldict[fname], [], {})
             # print (gdict.keys())
@@ -4195,14 +4205,18 @@ class ndarray:
 
     def __getitem__(self, index):
         indhash = pickle.dumps(index)
+        dprint(3, "__getitem__", index, type(index), self.size, indhash in self.getitem_cache)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
 
     def __getitem__real(self, index):
-        dprint(1, "ndarray::__getitem__:", index, type(index))
+        dprint(2, "ndarray::__getitem__real:", index, type(index), self.size, len(self.size))
         if not isinstance(index, tuple):
             index = (index,)
+
+        if index[-1] is Ellipsis:
+            index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
         if all([isinstance(i, int) for i in index]) and len(index) == len(self.size):
@@ -4218,8 +4232,11 @@ class ndarray:
             )
             return ret
 
+        index_has_slice = any([isinstance(i, slice) for i in index])
+        index_has_array = any([isinstance(i, np.ndarray) for i in index])
+
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
-        if any([isinstance(i, slice) for i in index]) or len(index) < len(self.size):
+        if index_has_slice or len(index) < len(self.size):
             # check for out-of-bounds
             for i in range(len(index)):
                 if isinstance(index[i], int) and index[i] >= self.size[i]:
@@ -4314,6 +4331,7 @@ class ndarray:
             "__array_function__",
             func,
             types,
+            len(args),
             args,
             kwargs,
             func in HANDLED_FUNCTIONS,
@@ -4326,6 +4344,8 @@ class ndarray:
         hf = HANDLED_FUNCTIONS[func]
         if hf[1]:
             new_args.append(self)
+        new_args.extend(args)
+        """
         for arg in args:
             if isinstance(arg, np.ndarray):
                 new_args.append(fromarray(arg))
@@ -4333,6 +4353,7 @@ class ndarray:
                 new_args.append(arg)
             else:
                 return NotImplemented
+        """
         return hf[0](*new_args, **kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -5805,6 +5826,17 @@ def _compute_remote_ranges(out_distribution, out_mapping):
     return from_ret, to_ret
 
 
+def implements(numpy_function, uses_self):
+    numpy_function = "np." + numpy_function
+
+    def decorator(func):
+        HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
+        return func
+
+    return decorator
+
+
+@implements("concatenate", False)
 def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
@@ -5861,16 +5893,6 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
         for i in range(num_workers)
     ]
     return out
-
-
-def implements(numpy_function, uses_self):
-    numpy_function = "np." + numpy_function
-
-    def decorator(func):
-        HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
-        return func
-
-    return decorator
 
 
 prop_to_array = [
@@ -5942,6 +5964,10 @@ def power(a, b):
 
 @implements("where", False)
 def where(cond, a, b):
+    if isinstance(a, np.ndarray):
+        a = fromarray(a)
+    if isinstance(b, np.ndarray):
+        b = fromarray(b)
     assert (
         isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray)
     )
@@ -5998,6 +6024,40 @@ def sync():
 
 class ReshapeError(Exception):
     pass
+
+
+def expand_dims(a, axis):
+    ashape = a.shape
+    if not isinstance(axis, (list, tuple)):
+        axis = (axis,)
+    new_shape = [0 for _ in range(len(ashape) + len(axis))]
+    for newd in axis:
+        if newd >= len(new_shape):
+            assert 0 # should throw AxisError
+        new_shape[newd] = 1
+    next_index = 0
+    for i in range(len(new_shape)):
+        if i in axis:
+            continue
+        new_shape[i] = ashape[next_index]
+        next_index += 1
+
+    return reshape(a, tuple(new_shape))
+
+
+def squeeze(a, axis=None):
+    ashape = a.shape
+    if axis is None:
+        # axis is tuple of indices that have length 1
+        axis = tuple(filter(lambda x: ashape[x] == 1, range(len(ashape))))
+    if not isinstance(axis, tuple):
+        axis = (axis,)
+    # Make sure all the indices they try to remove have length 1
+    if not all([ashape[x] == 1 for x in axis]):
+        assert 0  # TO-DO: should raise some error
+
+    new_shape = [ashape[i] for i in range(len(ashape)) if i not in axis]
+    return reshape(a, tuple(new_shape))
 
 
 def reshape(arr, newshape):
@@ -6152,7 +6212,7 @@ def triu(m, k=0):
 ##### Skeletons ######
 
 
-def smap_internal(func, attr, *args, dtype=None):
+def smap_internal(func, attr, *args, dtype=None, parallel=True):
     # TODO: should see if this can be converted into a deferred op
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
@@ -6170,18 +6230,19 @@ def smap_internal(func, attr, *args, dtype=None):
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
-        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
     )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+    dprint(2, "smap_internal done")
     return new_ndarray
 
 
-def smap(func, *args, dtype=None):
-    return smap_internal(func, "smap", *args, dtype=dtype)
+def smap(func, *args, dtype=None, parallel=True):
+    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel)
 
 
-def smap_index(func, *args, dtype=None):
-    return smap_internal(func, "smap_index", *args, dtype=dtype)
+def smap_index(func, *args, dtype=None, parallel=True):
+    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel)
 
 
 class SreduceReducer:
@@ -6190,7 +6251,7 @@ class SreduceReducer:
         self.driver_func = driver_func
 
 
-def sreduce_internal(func, reducer, identity, attr, *args):
+def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     deferred_op.do_ops()
     start_time = timer()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
@@ -6212,7 +6273,8 @@ def sreduce_internal(func, reducer, identity, attr, *args):
         func_dumps(reducer.worker_func),
         func_dumps(reducer.driver_func),
         identity,
-        a_send_recv
+        a_send_recv,
+        parallel
     )
     after_remote_time = timer()
     final_result = worker_results[0]
@@ -6226,12 +6288,12 @@ def sreduce_internal(func, reducer, identity, attr, *args):
     return final_result
 
 
-def sreduce(func, reducer, identity, *args):
-    return sreduce_internal(func, reducer, identity, "sreduce", *args)
+def sreduce(func, reducer, identity, *args, parallel=True):
+    return sreduce_internal(func, reducer, identity, "sreduce", *args, parallel=parallel)
 
 
-def sreduce_index(func, reducer, identity, *args):
-    return sreduce_internal(func, reducer, identity, "sreduce_index", *args)
+def sreduce_index(func, reducer, identity, *args, parallel=True):
+    return sreduce_internal(func, reducer, identity, "sreduce_index", *args, parallel=parallel)
 
 
 def sstencil(func, *args, **kwargs):
@@ -6409,7 +6471,7 @@ class min_identity:
         elif np.issubdtype(self.dtype, np.floating):
             max_val = np.inf
         else:
-            assert(False)
+            assert 0
         return np.full(self.drop_groupdim, max_val, dtype=self.dtype)
 
 #-------------------------------------------------------------------------------
@@ -6425,7 +6487,7 @@ class max_identity:
         elif np.issubdtype(self.dtype, np.floating):
             min_val = -np.inf
         else:
-            assert(False)
+            assert 0
         return np.full(self.drop_groupdim, min_val, dtype=self.dtype)
 
 #-------------------------------------------------------------------------------
@@ -6452,10 +6514,14 @@ class RambaGroupby:
         mean_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
-        mean_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        mean_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         mean_func_txt +=  "    sumout[groupid] += value\n"
         mean_func_txt +=  "    countout[groupid] += 1\n"
         mean_func_txt +=  "    return (sumout, countout)\n"
@@ -6464,14 +6530,52 @@ class RambaGroupby:
         exec(mean_func_txt, gdict, ldict)
 
         def mean_reducer_driver(result, fres):
-            #print("mean_reducer_driver:", result[0].shape, fres[0].shape, result[1].shape, fres[1].shape)
             return (result[0] + fres[0], result[1] + fres[1])
 
         def mean_reducer_worker(result, fres):
             return fres
 
         #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
-        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
+        tprint(2, "groupby mean time:", timer() - mean_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
+        if ret_separate:
+            return res[0], res[1]
+        else:
+            return res[0] / res[1]
+
+    def nanmean(self, dim=None, ret_separate=False):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby nammean.")
+        mean_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        mean_func_txt +=  "    if value != np.nan:\n"
+        mean_func_txt += f"        groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        mean_func_txt +=  "        sumout[groupid] += value\n"
+        mean_func_txt +=  "        countout[groupid] += 1\n"
+        mean_func_txt +=  "    return (sumout, countout)\n"
+        ldict = {}
+        gdict = globals()
+        exec(mean_func_txt, gdict, ldict)
+
+        def mean_reducer_driver(result, fres):
+            return (result[0] + fres[0], result[1] + fres[1])
+
+        def mean_reducer_worker(result, fres):
+            return fres
+
+        #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
         tprint(2, "groupby mean time:", timer() - mean_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res[0])
@@ -6487,10 +6591,14 @@ class RambaGroupby:
         sum_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         sum_func_txt  =  "def sum_func(idx, value, group_array, sumout):\n"
-        sum_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        sum_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         sum_func_txt +=  "    sumout[groupid] += value\n"
         sum_func_txt +=  "    return sumout\n"
         ldict = {}
@@ -6503,7 +6611,7 @@ class RambaGroupby:
         def sum_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["sum_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, self.array_to_group.dtype))
+        res = sreduce_index(ldict["sum_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby sum time:", timer() - sum_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res)
@@ -6515,12 +6623,15 @@ class RambaGroupby:
         count_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         count_func_txt  =  "def count_func(idx, value, group_array, countout):\n"
-        count_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        count_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         count_func_txt +=  "    countout[groupid] += 1\n"
-#        count_func_txt +=  "    print(idx, value, groupid, countout[groupid])\n"
         count_func_txt +=  "    return countout\n"
         ldict = {}
         gdict = globals()
@@ -6532,7 +6643,7 @@ class RambaGroupby:
         def count_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_identity(drop_groupdim))
+        res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_identity(drop_groupdim), parallel=False)
         tprint(2, "groupby count time:", timer() - count_start)
         #with np.printoptions(threshold=np.inf):
         #    print("count last:", res)
@@ -6544,10 +6655,14 @@ class RambaGroupby:
         prod_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         prod_func_txt  =  "def prod_func(idx, value, group_array, prodout):\n"
-        prod_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        prod_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         prod_func_txt +=  "    prodout[groupid] *= value\n"
         prod_func_txt +=  "    return prodout\n"
         ldict = {}
@@ -6560,7 +6675,7 @@ class RambaGroupby:
         def prod_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["prod_func"], SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_identity(drop_groupdim, self.array_to_group.dtype))
+        res = sreduce_index(ldict["prod_func"], SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby prod time:", timer() - prod_start)
         #with np.printoptions(threshold=np.inf):
         #    print("prod last:", res)
@@ -6572,10 +6687,14 @@ class RambaGroupby:
         min_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         min_func_txt  =  "def min_func(idx, value, group_array, minout):\n"
-        min_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        min_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         min_func_txt +=  "    minout[groupid] = min(value, minout[groupid])\n"
         min_func_txt +=  "    return minout\n"
         ldict = {}
@@ -6588,7 +6707,7 @@ class RambaGroupby:
         def min_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["min_func"], SreduceReducer(min_reducer_worker, min_reducer_driver), min_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, min_identity(drop_groupdim, self.array_to_group.dtype))
+        res = sreduce_index(ldict["min_func"], SreduceReducer(min_reducer_worker, min_reducer_driver), min_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, min_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby min time:", timer() - min_start)
         #with np.printoptions(threshold=np.inf):
         #    print("min last:", res)
@@ -6600,10 +6719,14 @@ class RambaGroupby:
         max_start = timer()
         # original dimensions maxus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         max_func_txt  =  "def max_func(idx, value, group_array, maxout):\n"
-        max_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        max_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         max_func_txt +=  "    maxout[groupid] = max(value, maxout[groupid])\n"
         max_func_txt +=  "    return maxout\n"
         ldict = {}
@@ -6616,7 +6739,7 @@ class RambaGroupby:
         def max_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["max_func"], SreduceReducer(max_reducer_worker, max_reducer_driver), max_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, max_identity(drop_groupdim, self.array_to_group.dtype))
+        res = sreduce_index(ldict["max_func"], SreduceReducer(max_reducer_worker, max_reducer_driver), max_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, max_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby max time:", timer() - max_start)
         #with np.printoptions(threshold=np.inf):
         #    print("max last:", res)
@@ -6628,13 +6751,17 @@ class RambaGroupby:
         var_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
         orig_dims = self.array_to_group.shape
-        drop_groupdim = (self.num_groups,) + orig_dims[:self.dim] + orig_dims[self.dim+1:]
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
 
         mean_groupby_sum, mean_groupby_count = self.mean(dim=dim, ret_separate=True)
         mean_groupby = mean_groupby_sum / mean_groupby_count
 
         sqr_mean_diff_func_txt  =  "def sqr_mean_diff_func(idx, value, group_array, sumout, mean_groupby):\n"
-        sqr_mean_diff_func_txt += f"    groupid = (group_array[idx[{self.dim}]]," + ",".join([f"idx[{nd}]" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + ")\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        sqr_mean_diff_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
         sqr_mean_diff_func_txt +=  "    sumout[groupid] += (value - mean_groupby[groupid])**2\n"
 #        sqr_mean_diff_func_txt +=  "    print(idx, value, mean_groupby[groupid], sumout[groupid])\n"
         sqr_mean_diff_func_txt +=  "    return sumout\n"
@@ -6648,7 +6775,7 @@ class RambaGroupby:
         def sum_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["sqr_mean_diff_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, mean_groupby.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, mean_groupby.dtype), mean_groupby)
+        res = sreduce_index(ldict["sqr_mean_diff_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, mean_groupby.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, mean_groupby.dtype), mean_groupby, parallel=False)
         res_var = res / mean_groupby_count
         tprint(2, "groupby var time:", timer() - var_start)
         #with np.printoptions(threshold=np.inf):
@@ -6665,7 +6792,10 @@ def groupby_attr(item, itxt, imports, dtype):
     if ntiming:
         func_txt +=  "    start_time = timer()\n"
     func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
-    func_txt +=  "    gtext += \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
+    func_txt +=  "    beforedim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim)])\n"
+    func_txt +=  "    afterdim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim+1, self.array_to_group.ndim)])\n"
+    func_txt +=  "    gtext += f\"    drop_groupdim = ({beforedim}, groupid[idx[dim]],{afterdim})\\n\"\n"
+#    func_txt +=  "    gtext +=  \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
 #    func_txt +=  "    gtext += \"    print('group:', idx, value, drop_groupdim, rhs[drop_groupdim], dim)\\n\"\n"
     func_txt += f"    gtext += \"    return value{itxt}rhs[drop_groupdim]\\n\"\n"
     func_txt +=  "    ldict = {}\n"

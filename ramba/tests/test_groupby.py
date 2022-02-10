@@ -327,7 +327,7 @@ class TestGroupby:
             coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
             gb = da.data.groupby(1, coord_days, num_groups=366)
             gbvar = gb.var()
-            return np.moveaxis(gbvar, 0, -1)
+            return gbvar
 
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
@@ -363,7 +363,7 @@ class TestGroupby:
             coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
             gb = da.data.groupby(1, coord_days, num_groups=366)
             gbstd = gb.std()
-            return np.moveaxis(gbstd, 0, -1)
+            return gbstd
 
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
