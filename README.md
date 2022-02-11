@@ -185,8 +185,19 @@ We see that Numba does well on a single node, achieveing 90x Numpy throughput.
 Ramba does slightly better, close to the performance of C code. Numba is of course limited to a single node.  On the other hand, Ramba performance scales 
 quite well with additional nodes, just slightly behind C/MPI in absolute performance and scaling.  
 Other distributed array solution in Python (Dask Arrays, Nums on Ray) are much slower.  To be fair, these are still several times (up to 20x in our tests)
-faster than the baseline Numpy version, but are not even close to the performance achieved by Ramba or C/MPI.  Ramba achieves over 400x
-Numpy throughput on 4 nodes, and achieves 91% of C/MPI performance, with largely unmodified Numpy code.  
+faster than the baseline Numpy version, but are not even close to the performance achieved by Ramba or C/MPI.  Ramba achieves 380x
+Numpy throughput on 4 nodes, and achieves 85% of C/MPI performance, with largely unmodified Numpy code.  
 
 ![Stencil 30k by 30k performance](doc/stencil-4node-20220202.png)
+
+The plot is based on the average and standard deviations of throughput numbers reported by multiple runs of PRK stencil benchmark, summarized below (std. dev in parentheses):
+
+|       | 1 Node        | 2 Nodes       | 3 Nodes           | 4 Nodes          |
+|:------|:--------------|:--------------|:------------------|:-----------------|
+| Numpy | 453 (0.8)     |               |                   |                  |
+| Numba | 41172 (2563)  |               |                   |                  |
+| Dask  | 4746 (1868)   | 6995 (707)    | 9040 (696)        | 9563 (1392)      |
+| Nums  | 995 (22)      | 1843 (27)     | 2376 (50)         | 1333 (25)        |
+| C/MPI | 52308 (238)   | 104695 (58)   | 151327 (943)      | 201156 (465)     |
+| Ramba | 49748 (168)   | 97619 (120)   | 138725 (343)      | 172050 (6720)    |
 
