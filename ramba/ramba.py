@@ -848,8 +848,8 @@ class bdarray:
         weakref.WeakValueDictionary()
     )  # global map from gid to weak references of bdarrays
 
-    def __init__(self, size, distribution, gid, pad, fdist, dtype):
-        self.size = size
+    def __init__(self, shape, distribution, gid, pad, fdist, dtype):
+        self.shape = shape
         self.gid = gid
         self.pad = pad
         self.distribution = distribution
@@ -881,7 +881,7 @@ class bdarray:
     def assign_bdarray(
         cls,
         nd,
-        size,
+        shape,
         gid=None,
         distribution=None,
         pad=0,
@@ -894,11 +894,11 @@ class bdarray:
         if gid not in cls.gid_map:
             if dtype is None:
                 dtype = np.float64  # default
-            if size == ():
-                distribution = np.ndarray(size, dtype=dtype)
+            if shape == ():
+                distribution = np.ndarray(shape, dtype=dtype)
             else:
                 distribution = (
-                    shardview.default_distribution(size, **kwargs)
+                    shardview.default_distribution(shape, **kwargs)
                     if distribution is None
                     else libcopy.deepcopy(distribution)
                 )
@@ -906,13 +906,13 @@ class bdarray:
                 for i in distribution:
                     tmp = shardview.get_base_offset(i)
                     tmp *= 0
-            bd = cls(size, distribution, gid, pad, flexible_dist, dtype)
+            bd = cls(shape, distribution, gid, pad, flexible_dist, dtype)
         else:
             bd = cls.gid_map[gid]
         bd.add_nd(nd)
         dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
-        dprint(3, "Distribution:", bd.distribution, size)
-        if len(size) != 0 and not isinstance(bd.distribution, np.ndarray):
+        dprint(3, "Distribution:", bd.distribution, shape)
+        if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
             dprint(
                 4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
             )
@@ -930,11 +930,13 @@ class bdarray:
 
 atexit.register(bdarray.atexit)
 
+"""
 # Hmm -- does not seem to be used
 def make_padded_shard(core, boundary):
     cshape = core.shape
     assert len(cshape) == len(boundary)
     new_size = [cshape[i] + boundary[i] for i in range(len(cshape))]
+"""
 
 
 class LocalNdarray:
@@ -3787,7 +3789,7 @@ def unify_args(lhs, rhs, dtype):
 class ndarray:
     def __init__(
         self,
-        size,
+        shape,
         gid=None,
         distribution=None,
         local_border=0,
@@ -3798,10 +3800,10 @@ class ndarray:
     ):
         t0 = timer()
         self.bdarray = bdarray.assign_bdarray(
-            self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs
+            self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
         )  # extra options for distribution hints
         # self.gid = self.bdarray.gid
-        self.size = size
+        self.shape = shape
         self.distribution = (
             distribution
             if ((distribution is not None) and (gid is not None))
@@ -3812,7 +3814,7 @@ class ndarray:
         # TODO: move to_border, from_border out of ndarray; put into bdarray, or just compute when needed to construct Local_NDarray on remotes
         if local_border > 0:
             self.from_border, self.to_border = shardview.compute_from_border(
-                size, self.distribution, local_border
+                shape, self.distribution, local_border
             )
         else:
             self.from_border = None
@@ -3828,13 +3830,13 @@ class ndarray:
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
         t1 = timer()
-        dprint(2, "Created ndarray", self.gid, "size", size, "time", (t1 - t0) * 1000)
+        dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
         return tuple(
             [
-                self.size,
+                self.shape,
                 self.distribution,
                 self.local_border,
                 self.from_border,
@@ -3848,19 +3850,19 @@ class ndarray:
         return self.bdarray.gid
 
     @property
-    def shape(self):
-        return self.size
+    def size(self):
+        return np.prod(self.shape)
 
     @property
     def ndim(self):
-        return len(self.size)
+        return len(self.shape)
 
     @property
     def dtype(self):
         return np.dtype(self.bdarray.dtype)
 
     def transpose(self, *args):
-        ndims = len(self.size)
+        ndims = len(self.shape)
         if len(args) == 0:
             return self.remapped_axis([ndims - i - 1 for i in range(ndims)])
         else:
@@ -3878,11 +3880,11 @@ class ndarray:
 
     # @property
     # def T(self):
-    #    assert(len(self.size) == 2)
+    #    assert(len(self.shape) == 2)
     #    divs = shardview.distribution_to_divisions(self.distribution)
     #    outdiv = np.flip(divs, axis=2)
     #    rev_base_offsets = [np.flip(x.base_offset) for x in self.distribution]
-    #    return ndarray((self.size[1], self.size[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
+    #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
     """
     def __del__(self):
@@ -3895,24 +3897,24 @@ class ndarray:
     """
 
     def __str__(self):
-        return str(self.gid) + " " + str(self.size) + " " + str(self.local_border)
+        return str(self.gid) + " " + str(self.shape) + " " + str(self.local_border)
 
     def remapped_axis(self, newmap):
         # make sure array distribution can't change (ie, not flexible or is already constructed)
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
-        newsize, newdist = shardview.remap_axis(self.size, self.distribution, newmap)
-        return ndarray(newsize, self.gid, newdist, readonly=self.readonly)
+        newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
+        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
 
     def asarray(self):
-        if self.size == ():
+        if self.shape == ():
             return self.distribution
 
         deferred_op.do_ops()
-        ret = np.empty(self.size, dtype=self.dtype)
+        ret = np.empty(self.shape, dtype=self.dtype)
         # dist_shape = self.distribution.shape
         # topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
-        dprint(2, "asarray:", self.distribution, self.size)
+        dprint(2, "asarray:", self.distribution, self.shape)
         dprint(2, "asarray:", shardview.distribution_to_divisions(self.distribution))
         # shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
         # shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
@@ -3930,7 +3932,7 @@ class ndarray:
             #            dprint(2, "for:", i, dist_shape[2])
             # gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
             # rindex = slice_minus_offset(gindex, topleft)
-            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].size)
+            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].shape)
             dprint(
                 3,
                 "gslice:",
@@ -4002,7 +4004,7 @@ class ndarray:
             return ret
         else:
             new_ndarray = create_array_with_divisions(
-                self.size,
+                self.shape,
                 self.distribution,
                 local_border=self.local_border,
                 dtype=dtype,
@@ -4014,20 +4016,20 @@ class ndarray:
             )
             return new_ndarray
 
-    def broadcast_to(self, size):
-        dprint(4, "broadcast_to:", self.size, size)
-        new_dims = len(size) - len(self.size)
+    def broadcast_to(self, shape):
+        dprint(4, "broadcast_to:", self.shape, shape)
+        new_dims = len(shape) - len(self.shape)
         dprint(4, "new_dims:", new_dims)
-        sslice = size[-len(self.size) :]
+        sslice = shape[-len(self.shape) :]
         dprint(4, "sslice:", sslice)
-        z1 = zip(sslice, self.size)
+        z1 = zip(sslice, self.shape)
         dprint(4, "zip check:", z1)
         if any([a > 1 and b > 1 and a != b for a, b in z1]):
             raise ValueError("Non-broadcastable.")
 
         bd = [
-            i < new_dims or (size[i] != 1 and self.size[i - new_dims] == 1)
-            for i in range(len(size))
+            i < new_dims or (shape[i] != 1 and self.shape[i - new_dims] == 1)
+            for i in range(len(shape))
         ]
         dprint(4, "broadcasted_dims:", bd)
 
@@ -4035,33 +4037,33 @@ class ndarray:
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
         return ndarray(
-            size,
+            shape,
             gid=self.gid,
-            distribution=shardview.broadcast(self.distribution, bd, size),
+            distribution=shardview.broadcast(self.distribution, bd, shape),
             local_border=0,
             readonly=True,
         )
 
     @classmethod
     def broadcast(cls, a, b):
-        new_array_size = numpy_broadcast_size(a, b)
+        new_array_shape = numpy_broadcast_shape(a, b)
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(a, ndarray) and a.shape == ():
             aview = a.distribution
-        elif not isinstance(a, ndarray) or new_array_size == a.size:
+        elif not isinstance(a, ndarray) or new_array_shape == a.shape:
             aview = a
         else:
-            aview = a.broadcast_to(new_array_size)
+            aview = a.broadcast_to(new_array_shape)
 
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(b, ndarray) and b.shape == ():
             bview = b.distribution
-        elif not isinstance(b, ndarray) or new_array_size == b.size:
+        elif not isinstance(b, ndarray) or new_array_shape == b.shape:
             bview = b
         else:
-            bview = b.broadcast_to(new_array_size)
+            bview = b.broadcast_to(new_array_shape)
 
-        return (new_array_size, aview, bview)
+        return (new_array_shape, aview, bview)
 
     def astype(self, dtype, copy=True):
         dprint(3, "astype:", self.dtype, type(self.dtype), dtype, type(dtype), copy)
@@ -4073,7 +4075,7 @@ class ndarray:
 
         if copy:
             new_ndarray = create_array_with_divisions(
-                self.size, self.distribution, dtype=dtype
+                self.shape, self.distribution, dtype=dtype
             )
             deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
         else:
@@ -4088,7 +4090,7 @@ class ndarray:
             rhs = fromarray(rhs)
         if inplace:
             sz, selfview, rhsview = ndarray.broadcast(self, rhs)
-            assert self.size == sz
+            assert self.shape== sz
 
             if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
                 getattr(selfview, op)(rhsview)
@@ -4102,7 +4104,7 @@ class ndarray:
             lb = max(
                 self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
             )
-            new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
+            new_array_shape, selfview, rhsview = ndarray.broadcast(self, rhs)
 
             dtype = unify_args(self.dtype, rhs, dtype)
             """
@@ -4123,14 +4125,14 @@ class ndarray:
                 )
             """
 
-            if isinstance(new_array_size, tuple):
-                if len(new_array_size) > 0:
-                    new_ndarray = empty(new_array_size, local_border=lb, dtype=dtype)
+            if isinstance(new_array_shape, tuple):
+                if len(new_array_shape) > 0:
+                    new_ndarray = empty(new_array_shape, local_border=lb, dtype=dtype)
                 else:
                     res = getattr(selfview, op)(rhsview)
                     if isinstance(res, np.ndarray):
                         return fromarray(res)
-                    elif isinstance(res, numbers.Number) and new_array_size == ():
+                    elif isinstance(res, numbers.Number) and new_array_shape == ():
                         return array(res)
                     else:
                         return res
@@ -4160,16 +4162,16 @@ class ndarray:
             raise ValueError("assignment destination is read-only")
         if not isinstance(key, tuple):
             key = (key,)
-        if all([isinstance(i, int) for i in key]) and len(key) == len(self.size):
+        if all([isinstance(i, int) for i in key]) and len(key) == len(self.shape):
             print("Setting individual element is not handled yet!")
             assert 0
 
-        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
+        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
-            elif view.size == value.size:
+            elif view.shape == value.shape:
                 # avoid adding code in case of inplace operations
                 if not (
                     view.gid == value.gid
@@ -4178,15 +4180,15 @@ class ndarray:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                # TODO:  Should try to broadcast value to view.size before giving up
-                print("Mismatched sizes", view.size, value.size)
+                # TODO:  Should try to broadcast value to view.shape before giving up
+                print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
         """
         if isinstance(key[0], slice):
             if key.start is None and key.stop is None:   # a[:] = b
                 if isinstance(value, ndarray):
-                    if self.size == value.size:
+                    if self.shape == value.shape:
                         deferred_op.add_op(["", self, " = ", value, ""], self)
                         #[remote_states[i].setitem1.remote(self.gid, value.gid) for i in range(num_workers)]
                         return
@@ -4195,23 +4197,23 @@ class ndarray:
                     return
             else:   # a[s:e] = b
                 view = self[key]
-                if view.size == value.size:
+                if view.shape == value.shape:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                     return
         """
         # Need to handle all possible remaining cases.
-        print("Don't know how to set index", key, " of dist array of size", self.size)
+        print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
 
     def __getitem__(self, index):
         indhash = pickle.dumps(index)
-        dprint(3, "__getitem__", index, type(index), self.size, indhash in self.getitem_cache)
+        dprint(3, "__getitem__", index, type(index), self.shape, indhash in self.getitem_cache)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
 
     def __getitem__real(self, index):
-        dprint(2, "ndarray::__getitem__real:", index, type(index), self.size, len(self.size))
+        dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
         if not isinstance(index, tuple):
             index = (index,)
 
@@ -4219,7 +4221,7 @@ class ndarray:
             index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
-        if all([isinstance(i, int) for i in index]) and len(index) == len(self.size):
+        if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
             deferred_op.do_ops()
 
             owner = shardview.find_index(
@@ -4236,26 +4238,26 @@ class ndarray:
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
-        if index_has_slice or len(index) < len(self.size):
+        if index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
             for i in range(len(index)):
-                if isinstance(index[i], int) and index[i] >= self.size[i]:
+                if isinstance(index[i], int) and index[i] >= self.shape[i]:
                     raise IndexError(
                         "index "
                         + str(index[i])
                         + " is out of bounds for axis "
                         + str(i)
-                        + " with size "
-                        + str(self.size[i])
+                        + " with shape "
+                        + str(self.shape[i])
                     )
 
             # make sure array distribution can't change (ie, not flexible or is already constructed)
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
                 deferred_op.do_ops()
-            num_dim = len(self.size)
-            cindex = canonical_index(index, self.size)
-            dim_sizes = tuple([max(0, x.stop - x.start) for x in cindex])
-            dprint(2, "getitem slice:", cindex, dim_sizes)
+            num_dim = len(self.shape)
+            cindex = canonical_index(index, self.shape)
+            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+            dprint(2, "getitem slice:", cindex, dim_shapes)
 
             # sdistribution = [
             #                 [[max(self.distribution[i][0][j], cindex[j].start)  for j in range(num_dim)],
@@ -4265,19 +4267,19 @@ class ndarray:
             # reduce dimensionality as needed
             axismap = [
                 i
-                for i in range(len(dim_sizes))
+                for i in range(len(dim_shapes))
                 if i >= len(index) or isinstance(index[i], slice)
             ]
-            if len(axismap) < len(dim_sizes):
-                dim_sizes, sdistribution = shardview.remap_axis(
-                    dim_sizes, sdistribution, axismap
+            if len(axismap) < len(dim_shapes):
+                dim_shapes, sdistribution = shardview.remap_axis(
+                    dim_shapes, sdistribution, axismap
                 )
-            dprint(2, "getitem slice:", dim_sizes, sdistribution)
+            dprint(2, "getitem slice:", dim_shapes, sdistribution)
             #            deferred_op.add_op(["", self, " = ", value, ""])
-            # return ndarray(self.gid, tuple(dim_sizes), np.asarray(sdistribution))
+            # return ndarray(self.gid, tuple(dim_shapes), np.asarray(sdistribution))
             # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
             return ndarray(
-                dim_sizes,
+                dim_shapes,
                 gid=self.gid,
                 distribution=sdistribution,
                 local_border=0,
@@ -4290,13 +4292,13 @@ class ndarray:
             all([i.ndim == self.ndim for i in index])):
             # Advanced indexing always creates a copy.
             if len(index) == 1 and self.ndim == 1:
-                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of size", self.size)
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of shape", self.shape)
                 assert 0
             else:
-                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of size", self.size)
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of shape", self.shape)
                 assert 0
 
-        print("Don't know how to get index", index, type(index), " of dist array of size", self.size)
+        print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
 
     def get_remote_ranges(self, required_division):
@@ -4323,7 +4325,7 @@ class ndarray:
         return rv
 
     # def __len__(self):
-    #    return self.size[0]
+    #    return self.shape[0]
 
     def __array_function__(self, func, types, args, kwargs):
         dprint(
@@ -4589,7 +4591,7 @@ def matmul(a, b, reduction=False, out=None):
                 out_ndarray.gid,
                 out_ndarray.distribution,
                 a.gid,
-                a.size,
+                a.shape,
                 a.distribution,
                 blocal,
                 0,
@@ -4713,10 +4715,10 @@ def matmul(a, b, reduction=False, out=None):
                 out_ndarray.gid,
                 out_ndarray.distribution,
                 a.gid,
-                a.size,
+                a.shape,
                 a.distribution,
                 b.gid,
-                b.size,
+                b.shape,
                 b.distribution,
                 bextend,
                 a_send_recv,
@@ -4985,21 +4987,21 @@ def matmul(a, b, reduction=False, out=None):
     end_compute_comm_set = timer()
 
     # matmul_workers = remote_call_all("matmul", out_ndarray.gid,
-    #                                a.gid, a.size, a.distribution,
-    #                                b.gid, b.size, b.distribution, bextend,
+    #                                a.gid, a.shape, a.distribution,
+    #                                b.gid, b.shape, b.distribution, bextend,
     #                                a_send_recv, b_send_recv)
 
     launch_start_time = timer()
     matmul_workers = remote_async_call_all(
         "matmul",
         out_ndarray.gid,
-        out_ndarray.size,
+        out_ndarray.shape,
         out_ndarray.distribution,
         a.gid,
-        a.size,
+        a.shape,
         a.distribution,
         b.gid,
-        b.size,
+        b.shape,
         b.distribution,
         bextend,
         a_send_recv,
@@ -5111,7 +5113,7 @@ def canonical_index(index, size):
     return tuple(newindex)
 
 
-def numpy_broadcast_size(a, b):
+def numpy_broadcast_shape(a, b):
     rev_ashape = a.shape[::-1]
     if isinstance(b, ndarray):
         rev_bshape = b.shape[::-1]
@@ -5126,7 +5128,7 @@ def numpy_broadcast_size(a, b):
     ):
         return None
 
-    dprint(3, "numpy_broadcast_size:", rev_ashape, rev_bshape)
+    dprint(3, "numpy_broadcast_shape:", rev_ashape, rev_bshape)
 
     # make sure that ashape is not shorter than bshape
     if len(rev_bshape) > len(rev_ashape):
@@ -5181,7 +5183,7 @@ def make_method(
             t0 = timer()
             #            print("make_method", name, type(self), type(rhs))
             #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
-            #                assert(self.size == rhs.size)
+            #                assert(self.shape == rhs.shape)
             new_ndarray = self.array_binop(
                 rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype
             )
@@ -5285,8 +5287,8 @@ class deferred_op:
     last_call_time = timer()
     last_add_time = timer()
 
-    def __init__(self, size, distribution, fdist):
-        self.size = size
+    def __init__(self, shape, distribution, fdist):
+        self.shape = shape
         self.distribution = distribution
         self.flex_dist = fdist
         self.delete_gids = []
@@ -5449,17 +5451,17 @@ class deferred_op:
         # get code and variables from oplist
         codes = oplist[::2]
         operands = oplist[1::2]
-        # find ndarray -- assume all are compatible (same size, divisions);  TODO: should check
+        # find ndarray -- assume all are compatible (same shape, divisions);  TODO: should check
         arr = (
             write_array
             if write_array is not None
             else next(filter(lambda x: isinstance(x, ndarray), operands), None)
         )
         assert arr is not None, "Deferred op with no ndarray parameter"
-        size = arr.size
+        shape = arr.shape
         distribution = arr.distribution
         if (cls.ramba_deferred_ops is not None) and (
-            cls.ramba_deferred_ops.size != size
+            cls.ramba_deferred_ops.shape != shape
             or (
                 not shardview.compatible_distributions(
                     cls.ramba_deferred_ops.distribution, distribution
@@ -5471,15 +5473,15 @@ class deferred_op:
             dprint(
                 2,
                 "deferred ops mismatch:",
-                cls.ramba_deferred_ops.size,
-                size,
+                cls.ramba_deferred_ops.shape,
+                shape,
                 cls.ramba_deferred_ops.distribution,
                 distribution,
             )
             cls.ramba_deferred_ops.do_ops()
         if cls.ramba_deferred_ops is None:
             dprint(2, "Create new deferred op set")
-            cls.ramba_deferred_ops = cls(size, distribution, arr.bdarray.flex_dist)
+            cls.ramba_deferred_ops = cls(shape, distribution, arr.bdarray.flex_dist)
         if not arr.bdarray.flex_dist:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
@@ -5488,7 +5490,7 @@ class deferred_op:
         # add vars
         for i, x in enumerate(operands):
             if isinstance(x, ndarray):
-                if x.size == ():  # 0d check
+                if x.shape == ():  # 0d check
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
                 else:
                     bd = bdarray.get_by_gid(x.gid)
@@ -5516,9 +5518,9 @@ class deferred_op:
         dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)
 
 
-def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
+def create_array_with_divisions(shape, divisions, local_border=0, dtype=None):
     new_ndarray = ndarray(
-        size,
+        shape,
         distribution=shardview.clean_dist(divisions),
         local_border=local_border,
         dtype=dtype,
@@ -5528,7 +5530,7 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
 
 
 def create_array(
-    size,
+    shape,
     filler,
     local_border=0,
     dtype=None,
@@ -5539,13 +5541,13 @@ def create_array(
     **kwargs
 ):
     new_ndarray = ndarray(
-        size,
+        shape,
         local_border=local_border,
         dtype=dtype,
         distribution=distribution,
         **kwargs
     )
-    if size == ():
+    if shape == ():
         if isinstance(filler, str):
             new_ndarray.distribution = np.array(eval(filler), dtype=new_ndarray.dtype)
         elif isinstance(filler, numbers.Number):
@@ -5566,7 +5568,7 @@ def create_array(
                 "create_array",
                 new_ndarray.gid,
                 new_ndarray.distribution[i],
-                size,
+                shape,
                 filler,
                 local_border,
                 dtype,
@@ -5585,7 +5587,7 @@ def create_array(
 
 
 def init_array(
-    size,
+    shape,
     filler,
     local_border=0,
     dtype=None,
@@ -5593,10 +5595,10 @@ def init_array(
     tuple_arg=True,
     **kwargs
 ):
-    if isinstance(size, int):
-        size = (size,)
+    if isinstance(shape, int):
+        shape = (shape,)
     return create_array(
-        size,
+        shape,
         filler,
         local_border=local_border,
         dtype=dtype,
@@ -5606,14 +5608,14 @@ def init_array(
     )
 
 
-def fromfunction(lfunc, size, dtype=None, **kwargs):
-    return init_array(size, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
+def fromfunction(lfunc, shape, dtype=None, **kwargs):
+    return init_array(shape, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
 
 
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
-def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
+def empty(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     return init_array(
-        size,
+        shape,
         None,
         local_border=local_border,
         dtype=dtype,
@@ -5624,16 +5626,16 @@ def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
 
 def empty_like(other_ndarray,**kwargs):
     return empty(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
         **kwargs
     )
 
 
-def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
+def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     return init_array(
-        size,
+        shape,
         "0",
         local_border=local_border,
         dtype=dtype,
@@ -5644,26 +5646,26 @@ def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
 
 def zeros_like(other_ndarray):
     return zeros(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
     )
 
 
-def ones(size, local_border=0, dtype=None, **kwargs):
-    return init_array(size, "1", local_border=local_border, dtype=dtype, **kwargs)
+def ones(shape, local_border=0, dtype=None, **kwargs):
+    return init_array(shape, "1", local_border=local_border, dtype=dtype, **kwargs)
 
 
 def ones_like(other_ndarray):
     return ones(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
     )
 
 
-def full(size, v, local_border=0, **kwargs):
-    return init_array(size, str(v), local_border=local_border, **kwargs)
+def full(shape, v, local_border=0, **kwargs):
+    return init_array(shape, str(v), local_border=local_border, **kwargs)
 
 
 def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
@@ -5680,7 +5682,7 @@ def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
 
 def copy(arr, local_border=0):
     new_ndarray = create_array_with_divisions(
-        arr.size, arr.distribution, local_border=local_border
+        arr.shape, arr.distribution, local_border=local_border
     )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
     """
@@ -5712,11 +5714,11 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
     if isinstance(x, list):
         x = np.array(x)
 
-    size = x.shape
+    shape = x.shape
     if dtype is None:
         dtype = x.dtype
     new_ndarray = create_array(
-        size, None, local_border=local_border, dtype=dtype, **kwargs
+        shape, None, local_border=local_border, dtype=dtype, **kwargs
     )
     distribution = new_ndarray.distribution
     [
@@ -5725,7 +5727,7 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
             "push_array",
             new_ndarray.gid,
             distribution[i],
-            size,
+            shape,
             x[shardview.to_slice(distribution[i])],
             local_border,
             distribution,
@@ -5974,18 +5976,18 @@ def where(cond, a, b):
     dprint(2, "where:", cond.shape, a.shape, b.shape, cond, a, b)
 
     lb = max(a.local_border, b.local_border)
-    ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
-    conda_new_array_size, conda_condview, conda_aview = ndarray.broadcast(
+    ab_new_array_shape, ab_aview, ab_bview = ndarray.broadcast(a, b)
+    conda_new_array_shape, conda_condview, conda_aview = ndarray.broadcast(
         cond, ab_aview
     )
-    condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(
+    condb_new_array_shape, condb_condview, condb_bview = ndarray.broadcast(
         cond, ab_bview
     )
-    assert conda_new_array_size == condb_new_array_size
+    assert conda_new_array_shape == condb_new_array_shape
 
-    dprint(2, "newsize:", ab_new_array_size)
-    new_ndarray = empty(conda_new_array_size, dtype=a.dtype, local_border=lb)
-    # new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
+    dprint(2, "newshape:", ab_new_array_shape)
+    new_ndarray = empty(conda_new_array_shape, dtype=a.dtype, local_border=lb)
+    # new_ndarray = create_array_with_divisions(conda_new_array_shape, conda_aview.distribution, local_border=lb)
     deferred_op.add_op(
         [
             "",
@@ -6113,14 +6115,14 @@ def reshape(arr, newshape):
 
 
 def reshape_copy(arr, newshape):
-    assert np.prod(arr.size) == np.prod(newshape)
+    assert np.prod(arr.shape) == np.prod(newshape)
     new_arr = empty(newshape, dtype=arr.dtype)
 
     deferred_op.do_ops()
     dprint(
         2,
         "reshape_copy",
-        arr.size,
+        arr.shape,
         newshape,
         shardview.distribution_to_divisions(arr.distribution),
         shardview.distribution_to_divisions(new_arr.distribution),
@@ -6128,10 +6130,10 @@ def reshape_copy(arr, newshape):
     reshape_workers = remote_call_all(
         "reshape",
         new_arr.gid,
-        new_arr.size,
+        new_arr.shape,
         new_arr.distribution,
         arr.gid,
-        arr.size,
+        arr.shape,
         arr.distribution,
         uuid.uuid4(),
     )
@@ -6195,7 +6197,7 @@ def triu(m, k=0):
     # return smap_index(triu_internal, m, k)
     deferred_op.do_ops()
     new_ndarray = create_array_with_divisions(
-        m.size, m.distribution, local_border=m.local_border
+        m.shape, m.distribution, local_border=m.local_border
     )
     remote_exec_all(
         "triu",
@@ -6217,7 +6219,7 @@ def smap_internal(func, attr, *args, dtype=None, parallel=True):
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     dist = partitioned[0].distribution
     for arg in partitioned:
         assert shardview.dist_is_eq(arg.distribution, dist)
@@ -6225,7 +6227,7 @@ def smap_internal(func, attr, *args, dtype=None, parallel=True):
     if dtype is None:
         dtype = partitioned[0].dtype
     new_ndarray = create_array_with_divisions(
-        size, dist, partitioned[0].local_border, dtype=dtype
+        shape, dist, partitioned[0].local_border, dtype=dtype
     )
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
@@ -6256,9 +6258,9 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     start_time = timer()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     for arg in partitioned:
-        assert arg.size == size
+        assert arg.shape == shape
     if not isinstance(reducer, SreduceReducer):
         reducer = SreduceReducer(reducer, reducer)
 
@@ -6278,7 +6280,7 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     )
     after_remote_time = timer()
     final_result = worker_results[0]
-    dprint(2, "sreduce first result:", final_result[0].size, final_result[0].size * final_result[0].itemsize, final_result[0].shape)
+    dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
     """
     for result in worker_results[1:]:
         final_result = reducer.driver_func(final_result, result, *args)
@@ -6300,7 +6302,7 @@ def sstencil(func, *args, **kwargs):
     deferred_op.do_ops()
     if func.neighborhood is None:
         fake_args = [
-            np.empty(tuple([1] * len(x.size))) if isinstance(x, ndarray) else x
+            np.empty(tuple([1] * len(x.shape))) if isinstance(x, ndarray) else x
             for x in args
         ]
         slocal = func.compile_local()
@@ -6318,10 +6320,10 @@ def sstencil(func, *args, **kwargs):
 
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     border = partitioned[0].local_border
     for arg in partitioned:
-        assert arg.size == size
+        assert arg.shape == shape
         assert arg.local_border == border
     assert border >= nmax
 
@@ -6329,10 +6331,10 @@ def sstencil(func, *args, **kwargs):
     if "out" in kwargs:
         new_ndarray = kwargs["out"]
         create_flag = False
-        # TODO:  Check sizes
+        # TODO:  Check shapes
     else:
         new_ndarray = create_array_with_divisions(
-            size, partitioned[0].distribution, partitioned[0].local_border
+            shape, partitioned[0].distribution, partitioned[0].local_border
         )
         create_flag = True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
@@ -6354,11 +6356,11 @@ def sstencil(func, *args, **kwargs):
 def scumulative(local_func, final_func, array):
     deferred_op.do_ops()
     assert isinstance(array, ndarray)
-    size = array.size
-    assert len(size) == 1
+    shape = array.shape
+    assert len(shape) == 1
 
     new_ndarray = create_array_with_divisions(
-        size, array.distribution, array.local_border
+        shape, array.distribution, array.local_border
     )
     # Can we do this without ray.get?
     # ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
