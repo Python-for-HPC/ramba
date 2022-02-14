@@ -3796,6 +3796,8 @@ class ndarray:
         dtype=None,
         flex_dist=True,
         readonly=False,
+        advindex=None,
+        parent=None,
         **kwargs
     ):
         t0 = timer()
@@ -3829,8 +3831,24 @@ class ndarray:
         #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
+        self.advindex = advindex
+        self.parent = parent
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
+
+    def assign(self, other):
+        assert(isinstance(other, ndarray))
+        assert(self.shape == other.shape)
+        # maybe assign_bdarray?
+        self.distribution = other.distribution
+        self.local_border = other.local_border
+        self.readonly = other.readonly
+        self.advindex = other.advindex
+        self.getitem_cache = other.getitem_cache
+        self.from_border = other.from_border
+        self.to_border = other.to_border
+        self.bdarray = bdarray.assign_bdarray(self, self.shape, gid=other.gid, distribution=self.distribution)
+        #self.bdarray = other.bdarray
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
@@ -3861,7 +3879,124 @@ class ndarray:
     def dtype(self):
         return np.dtype(self.bdarray.dtype)
 
+    def process_advindex(self):
+        start_pa = timer()
+        if self.advindex is not None:
+            adv_op, adv_args = self.advindex
+            if adv_op == "stack":
+                stack_arrays = adv_args[0]
+                # Make sure that the number of arrays matched the axis dimension of self
+                assert(len(stack_arrays) == self.shape[adv_args[1]])
+                # Make sure all the arrays are made with nanmean calls
+                assert(all([x.advindex[0] == "nanmean" for x in stack_arrays]))
+                # Get the first array's join axis
+                join_axis = stack_arrays[0].advindex[1][1]
+                dprint(3, "join_axis:", join_axis)
+                # Make sure all the arrays use the same join axis in nanmean
+                assert(all([x.advindex[1][1] == join_axis for x in stack_arrays]))
+                # Make sure that all the nanmean arrays are advindex
+                assert(all([x.advindex[1][0].advindex is not None for x in stack_arrays]))
+                # Make sure that all the nanmean arrays came from getitems
+                assert(all([x.advindex[1][0].advindex[0] == "__getitem__" for x in stack_arrays]))
+                # Get the axis that the first getitem operates on
+                getitem_axis = get_advindex_dim(stack_arrays[0].advindex[1][0].advindex[1][1])
+                dprint(3, "getitem_axis:", getitem_axis)
+                # Make sure that all the getitems have the same axis
+                assert(all([get_advindex_dim(x.advindex[1][0].advindex[1][1]) == getitem_axis for x in stack_arrays]))
+                # Get the array on which getitem operates for the first stack array
+                orig_array = stack_arrays[0].advindex[1][0].advindex[1][0]
+                # Make sure that all the getitems operate on the same array
+                assert(all([x.advindex[1][0].advindex[1][0] is orig_array for x in stack_arrays]))
+                slot_indices = [x.advindex[1][0].advindex[1][1][getitem_axis] for x in stack_arrays]
+                dprint(3, "slot_indices:", slot_indices)
+                group_array = np.full(orig_array.size[getitem_axis], -1, dtype=np.int)
+                for i in range(len(slot_indices)):
+                    for vi in slot_indices[i]:
+                        group_array[vi] = i
+                with np.printoptions(threshold=np.inf):
+                    dprint(3, "group_array:", group_array)
+
+                prep = timer()
+                dprint(3, "process_advindex prep time:", prep - start_pa)
+                gb = orig_array.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
+                res = gb.nanmean()
+                self.internal_numpy = res
+                #self.assign(fromarray(res))
+            elif adv_op == "concatenate":
+#                import pdb
+#                pdb.set_trace()
+                arrayseq, axis, out = adv_args
+                dprint(3, "process concat:", self.shape, len(arrayseq), arrayseq[0].shape)
+                # Make sure all the arrayseq are binop calls
+                assert(all([x.advindex[0] == "array_binop" for x in arrayseq]))
+                binop = arrayseq[0].advindex[1][2]
+                # Make sure all the arrayseq have the same operation
+                assert(all([x.advindex[1][2] == binop for x in arrayseq]))
+                lhs_binop = [x.advindex[1][0] for x in arrayseq]
+                prep = timer()
+                dprint(3, "process_advindex lhs_binop:", prep - start_pa)
+                # Make sure all the lhs ops are ndarrays with advindex __getitem__
+                assert(all([isinstance(x, ndarray) and x.advindex is not None and x.advindex[0] == "__getitem__" for x in lhs_binop]))
+                prep = timer()
+                dprint(3, "process_advindex lhs_binop assert:", prep - start_pa)
+                rhs_binop = [x.advindex[1][1] for x in arrayseq]
+                prep = timer()
+                dprint(3, "process_advindex rhs_binop:", prep - start_pa)
+                # Make sure all the rhs ops are ndarrays without advindex
+                assert(all([isinstance(x, ndarray) and x.advindex is None for x in rhs_binop]))
+                prep = timer()
+                dprint(3, "process_advindex rhs_binop assert:", prep - start_pa)
+
+                orig_array_lhs = lhs_binop[0].advindex[1][0]
+                # Make sure that all the getitems operate on the same array
+                assert(all([x.advindex[1][0] is orig_array_lhs for x in lhs_binop]))
+                prep = timer()
+                dprint(3, "process_advindex getitems assert:", prep - start_pa)
+
+                base_array_rhs_gid = rhs_binop[0].bdarray.gid
+                # Make sure that all the rhs are for the same base array.
+                assert(all([x.bdarray.gid == base_array_rhs_gid for x in rhs_binop]))
+                prep = timer()
+                dprint(3, "process_advindex rhs base array assert:", prep - start_pa)
+                #rhs_slice = tuple([slice(None,None) if i != axis else 0 for i in range(len(rhs_binop[0].shape))])
+                dprint(3, "rb:", rhs_binop[0], rhs_binop[0].shape, rhs_binop[0].parent)
+                rhs = rhs_binop[0].parent.parent.parent.parent
+                dprint(3, "rhs:", rhs, type(rhs), rhs.shape)
+#                import pdb
+#                pdb.set_trace()
+                if hasattr(rhs, "internal_numpy"):
+                    dprint(3, "internal_numpy found:", rhs.internal_numpy.shape)
+                    rhsasarray = rhs.internal_numpy
+                else:
+                    rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
+                prep = timer()
+                dprint(3, "process_advindex moveaxis:", prep - start_pa)
+
+                slot_indices = [x.advindex[1][1][axis] for x in lhs_binop]
+                prep = timer()
+                dprint(3, "process_advindex slot_indices assert:", prep - start_pa)
+                dprint(3, "slot_indices:", slot_indices)
+                group_array = np.full(orig_array_lhs.size[axis], -1, dtype=np.int)
+                for i in range(len(slot_indices)):
+                    for vi in slot_indices[i]:
+                        group_array[vi] = i
+#                with np.printoptions(threshold=np.inf):
+#                    dprint(3, "group_array:", group_array)
+
+                prep = timer()
+                dprint(3, "process_advindex prep time:", prep - start_pa)
+#                pdb.set_trace()
+                gb = orig_array_lhs.groupby(axis, group_array, num_groups=len(slot_indices))
+                print("pre-groupby:", type(gb), type(group_array), len(slot_indices), type(rhsasarray), rhsasarray.shape, axis)
+                res = eval("gb" + binop + "rhsasarray")
+                self.assign(res)
+                sync()
+            else:
+                assert 0
+
     def transpose(self, *args):
+        self.process_advindex()
+
         ndims = len(self.shape)
         if len(args) == 0:
             return self.remapped_axis([ndims - i - 1 for i in range(ndims)])
@@ -3904,7 +4039,7 @@ class ndarray:
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
         newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
+        return ndarray(newshape, self.gid, newdist, readonly=self.readonly, parent=self)
 
     def asarray(self):
         if self.shape == ():
@@ -4125,6 +4260,14 @@ class ndarray:
                 )
             """
 
+            if self.advindex is not None or (isinstance(rhs, ndarray) and rhs.advindex is not None):
+                res = ndarray(
+                    new_array_shape,
+                    dtype=dtype,
+                    advindex=("array_binop", (self, rhs, optext, inplace, reverse, imports, dtype))
+                )
+                return res
+
             if isinstance(new_array_shape, tuple):
                 if len(new_array_shape) > 0:
                     new_ndarray = empty(new_array_shape, local_border=lb, dtype=dtype)
@@ -4207,7 +4350,7 @@ class ndarray:
 
     def __getitem__(self, index):
         indhash = pickle.dumps(index)
-        dprint(3, "__getitem__", index, type(index), self.shape, indhash in self.getitem_cache)
+        dprint(3, "__getitem__", index, type(index), self.shape, indhash in self.getitem_cache, self.advindex)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
@@ -4219,6 +4362,11 @@ class ndarray:
 
         if index[-1] is Ellipsis:
             index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
+
+        if any([x is None for x in index]):
+            newdims = [i for i in range(len(index)) if index[i] is None]
+            expanded_array = expand_dims(self, newdims)
+            return expanded_array
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
         if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
@@ -4237,8 +4385,19 @@ class ndarray:
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
+        if index_has_array:
+            # This is the advanced indexing case that always creates a copy.
+            dim_sizes = dim_sizes_from_index(index, self.size)
+            dprint(2, "created advindex ndarray", self.__class__, self.__class__.__name__)
+            res = ndarray(
+                dim_sizes,
+                dtype=self.dtype,
+                advindex=("__getitem__", (self, index))
+            )
+            res.__class__ = self.__class__
+            return res
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
-        if index_has_slice or len(index) < len(self.shape):
+        elif index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
             for i in range(len(index)):
                 if isinstance(index[i], int) and index[i] >= self.shape[i]:
@@ -4285,8 +4444,10 @@ class ndarray:
                 local_border=0,
                 readonly=self.readonly,
                 dtype=self.dtype,
+                parent=self
             )
 
+        """
         if (isinstance(index, tuple) and
             all([isinstance(i, np.ndarray) for i in index]) and
             all([i.ndim == self.ndim for i in index])):
@@ -4297,6 +4458,7 @@ class ndarray:
             else:
                 print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of shape", self.shape)
                 assert 0
+        """
 
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
@@ -4324,6 +4486,21 @@ class ndarray:
                 rv = np.mean([rv], dtype=dtype)
         return rv
 
+    def nanmean(self, axis=None, dtype=None):
+        if axis is None:
+            #return 0
+            sres = sreduce(lambda x: (x,1) if x != np.nan else (0,0), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
+            print("nanmean sres:", sres)
+            return sres[0] / sres[1]
+        else:
+            res_size = tuple(self.size[:axis] + self.size[axis+1:])
+            res = ndarray(
+                res_size,
+                dtype=self.dtype,
+                advindex=("nanmean", (self, axis))
+            )
+            return res
+
     # def __len__(self):
     #    return self.shape[0]
 
@@ -4338,6 +4515,11 @@ class ndarray:
             kwargs,
             func in HANDLED_FUNCTIONS,
         )
+        """
+        import pdb
+        if func.__name__ not in ["nanmean", "result_type"]:
+            pdb.set_trace()
+        """
         for arg in args:
             dprint(4, "arg:", arg, type(arg))
         new_args = []
@@ -4397,6 +4579,8 @@ class ndarray:
     def groupby(self, dim, value_to_group, num_groups=None):
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
+    def persist(self):
+        return self
 
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
@@ -5088,6 +5272,27 @@ def canonical_dim(dim, dim_size, end=False):
         return dim_size
 
 
+def dim_sizes_from_index(index, size):
+    newindex = []
+    if not isinstance(index, tuple):
+        index = (index,)
+    assert len(index) <= len(size)
+    for i in range(len(size)):
+        if i >= len(index):
+            newindex.append(size[i])
+            continue
+        ti = index[i]
+        if isinstance(ti, int):
+            newindex.append(1)
+        elif isinstance(ti, slice):
+            newindex.append(canonical_dim(ti.stop, size[i], end=True) - canonical_dim(ti.start, size[i]))
+        elif isinstance(ti, np.ndarray):
+            newindex.append(len(ti))
+        else:
+            assert 0
+    return tuple(newindex)
+
+
 def canonical_index(index, size):
     newindex = []
     if not isinstance(index, tuple):
@@ -5706,6 +5911,11 @@ def asarray(x):
     return x.asarray()
 
 
+# From Dask API
+def from_array(x, chunks=None, name=None, lock=False, asarray=None, fancy=True, getitem=None, meta=None, inline_array=False):
+    # TO-DO:  Use chunks here.
+    return fromarray(x)
+
 def fromarray(x, local_border=0, dtype=None, **kwargs):
     if isinstance(x, numbers.Number):
         return create_array((), filler=x, dtype=dtype, **kwargs)
@@ -5870,6 +6080,17 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = tuple(out_shape)
     dprint(2, "concatenate out_shape:", out_shape, first_dtype)
     assert found_ndarray
+
+    if any([isinstance(x, ndarray) and x.advindex is not None for x in arrayseq]):
+        res = ndarray(
+            out_shape,
+            dtype=first_dtype,
+            advindex=("concatenate", (arrayseq, axis, out))
+        )
+        res.process_advindex()
+        return res
+
+
     if out is None:
         out = empty(out_shape, dtype=first_dtype, **kwargs, no_defer=True)
         dprint(2, "Create concatenate output:", out.gid, out_shape, out.dtype)
@@ -5928,6 +6149,7 @@ mod_to_array = [
     "arcsin",
     "arccos",
     "arctan",
+    "nanmean",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
@@ -6003,6 +6225,19 @@ def where(cond, a, b):
         imports=[],
     )
     return new_ndarray
+
+
+@implements("stack", False)
+def stack(arrays, axis=0, out=None):
+    first_array = arrays[0]
+    assert(all([x.shape == first_array.shape for x in arrays]))
+    res_size = (len(arrays),) + first_array.shape
+    res = ndarray(
+        res_size,
+        dtype=first_array.dtype,
+        advindex=("stack", (arrays, axis, out))
+    )
+    return res
 
 
 @implements("result_type", False)
@@ -6102,7 +6337,7 @@ def reshape(arr, newshape):
         sz, dist = shardview.remap_axis(oldsize, dist, newmap)
         dprint(2, sz, dist)
         return ndarray(
-            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
+            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly, parent=arr
         )
     # general reshape
     global reshape_forwarding

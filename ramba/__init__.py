@@ -15,3 +15,5 @@ __version__ = "0.1.0"
 from ramba.ramba import *
 
 import ramba.random as random
+
+from ramba.dask_to_ramba import patch_dask
