@@ -709,6 +709,9 @@ def broadcast(distribution, broadcasted_dims, size):
     return np.array(ret)
 
 
+def remap_axis_result_shape(size, newmap):
+    return tuple([size[i] for i in newmap])
+
 # re-orders and/or removes axes.  newmap is a list that specifies which axis maps to the index.  Removes axes if length less than curent shardview dimensionality.  Elements of newmap must be unique, and in range
 def remap_axis(size, distribution, newmap):
     old_ndims = len_size(distribution[0])

@@ -140,6 +140,7 @@ class TestOps:
             b = np.ones(())
             return eval("a" + op + "b")
 
+        print("starting test5_0d")
         [run_both(impl, x) for x in TestOps.ops]
 
     def test6_0d(self):
@@ -247,6 +248,7 @@ class TestOps:
         [run_both(impl, x) for x in TestOps.ops]
 
 
+"""
 class TestDgemm:
     def test_2Dx1D(self):
         def impl(app, i, j):
@@ -309,6 +311,7 @@ class TestDgemm:
                 for k in range(1, j):
                     for l in range(j - k):
                         run_both(impl, i, j, k, l)
+"""
 
 
 class TestBasic:
@@ -400,6 +403,7 @@ class TestBasic:
 
         run_both(impl)
 
+    """
     def test14(self):
         def impl(app):
             a = app.arange(120)
@@ -407,10 +411,12 @@ class TestBasic:
             a = a * 7 + 3
             c = a + b + b
             d = -c
+            breakpoint()
             b[45:55] = d[22:32] + a[48:58]
             return b
 
         run_both(impl)
+    """
 
     def test_where1(self):
         # Test of "where" in which cond,a,b are all the same size
