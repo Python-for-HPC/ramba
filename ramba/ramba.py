@@ -3825,7 +3825,7 @@ class DAG:
             nres = ndarray_deps[0]
             nres.dag = dag
         else:
-            nres = ndarray(delayed.shape, delayed.dtype, dag=dag)
+            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag)
         dag.output = nres
         for dag_node in dag.backward_deps:
             dag_node.forward_deps.append(dag)
@@ -4019,6 +4019,8 @@ class DAG:
         self.executed = True
         if not self.inplace and exec_array_out is not self.output:
             self.output.assign(exec_array_out)
+        for dag_node in self.backward_deps:
+            dag_node.forward_deps.remove(dag)
 
     @classmethod
     def instantiate_dag_node(cls, dag_node):
@@ -4039,7 +4041,7 @@ class DAG:
 
     @classmethod
     def execute_all(cls):
-        nodeps = list(filter(lambda x: len(x.forward_deps) == 0, cls.dag_nodes))
+        nodeps = list(filter(lambda x: len(x.forward_deps) == 0 and not x.executed, cls.dag_nodes))
         dprint(2, "execute_all:", len(nodeps))
         for dag_node in nodeps:
             cls.instantiate_dag_node(dag_node)
@@ -4053,7 +4055,7 @@ class DAGshape:
 
 
 def DAGapi(func):
-    name = func.__name__
+    name = func.__qualname__
     def wrapper(*args, **kwargs):
         dprint(1, "DAGapi", name)
         fres = func(*args, **kwargs)
@@ -4062,22 +4064,7 @@ def DAGapi(func):
             nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
             if DAG.in_evaluate > 0:
                 dag.execute()
-            return nres
-        else:
-            return fres
-    return wrapper
-
-
-def NdarrayDAGapi(func):
-    name = func.__name__
-    def wrapper(*args, **kwargs):
-        dprint(1, "NdarrayDAGapi", name)
-        fres = func(*args, **kwargs)
-        if isinstance(fres, DAGshape):
-            executor = eval("ndarray." + name + "_executor")
-            nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
-            if DAG.in_evaluate > 0:
-                dag.execute()
+                deferred_op.do_ops()
             return nres
         else:
             return fres
@@ -4089,6 +4076,7 @@ class ndarray:
     def __init__(
         self,
         shape,
+        *,    # the arguments below can only be passed as keyword
         gid=None,
         distribution=None,
         local_border=0,
@@ -4223,9 +4211,9 @@ class ndarray:
     @classmethod
     def remapped_axis_executor(cls, temp_array, self, newmap):
         newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, self.gid, newdist, readonly=self.readonly, parent=self)
+        return ndarray(newshape, gid=self.gid, distribution=newdist, readonly=self.readonly, parent=self)
 
-    @NdarrayDAGapi
+    @DAGapi
     def remapped_axis(self, newmap):
         return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False)
 
@@ -4336,7 +4324,7 @@ class ndarray:
             )
             return new_ndarray
 
-    @NdarrayDAGapi
+    @DAGapi
     def array_unaryop(
         self, op, optext, reduction=False, imports=[], dtype=None, axis=None
     ):
@@ -4512,7 +4500,7 @@ class ndarray:
             raise ValueError("Non-copy version of astype not implemented.")
         return new_ndarray
 
-    @NdarrayDAGapi
+    @DAGapi
     def astype(self, dtype, copy=True):
         dprint(1, "astype:", self.dtype, type(self.dtype), dtype, type(dtype), copy)
         if dtype == self.dtype and not copy:
@@ -4595,7 +4583,7 @@ class ndarray:
             return new_ndarray
 
 
-    @NdarrayDAGapi
+    @DAGapi
     def array_binop(
         self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
     ):
@@ -4727,7 +4715,7 @@ class ndarray:
         print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
 
-    @NdarrayDAGapi
+    @DAGapi
     def setitem(self, key, value):
         return DAGshape(self.shape, self.dtype, True)
 
@@ -4797,7 +4785,6 @@ class ndarray:
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
-        breakpoint()
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
             dim_sizes = dim_sizes_from_index(index, self.shape)
@@ -4817,9 +4804,7 @@ class ndarray:
                     )
 
             # make sure array distribution can't change (ie, not flexible or is already constructed)
-            #DAG.instantiate(self)
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
-                breakpoint()
                 deferred_op.do_ops()
             num_dim = len(self.shape)
             cindex = canonical_index(index, self.shape)
@@ -4854,7 +4839,7 @@ class ndarray:
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
 
-    @NdarrayDAGapi
+    @DAGapi
     def getitem_array(self, index):
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
@@ -4879,6 +4864,13 @@ class ndarray:
 
             cindex = canonical_index(index, self.shape)
             dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+            axismap = [
+                i
+                for i in range(len(dim_shapes))
+                if i >= len(index) or isinstance(index[i], slice)
+            ]
+            if len(axismap) < len(dim_shapes):
+                dim_shapes = shardview.remap_axis_result_shape(dim_shapes, axismap)
             dprint(2, "__getitem__array slice:", cindex, dim_shapes)
             return DAGshape(dim_shapes, self.dtype, False)
 
@@ -5013,7 +5005,7 @@ class ndarray:
         assert axis is not None
         assert 0 # Actually do the computation if it isn't optimized away.
 
-    @NdarrayDAGapi
+    @DAGapi
     def nanmean(self, axis=None, dtype=None):
         dprint(1, "nanmean", id(self))
         if axis is None:
@@ -5848,11 +5840,8 @@ def canonical_index(index, shape):
             continue
         ti = index[i]
         if isinstance(ti, int):
-            continue  # Singular dimension selections are dropped.
-            """
             ni = canonical_dim(ti, shape[i])
             newindex.append(slice(ni, ni + 1))
-            """
         elif isinstance(ti, slice):
             newindex.append(
                 slice(
@@ -6133,7 +6122,7 @@ class deferred_op:
                 + ".shape):"
             )
         code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
-        fname = "ramba_deferred_ops_func_" + str(abs(hash(code)))
+        fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
         code = "def " + fname + "(" + ",".join(args) + "):\n" + code + "\n  pass"
         # code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
         dprint(2, "Updated code:\n" + code)
@@ -6539,6 +6528,60 @@ def asarray(x):
     return x.asarray()
 
 
+def fromarray_executor(temp_array, x, local_border=0, dtype=None, **kwargs):
+    dprint(1, "fromarray global")
+    if isinstance(x, numbers.Number):
+        return create_array((), filler=x, dtype=dtype, **kwargs)
+    if isinstance(x, np.ndarray) and x.shape == ():  # 0d array
+        return create_array((), filler=x, dtype=dtype, **kwargs)
+    if isinstance(x, list):
+        x = np.array(x)
+
+    shape = temp_array.shape
+    dtype = temp_array.dtype
+    new_ndarray = create_array(
+        shape, None, local_border=local_border, dtype=dtype, **kwargs
+    )
+    distribution = new_ndarray.distribution
+    [
+        remote_exec(
+            i,
+            "push_array",
+            new_ndarray.gid,
+            distribution[i],
+            shape,
+            x[shardview.to_slice(distribution[i])],
+            local_border,
+            distribution,
+            new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
+            new_ndarray.to_border[i] if new_ndarray.to_border is not None else None,
+            x.dtype,
+        )
+        for i in range(num_workers)
+    ]
+    new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+    return new_ndarray
+
+
+@DAGapi
+def fromarray(x, local_border=0, dtype=None, **kwargs):
+    dprint(1, "fromarray global")
+    if isinstance(x, numbers.Number):
+        return DAGshape((), dtype, False)
+    if isinstance(x, np.ndarray) and x.shape == ():  # 0d array
+        return DAGshape((), dtype, False)
+
+    if isinstance(x, list):
+        x = np.array(x)
+
+    shape = x.shape
+
+    if dtype is None:
+        dtype = x.dtype
+    return DAGshape(shape, dtype, False)
+
+
+"""
 def fromarray(x, local_border=0, dtype=None, **kwargs):
     dprint(1, "fromarray global")
     if isinstance(x, numbers.Number):
@@ -6574,6 +6617,7 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
     ]
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+"""
 
 
 def array(*args):
@@ -7178,8 +7222,7 @@ def reshape(arr, newshape):
     # general reshape
     global reshape_forwarding
     if reshape_forwarding:
-        return DAGshape(newshape, arr.dtype, False)
-        #return reshape_copy(arr, newshape)
+        return reshape_copy(arr, newshape)
     else:
         raise ReshapeError(
             "ramba.reshape not supported as distributed array reshape cannot be done inplace.  Use reshape_copy instead to create a non-inplace reshape or set RAMBA_RESHAPE_COPY environment variable to convert all reshape calls to reshape_copy."
@@ -7239,7 +7282,41 @@ def reshape(arr, newshape):
         )
 """
 
+def reshape_copy_executor(temp_array, arr, newshape):
+    assert np.prod(arr.shape) == np.prod(newshape)
+    new_arr = empty(newshape, dtype=arr.dtype)
 
+    dprint(
+        2,
+        "reshape_copy",
+        arr.shape,
+        temp_array.bdarray.gid,
+        arr.bdarray.gid,
+        new_arr.bdarray.gid,
+        newshape,
+        shardview.distribution_to_divisions(arr.distribution),
+        shardview.distribution_to_divisions(new_arr.distribution),
+    )
+    reshape_workers = remote_call_all(
+        "reshape",
+        new_arr.gid,
+        new_arr.shape,
+        new_arr.distribution,
+        arr.gid,
+        arr.shape,
+        arr.distribution,
+        uuid.uuid4(),
+    )
+    return new_arr
+
+
+@DAGapi
+def reshape_copy(arr, newshape):
+    assert np.prod(arr.shape) == np.prod(newshape)
+    return DAGshape(newshape, arr.dtype, False)
+
+
+"""
 def reshape_copy(arr, newshape):
     assert np.prod(arr.shape) == np.prod(newshape)
     new_arr = empty(newshape, dtype=arr.dtype)
@@ -7264,7 +7341,7 @@ def reshape_copy(arr, newshape):
         uuid.uuid4(),
     )
     return new_arr
-
+"""
 
 def mgrid_gen_getitem_executor(temp_array, index):
     dim_sizes = temp_array.shape
@@ -7387,9 +7464,8 @@ def triu(m, k=0):
 ##### Skeletons ######
 
 
-def smap_internal(func, attr, *args, dtype=None, parallel=True):
+def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=True):
     # TODO: should see if this can be converted into a deferred op
-    deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
     shape = partitioned[0].shape
@@ -7410,6 +7486,45 @@ def smap_internal(func, attr, *args, dtype=None, parallel=True):
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     dprint(2, "smap_internal done")
     return new_ndarray
+
+
+@DAGapi
+def smap_internal(func, attr, *args, dtype=None, parallel=True):
+    # TODO: should see if this can be converted into a deferred op
+    partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
+    assert len(partitioned) > 0
+    shape = partitioned[0].shape
+    if dtype is None:
+        dtype = partitioned[0].dtype
+    return DAGshape(shape, dtype, False)
+
+
+"""
+def smap_internal(func, attr, *args, dtype=None, parallel=True):
+    # TODO: should see if this can be converted into a deferred op
+    deferred_op.do_ops()
+    partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
+    assert len(partitioned) > 0
+    shape = partitioned[0].shape
+    dist = partitioned[0].distribution
+    for arg in partitioned:
+        DAG.instantiate(arg)
+        assert shardview.dist_is_eq(arg.distribution, dist)
+
+    if dtype is None:
+        dtype = partitioned[0].dtype
+    new_ndarray = create_array_with_divisions(
+        shape, dist, partitioned[0].local_border, dtype=dtype
+    )
+    args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
+    remote_exec_all(
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
+    )
+    new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+    dprint(2, "smap_internal done")
+    return new_ndarray
+"""
 
 
 def smap(func, *args, dtype=None, parallel=True):
@@ -7433,13 +7548,13 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     assert len(partitioned) > 0
     shape = partitioned[0].shape
     for arg in partitioned:
+        DAG.instantiate(arg)
         assert arg.shape == shape
     if not isinstance(reducer, SreduceReducer):
         reducer = SreduceReducer(reducer, reducer)
 
     a_send_recv = uuid.uuid4()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
-    # worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
     worker_results = remote_call_all(
         attr,
         partitioned[0].gid,
@@ -7711,7 +7826,6 @@ class RambaGroupby:
         def mean_reducer_worker(result, fres):
             return fres
 
-        #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
         res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
         tprint(2, "groupby mean time:", timer() - mean_start)
         #with np.printoptions(threshold=np.inf):
