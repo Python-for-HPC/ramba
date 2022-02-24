@@ -1326,7 +1326,6 @@ def get_do_fill(filler: FillerFunc, num_dim):
 def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     filler = filler.func
     dprint(2, "get_do_fill_non_tuple", filler)
-    print("get_do_fill_non_tuple", filler, num_dim)
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
@@ -3801,7 +3800,7 @@ class DAG:
     dag_nodes = weakref.WeakSet()
     in_evaluate = 0
 
-    def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs):
+    def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs, executed=False):
         self.name = name
         self.executor = executor
         self.inplace = inplace
@@ -3809,7 +3808,7 @@ class DAG:
         self.kwargs = kwargs
         self.forward_deps = []
         self.backward_deps = [x.dag for x in ndarray_deps]
-        self.executed = False
+        self.executed = executed
         self.output = None
 
     def __repr__(self):
@@ -3822,8 +3821,8 @@ class DAG:
         get_ndarrays(list(kwargs.values()), ndarray_deps)
         dag = DAG(name, executor, delayed.inplace, ndarray_deps, args, kwargs)
         if delayed.inplace:
-            nres = ndarray_deps[0]
-            nres.dag = dag
+            nres = delayed.inplace
+            nres.idag = dag
         else:
             nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag)
         dag.output = nres
@@ -4023,7 +4022,7 @@ class DAG:
             dag_node.forward_deps.remove(dag)
 
     @classmethod
-    def instantiate_dag_node(cls, dag_node):
+    def instantiate_dag_node(cls, dag_node, do_ops=True):
         if dag_node.executed:
             assert len(dag_node.backward_deps) == 0
             return
@@ -4036,7 +4035,8 @@ class DAG:
             dprint(2, "Running DAG executor for", op.name)
             op.execute()
         # FIX ME?  Does this need to go in the loop above if we alternate between deferred_ops and something else?
-        deferred_op.do_ops()
+        if do_ops:
+            deferred_op.do_ops()
         cls.in_evaluate -= 1
 
     @classmethod
@@ -4044,7 +4044,8 @@ class DAG:
         nodeps = list(filter(lambda x: len(x.forward_deps) == 0 and not x.executed, cls.dag_nodes))
         dprint(2, "execute_all:", len(nodeps))
         for dag_node in nodeps:
-            cls.instantiate_dag_node(dag_node)
+            cls.instantiate_dag_node(dag_node, do_ops=False)
+        deferred_op.do_ops()
 
 
 class DAGshape:
@@ -4119,9 +4120,19 @@ class ndarray:
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
         self.parent = parent
-        self.dag = dag
+        self.idag = dag
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
+
+    @property
+    def dag(self):
+        if self.idag is None:
+            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True)
+        # Add this fake DAG node to DAG.dag_nodes?
+        return self.idag
+
+    def instantiate(self):
+        DAG.instantiate(self)
 
     def assign(self, other):
         assert(isinstance(other, ndarray))
@@ -4596,7 +4607,10 @@ class ndarray:
             DAG.instantiate(rhs)
             return ndarray.array_binop_executor(None, self, rhs, op, optext, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
-            return DAGshape(new_shape, new_dtype, inplace)
+            if inplace:
+                return DAGshape(new_shape, new_dtype, self)
+            else:
+                return DAGshape(new_shape, new_dtype, False)
 
     """
     def array_binop(
@@ -4717,7 +4731,7 @@ class ndarray:
 
     @DAGapi
     def setitem(self, key, value):
-        return DAGshape(self.shape, self.dtype, True)
+        return DAGshape(self.shape, self.dtype, self)
 
     def __setitem__(self, key, value):
         return self.setitem(key, value)
@@ -5212,8 +5226,54 @@ def add_sub_time(time_name, sub_name, val):
 
 # --------------- Global variables to hold timings of parts of Ramba -------------
 
-
 def matmul(a, b, reduction=False, out=None):
+    #DAG.in_evaluate += 1
+    res = matmul_internal(a, b, reduction=reduction, out=out)
+    #DAG.in_evaluate -= 1
+    return res
+
+
+@DAGapi
+def matmul(a, b, reduction=False, out=None):
+    ashape = a.shape
+    bshape = b.shape
+    dtype = np.result_type(a.dtype, b.dtype)
+    if len(ashape) == 1 and len(bshape) == 1:
+        DAG.instantiate(a)
+        DAG.instantiate(b)
+        assert ashape[0] == bshape[0]
+        # shortcut
+        return (a * b).sum()
+
+    if len(ashape) == 1:
+        a = reshape(a, (1, ashape[0]))
+        ashape = (1, ashape[0])
+
+    if len(ashape) > 2 or len(bshape) > 2:
+        print("matmul for matrices higher than 2 dimensions not currently supported.")
+        assert 0
+
+    assert ashape[1] == bshape[0]
+
+    if len(bshape) == 1:
+        out_shape = (ashape[0],)
+    else:
+        out_shape = (ashape[0], bshape[1])
+
+    if out is not None:
+        assert out.shape == out_shape
+        return DAGshape(out_shape, dtype, out)
+    else:
+        return DAGshape(out_shape, dtype, False)
+
+
+def matmul_executor(temp_array, a, b, reduction=False, out=None):
+    return matmul_internal(a, b, reduction=reduction, out=out)
+
+def matmul_internal(a, b, reduction=False, out=None):
+    #DAG.instantiate(a)
+    #DAG.instantiate(b)
+    #DAG.execute_all()
     dprint(1, "matmul", a.shape, b.shape)
     pre_matmul_start_time = timer()
     ashape = a.shape
@@ -5251,6 +5311,8 @@ def matmul(a, b, reduction=False, out=None):
         out_ndarray = out
     else:
         out_ndarray = empty(out_shape, dtype=np.result_type(a.dtype, b.dtype), no_defer=True)
+    out_ndarray.instantiate()
+    #DAG.execute_all()
 
     pre_matmul_end_time = timer()
     tprint(
@@ -5278,8 +5340,8 @@ def matmul(a, b, reduction=False, out=None):
                 ashape,
                 bshape,
             )
-        else:
-            DAG.execute_all()
+        #else:
+            #DAG.execute_all()
             #if isinstance(a, ndarray):
             #    DAG.instantiate(a)
             #if isinstance(b, ndarray):
@@ -5596,7 +5658,7 @@ def matmul(a, b, reduction=False, out=None):
             reduction_slicing_end_time = timer()
 
             # Just so that the partial results zeros are there.
-            DAG.execute_all()
+            #DAG.execute_all()
             #deferred_op.do_ops()
 
             matmul_workers = []
@@ -5605,7 +5667,7 @@ def matmul(a, b, reduction=False, out=None):
             for wi in worker_info:
                 aslice, bslice, cslice, partial_matmul_res = wi
                 matmul_workers.extend(
-                    matmul(aslice, bslice, reduction=True, out=cslice)
+                    matmul_internal(aslice, bslice, reduction=True, out=cslice)
                 )
 
             launch_end_time = timer()
@@ -5686,8 +5748,8 @@ def matmul(a, b, reduction=False, out=None):
                 ashape,
                 bshape,
             )
-        else:
-            DAG.execute_all()
+        #else:
+            #DAG.execute_all()
             #deferred_op.do_ops()
 
     matmul_start_time = timer()
@@ -6345,6 +6407,19 @@ def create_array(
     no_defer=False,
     **kwargs
 ):
+    """
+    if no_defer:
+        return create_array_executor(None,
+                                     shape,
+                                     filler,
+                                     local_border=local_border,
+                                     dtype=dtype,
+                                     distribution=distribution,
+                                     tuple_arg=tuple_arg,
+                                     filler_prepickled=filler_prepickled,
+                                     no_defer=no_defer,
+                                     **kwargs)
+    """
     return DAGshape(shape, dtype, False)
 
 """
