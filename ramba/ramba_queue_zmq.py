@@ -12,6 +12,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 # This version provides a ZeroMQ version of ramba_queue
 import asyncio
+import threading
 from typing import Optional, Any, List, Dict
 from collections.abc import Iterable
 
@@ -65,6 +66,20 @@ def unpickle(msg0):
     msg = pick.loads(msg0[0], buffers=msg0[1:])
     # msg = pyarrow.deserialize(msg0)
     return msg
+
+
+send_list = []
+send_lock = threading.Lock()
+
+# NOTE: this still has a race condition with threads;  
+# but it should be good enough to fix reentrant case resulting from deletion of arrays
+def real_send(s, msg):
+    send_list.append((s, msg))
+    if (send_lock.acquire(blocking=False)):
+        while send_list:
+            (s,msg) = send_list.pop(0)
+            s.send_multipart(msg, copy=False)
+        send_lock.release()
 
 
 class Queue:
@@ -185,7 +200,8 @@ class Queue:
         msg = item if raw else pickle(item)
         t += time.time()
         # s.send(msg,copy=False)
-        s.send_multipart(msg, copy=False)
+        # s.send_multipart(msg, copy=False)
+        real_send(s, msg)
         # s.send_multipart(msg)
         # self.sent_data+=len(msg)
         # self.sent_data+=len(msg[0])

@@ -248,7 +248,7 @@ class TestOps:
         [run_both(impl, x) for x in TestOps.ops]
 
 
-"""
+
 class TestDgemm:
     def test_2Dx1D(self):
         def impl(app, i, j):
@@ -311,7 +311,7 @@ class TestDgemm:
                 for k in range(1, j):
                     for l in range(j - k):
                         run_both(impl, i, j, k, l)
-"""
+
 
 
 class TestBasic:
