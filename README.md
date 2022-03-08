@@ -116,7 +116,46 @@ Optional packages:
 - run: python setup.py install
 
 # Usage
-Coming soon!
+Ramba is intended to be a drop-in replacement for Numpy.  To use Ramba, simply import ramba instead of Numpy (see [Example](#example) above).  Most array construction and operations will work as is, but will be parallelized and distributed if possible.  No special restructuring of code is necessary to use Ramba.  As with Numpy, best performance usually comes from vector-style code using operations on whole arrays or slices of arrays.  Iteration through arrays using Python loops is not recommended.  As this is the case for Numpy as well, good Numpy code should work well with Ramba, with some exceptions (e.g., reshape is not efficient in a distributed context;  see also [Numpy Compatibility](#numpy-compatibility)).
+
+Ramba arrays are partitioned across all available workers.  Whole array operations are run concurrently on all workers, typically on local data.  If remote data is needed, this is detected and the necessary communications performed automatically.  Operations are not typically exectured imediately.  Rather, they are deferred, and multiple operations collected together, optimized and JIT-compiled into a single larger function, which is then executed on the workers.  This serves 4 main purposes: 
+1) allows fusion of operations so the array may be iterated fewer times, 
+2) allows parallel, multithreaded execution on each worker, 
+3) can avoid the need to materialize temporary arrays to stroe intermeidate results, and 
+4) executes a native binary rather than slower Python code.  
+
+## Usage on Ray clusters
+By default, when Ramba starts, it tries to connect to a Ray cluster associsted with the local machine.  If such a Ray cluseter does not exist, or it cannot connect, then a local cluster is started on the local machine.  The local cluser will use all of the available cores on the local machine, assigning one worker per core.  Note that Ray treats each virtual CPU / hyperthraed as a core, so this may not be optimal for a compute-bound task.  
+
+To use multiple nodes, simply start a Ray cluster on the set of nodes first.  Pick one node as the "head", and run:
+```
+ray start --head --redis-password="<SECRET>"
+```
+Then, on each of the other nodes, add it to the cluster by running:
+```
+ray start --address="<HEAD IP>:<HEAD PORT>" --redis-password="<SECRET>"
+```
+Here, HEAD IP is the IP address of the head node, and HEAD PORT indicates the port it uses (printed out when the head node starts).  Typically this is 6379.  See the [Ray documentation](https://docs.ray.io/en/latest/cluster/cloud.html#manual-cluster) for more information and options for starting a Ray cluster.  
+
+To use the cluster, run the Ramba program with environment variable ray_redis_password set to SECRET on any of the cluster nodes, e.g.:
+```
+ray_redis_password="<SECRET>" python my_ramba_program.py
+```
+If this has trouble finding the cluster (e.g., a non-default IP address or port is used), then also set the environment variable ray_address to "HEAD IP:HEAD PORT".
+
+By default, Ramba cretes one single-threaded worker process per "cpu" resource in the Ray cluster.  Environment variabes "RAMBA_WORKERS" and "RAMBA_NUM_THREADS" can be used to override the default settings.  
+
+## MPI Usage
+Ramba can also use MPI as the backend for distribution instead of Ray.  To use MPI, simply run the ramba program using mpirun/mpiexec, with number of processes set to 2 or more:
+```
+mpirun -n <NUM PROCS> python my_ramba_program.py
+```
+Here, NUM PROCS indicates the total number of processes to use, and must be greater than 1.  One process is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers.  Thus, the number of processes is the desired number of workers plus one.  Other MPI options to specify hosts, indicate how to allocate processes to hosts, etc. are available as well.  
+
+When running with MPI, the RAMBA_WORKERS environment variable is ignored.  RAMBA_NUM_THREADS can be used to indicate the number of threads to use per worker (defaults to 1).  
+
+## Environment Variables Summary
+Coming Soon!
 
 # Numpy Compatibility
 Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
@@ -159,6 +198,10 @@ Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   
 | statistics |                 | &#x1f534; not implemented | (except: bincount is implemented)
 
 It can be assumed that Numpy features not mentioned in this table are not implemented.
+
+## API Extensions beyond Numpy
+Coming Soon!
+
 
 # Security Note
 Please note that this work is a research prototype and that it internally uses Ray and/or ZeroMQ for
