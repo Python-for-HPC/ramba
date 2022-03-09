@@ -6407,7 +6407,6 @@ def create_array(
     no_defer=False,
     **kwargs
 ):
-    """
     if no_defer:
         return create_array_executor(None,
                                      shape,
@@ -6419,7 +6418,6 @@ def create_array(
                                      filler_prepickled=filler_prepickled,
                                      no_defer=no_defer,
                                      **kwargs)
-    """
     return DAGshape(shape, dtype, False)
 
 """
