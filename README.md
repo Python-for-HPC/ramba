@@ -1,16 +1,16 @@
 # Ramba
-Ramba is a Python project that provides a fast, distributed, Numpy-like array API using compiled Numba functions 
+Ramba is a Python project that provides a fast, distributed, NumPy-like array API using compiled Numba functions 
 and a Ray or MPI-based distributed backend.  It also provides a way to easily integrate Numba-compiled remote
 functions and remote Actor methods in Ray.  
 
-The main use case for Ramba is as a fast, drop-in replacement for Numpy.  Although Numpy typically uses C
+The main use case for Ramba is as a fast, drop-in replacement for NumPy.  Although NumPy typically uses C
 libraries to implement array functions, it is still largely single threaded, and typically does not make
 use of multiple cores for most functions, and definitely cannot make use of multiple nodes in a cluster. 
 
-Ramba lets Numpy programs make use of multiple cores and multiple nodes with little to no code changes.
+Ramba lets NumPy programs make use of multiple cores and multiple nodes with little to no code changes.
 
 ## Example
-Consider this simple example of a large computation in Numpy:
+Consider this simple example of a large computation in NumPy:
 ~~~python
 # test-numpy.py
 import numpy as np
@@ -33,7 +33,7 @@ Let us try running this code on a dual-socket server with 36 cores/72 threads an
 ~~~
 This takes over 47 seconds, but if we monitor resource usage, we will see that only a single core is used.  All others remains idle.  
 
-We can very easily modify the code to use Ramba instead of Numpy:
+We can very easily modify the code to use Ramba instead of NumPy:
 ~~~python
 # test-ramba.py
 import ramba as np  # Use ramba in place of numpy
@@ -116,7 +116,7 @@ Optional packages:
 - run: python setup.py install
 
 # Usage
-Ramba is intended to be a drop-in replacement for Numpy.  To use Ramba, simply import ramba instead of Numpy (see [Example](#example) above).  Most array construction and operations will work as is, but will be parallelized and distributed if possible.  No special restructuring of code is necessary to use Ramba.  As with Numpy, best performance usually comes from vector-style code using operations on whole arrays or slices of arrays.  Iteration through arrays using Python loops is not recommended.  As this is the case for Numpy as well, good Numpy code should work well with Ramba, with some exceptions (e.g., reshape is not efficient in a distributed context;  see also [Numpy Compatibility](#numpy-compatibility)).
+Ramba is intended to be a drop-in replacement for NumPy.  To use Ramba, simply import ramba instead of NumPy (see [Example](#example) above).  Most array construction and operations will work as is, but will be parallelized and distributed if possible.  No special restructuring of code is necessary to use Ramba.  As with NumPy, best performance usually comes from vector-style code using operations on whole arrays or slices of arrays.  Iteration through arrays using Python loops is not recommended.  As this is the case for NumPy as well, good NumPy code should work well with Ramba, with some exceptions (e.g., reshape is not efficient in a distributed context;  see also [NumPy Compatibility](#numpy-compatibility)).
 
 Ramba arrays are partitioned across all available workers.  Whole array operations are run concurrently on all workers, typically on local data.  If remote data is needed, this is detected and the necessary communications performed automatically.  Operations are not typically exectured imediately.  Rather, they are deferred, and multiple operations collected together, optimized and JIT-compiled into a single larger function, which is then executed on the workers.  This serves 4 main purposes: 
 1) allows fusion of operations so the array may be iterated fewer times, 
@@ -157,8 +157,8 @@ When running with MPI, the RAMBA_WORKERS environment variable is ignored.  RAMBA
 ## Environment Variables Summary
 Coming Soon!
 
-# Numpy Compatibility
-Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
+# NumPy Compatibility
+Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
 
 |Feature/API | Function/type |Status&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| Notes
 |:-----------|:--------------  |:--------------------------|:-----
@@ -197,9 +197,9 @@ Current status of Ramba compatibility with Numpy APIs.  Key:  &#x1f7e2; works   
 | matlib     |                 | &#x1f534; not implemented |
 | statistics |                 | &#x1f534; not implemented | (except: bincount is implemented)
 
-It can be assumed that Numpy features not mentioned in this table are not implemented.
+It can be assumed that NumPy features not mentioned in this table are not implemented.
 
-## API Extensions beyond Numpy
+## API Extensions beyond NumPy
 Coming Soon!
 
 
@@ -221,15 +221,15 @@ Specifically, our benchmark code is available from the RayPython branch of the m
 We run our experiments on a cluster consisting of 4 nodes. Each node has 2x Intel(R) Xeon(R) E5-2699 v3 processors 
 (total of 36 cores/72 threads, 2.3GHz nominal), 128GB RAM, and 10 Gig Ethernet.  
 
-We run a "star" stencil operator of radius 2 on a 30000x30000 array of float32 values, and plot normalized throughput (higher is better, Numpy results=1.0). 
-We compare Numpy, Numba, Dask, Nums, and Ramba.  In addition, we also compare to a C/MPI version. In the plot below, each bar is the average of 5 runs.
+We run a "star" stencil operator of radius 2 on a 30000x30000 array of float32 values, and plot normalized throughput (higher is better, NumPy results=1.0). 
+We compare NumPy, Numba, Dask, Nums, and Ramba.  In addition, we also compare to a C/MPI version. In the plot below, each bar is the average of 5 runs.
 
-We see that Numba does well on a single node, achieveing 90x Numpy throughput.  
+We see that Numba does well on a single node, achieveing 90x NumPy throughput.  
 Ramba does slightly better, close to the performance of C code. Numba is of course limited to a single node.  On the other hand, Ramba performance scales 
 quite well with additional nodes, just slightly behind C/MPI in absolute performance and scaling.  
 Other distributed array solution in Python (Dask Arrays, Nums on Ray) are much slower.  To be fair, these are still several times (up to 20x in our tests)
-faster than the baseline Numpy version, but are not even close to the performance achieved by Ramba or C/MPI.  Ramba achieves 380x
-Numpy throughput on 4 nodes, and achieves 85% of C/MPI performance, with largely unmodified Numpy code.  
+faster than the baseline NumPy version, but are not even close to the performance achieved by Ramba or C/MPI.  Ramba achieves 380x
+NumPy throughput on 4 nodes, and achieves 85% of C/MPI performance, with largely unmodified NumPy code.  
 
 ![Stencil 30k by 30k performance](doc/stencil-4node-20220202.png)
 
@@ -237,7 +237,7 @@ The plot is based on the average and standard deviations of throughput numbers r
 
 |       | 1 Node        | 2 Nodes       | 3 Nodes           | 4 Nodes          |
 |:------|:--------------|:--------------|:------------------|:-----------------|
-| Numpy | 453 (0.8)     |               |                   |                  |
+| NumPy | 453 (0.8)     |               |                   |                  |
 | Numba | 41172 (2563)  |               |                   |                  |
 | Dask  | 4746 (1868)   | 6995 (707)    | 9040 (696)        | 9563 (1392)      |
 | Nums  | 995 (22)      | 1843 (27)     | 2376 (50)         | 1333 (25)        |
