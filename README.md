@@ -231,7 +231,7 @@ Other distributed array solution in Python (Dask Arrays, Nums on Ray) are much s
 faster than the baseline NumPy version, but are not even close to the performance achieved by Ramba or C/MPI.  Ramba achieves 380x
 NumPy throughput on 4 nodes, and achieves 85% of C/MPI performance, with largely unmodified NumPy code.  
 
-![Stencil 30k by 30k performance](doc/stencil-4node-20220202.png)
+![Stencil 30k by 30k performance](docs/stencil-4node-20220202.png)
 
 The plot is based on the average and standard deviations of throughput numbers reported by multiple runs of PRK stencil benchmark, summarized below (std. dev in parentheses):
 
