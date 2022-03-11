@@ -92,4 +92,26 @@ for use across workers.
 
 #### *scumulative*
 
+def scumulative(local_func, final_func, array)
+
+This skeleton captures the algorithmic pattern of a computation where to compute the
+N'th element you need the N-1'th element from input along with the N-1'th element of the output.
+
+The first argument *local_func* performs this computation on the data resident on each
+worker.  Then the skeleton takes the final value of the first worker and sends that to the next
+worker which then applies the *final_func* argument with the value from the previous worker
+and the output of the *local_func*.  The skeleton repeats this process for each worker.
+The third argument is a single Ramba distributed array over which to apply the cumulative operation
+and produces another array of the same size.
+
+#### *spmd*
+
+def spmd(func, * args)
+
+This skeleton takes a function that is run on each Ramba worker.  This skeleton also
+takes one or more additional arguments that may be of any type.
+Ramba distributed arrays passed to this function may have a special *get_local* call
+made on them that returns a NumPy array holding the contents of that array that are
+local to the executing worker.
+
 ### Groupby
