@@ -1463,7 +1463,7 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     reducername = f"njreducer{smap_func}"
     smap_func += 1
     arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-    fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+    fill_txt  = f"def {fname}(sz, identity, {arg_names}):\n"
     fill_txt +=  "    result = identity\n"
     arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
 
@@ -1905,10 +1905,10 @@ class RemoteState:
             return ret
 
     # TODO: should use get_view
-    def smap(self, out_gid, first_gid, args, func, parallel):
+    def smap(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
-        lnd = first.init_like(out_gid)
+        lnd = first.init_like(out_gid, dtype=dtype)
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
         unpickle_args(args)
@@ -1955,6 +1955,7 @@ class RemoteState:
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
+        start_time = timer()
         func = func_loads(func)
         reducer = func_loads(reducer)
         reducer = func_loads(reducer_driver)
@@ -1980,7 +1981,7 @@ class RemoteState:
                 if isinstance(farg, np.ndarray):
                     print("shape:", farg.shape)
             """
-            res = do_fill(first.dim_lens, starts, identity, *fargs)
+            res = do_fill(first.dim_lens, identity, *fargs)
             #print("worker do_fill res:", res, res[0].shape, res[1].shape)
             #return res
             after_map_time = timer()
@@ -6282,7 +6283,7 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     )
     after_remote_time = timer()
     final_result = worker_results[0]
-    dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
+    #dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
     """
     for result in worker_results[1:]:
         final_result = reducer.driver_func(final_result, result, *args)
