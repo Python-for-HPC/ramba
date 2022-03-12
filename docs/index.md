@@ -101,6 +101,8 @@ the collective operation.
 > Examples
 > ---
 > ```
+> import ramba
+> import numpy
 > def f1(a, b, c, d):
 >     return a * d + b - c[5]
 > def f2(index, a, b):
@@ -115,6 +117,7 @@ the collective operation.
 > print(f.asarray()[:10])
 > [ 0.  2.  6. 12. 20. 30. 42. 56. 72. 90.]
 > ```
+
 ---
 
 #### **ramba.sreduce*, *ramba.sreduce\_index**
@@ -150,6 +153,27 @@ the collective operation.
 > **Returns**
 >
 >> The result of the reducer function after having been applied to output of *func* for each value in the input array.
+
+>
+> Examples
+> ---
+> ```
+> import ramba
+> import numba
+>
+> @numba.njit
+> def f1(index):
+>     return index[0] * 11
+> 
+> a = ramba.init_array(100, f1)
+> print(a.asarray()[:10])
+> [ 0. 11. 22. 33. 44. 55. 66. 77. 88. 99.]
+> a -= 7
+> a = abs(a)
+> b = ramba.sreduce(lambda x: x / 100, lambda x, y: x + y, 0, a)
+> print(b)
+> 537.64
+> ```
 
 ---
 
