@@ -97,7 +97,24 @@ the collective operation.
 > **Returns**
 > 
 >> A Ramba distributed array the same shape as the input array whose elements are the result of *func* applied to the corresponding elements of the input array.
-
+>
+> Examples
+> ---
+> ```
+> def f1(a, b, c, d):
+>     return a * d + b - c[5]
+> def f2(index, a, b):
+>     return (a + b + index) * index
+> a = ramba.ones(100)
+> b = ramba.zeros(100, local_border=3)
+> c = numpy.arange(20)
+> e = ramba.smap(f1, a, b, c, 7)
+> print(e.asarray()[:10])
+> [2. 2. 2. 2. 2. 2. 2. 2. 2. 2.]
+> f = ramba.smap_index(f2, a, b)
+> print(f.asarray()[:10])
+> [ 0.  2.  6. 12. 20. 30. 42. 56. 72. 90.]
+> ```
 ---
 
 #### **ramba.sreduce*, *ramba.sreduce\_index**
