@@ -200,8 +200,10 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 It can be assumed that NumPy features not mentioned in this table are not implemented.
 
 ## API Extensions beyond NumPy
-Coming Soon!
 
+[Click here](https://python-for-hpc.github.io/ramba/index.html)
+for documentation on the portions of the Ramba API exclusive to Ramba and for
+modifications to the NumPy API as supported by Ramba.
 
 # Security Note
 Please note that this work is a research prototype and that it internally uses Ray and/or ZeroMQ for
