@@ -70,101 +70,181 @@ certain communication patterns for classes of algorithms.  These functions typic
 on one element at a time and Ramba applies them to data in an efficient manner to achieve
 the collective operation.
 
+---
+
 #### **ramba.smap**, **ramba.smap\_index**
 
-**smap(func, arr, * args)**
-**smap\_index(func, arr, * args)**
+##### **smap(func, arr, * args)**
 
-: Apply a function over a Ramba distributed arrays and optionally other arguments to produce another Ramba distributed array.
+##### **smap\_index(func, arr, * args)**
 
-: **Parameters**
-: : **func - a Python or Numba function**
-: : : This function will be called once for each element in the input array and returns the value that is to be placed into the corresponding position in the output array.  The first argument to this function is the value of the input array at a given index.  Subsequent arguments to this function are the same as those passed to the smap function except that in the case of other Ramba distributed arrays the value at the same index of that array is passed instead.  For the smap\_index function, an additional argument is inserted at the beginning of the argument list that contains the given index on which the function is currently operating.
-: : **arr - a Ramba distributed array**
-: : : The input array to the map operation.  The output array will be of the same shape.
-: : ** * args - any type
-: : : Additional arguments to the map operation may be of any type including Ramba distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be of the same shape and have the same distribution.
-: **Returns**
-: : A Ramba distributed array the same shape as the input array whose elements are the result of *func* applied to the corresponding elements of the input array.
+> Apply a function over a Ramba distributed array and optionally other arguments to produce another Ramba distributed array.
 
-#### *sreduce*, *sreduce_index*
+> **Parameters**
+> 
+>> **func - a Python or Numba function**
+>> 
+>>> This function will be called once for each element in the input array and returns the value that is to be placed into the corresponding position in the output array.  The first argument to this function is the value of the input array at a given index.  Subsequent arguments to this function are the same as those passed to the smap function except that in the case of other Ramba distributed arrays the value at the same index of that array is passed instead.  For the smap\_index function, an additional argument is inserted at the beginning of the argument list that contains the given index on which the function is currently operating.
+>>> 
+>> **arr - a Ramba distributed array**
+>> 
+>>> The input array to the map operation.  The output array will be of the same shape.
+>>> 
+>> ***args - any type**
+>> 
+>>> Additional arguments to the map operation may be of any type including Ramba distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be of the same shape and have the same distribution.
+>>> 
+> **Returns**
+> 
+>> A Ramba distributed array the same shape as the input array whose elements are the result of *func* applied to the corresponding elements of the input array.
 
-**ramba.sreduce(func, reducer, identity, * args)**
-**ramba.sreduce\_index(func, reducer, identity, * args)**
+---
 
-These skeletons each take a function to be applied to each element of a distributed array
-(like *smap*) but the result of this function is then reduced.
-The second argument *reducer* is the function that takes two elements and calculates the
-reduction across those elements.
-The third argument *identity* is the value than when the reducer is applied with any other
-value results in that same value.
+#### **ramba.sreduce*, *ramba.sreduce\_index**
 
-As in *smap*, the first argument after this function argument must be a Ramba distributed array but
-additional arguments are allowed and these may be of any type including other Ramba
-distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be
-of the same shape and have the same distribution.
-Conceptually, Ramba calls the function once for each element in the distributed arrays.
-This function will be passed those individual elements and not the array as a whole whereas
-all other argument types are passed to the function unmodified.
-In some cases, the point in the index space that is being computed is necessary for the
-computation itself.  For this purpose, *sreduce_index* first passes the point in the index space
-to the function followed by all the other arguments as in *sreduce*.
+##### **ramba.sreduce(func, reducer, identity, arr, * args)**
 
-In some cases, it may be beneficial to perform a different reduction depending on whether
-the reduction is for computation within a single worker or across workers.
-In such cases, a *SreduceReducer* object may be passed as *sreduce* *reducer* argument
-and this object contains one reducer function for use within a worker and a different one
-for use across workers.
+##### **ramba.sreduce\_index(func, reducer, identity, arr, * args)**
 
-#### *sstencil*
+> Apply a function over a Ramba distributed array and optionally other arguments to produce values that are then reduced to a single value.
 
-def sstencil(func, * args)
+> **Parameters**
+>
+>> **func - a Python or Numba function**
+>> 
+>>> This function will be called once for each element in the input array and returns the value that is to be passed to the reducer.  The first argument to this function is the value of the input array at a given index.  Subsequent arguments to this function are the same as those passed to the smap function except that in the case of other Ramba distributed arrays the value at the same index of that array is passed instead.  For the sreduce\_index function, an additional argument is inserted at the beginning of the argument list that contains the given index on which the function is currently operating.
+>>>
+>> **reducer - a Python or Numba function**
+>>
+>>> This function takes two elements and calculates the reduction value across those elements.  In some cases, it may be beneficial to perform a different reduction depending on whether the reduction is for computation within a single worker or across workers.  In such cases, a *SreduceReducer* object may be passed as this argument and this object contains one reducer function for use within a worker and a different one for use across workers.
+>>>
+>> **identity - any type**
+>>
+>>> The value than when the reducer is applied with any other value results in that same value.
+>>>
+>> **arr - a Ramba distributed array**
+>> 
+>>> The input array to the map operation.  The output array will be of the same shape.
+>>> 
+>> ***args - any type**
+>> 
+>>> Additional arguments to the reduce operation may be of any type including Ramba distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be of the same shape and have the same distribution.
+>>> 
+> **Returns**
+>
+>> The result of the reducer function after having been applied to output of *func* for each value in the input array.
 
-The *sstencil* skeleton executes a Ramba stencil (see below) on a Ramba distributed array.
-The first argument to the *sstencil* skeleton is a Ramba stencil function as decorated
-by the Ramba stencil decorator (described in its own section below).
-The next argument to *sstencil* must be a Ramba distributed array.
-Additional arguments, including other Ramba distributed arrays, can then also be passed.
+---
 
-#### *scumulative*
+#### **ramba.sstencil**
 
-def scumulative(local\_func, final\_func, array)
+##### **sstencil(stencil, arr, * args)**
 
-This skeleton captures the algorithmic pattern where to compute the N'th element of the output
-you need the N'th element from input along with the N-1'th element of the output.
+> Executes a Ramba stencil (see below) on a Ramba distributed array and returns a Ramba distributed array of the same shape.
 
-For each output element, the first argument *local_func* is given the N'th element of the input array and the N-1'th element
-of the output array and is expected to return the N'th output element.
-Ramba does this in parallel on each worker calculating the portion of the array that is resident on that
-worker.
-Then the skeleton takes the final value of the first worker and sends that to the next
-worker which then applies the *final_func* argument with the value from the previous worker
-and the output of the *local_func*.  The skeleton repeats this process for each worker.
-The third argument is a single Ramba distributed array over which to apply the cumulative operation
-and produces another array of the same size.
+> **Parameters**
+>
+>> **stencil - a Ramba stencil function as returned by the ramba.stencil decorator**
+>> 
+>>> A Ramba stencil function as decorated by the Ramba stencil decorator (described in its own section below).  This stencil function is executed once for each non-border index in the input array.  The return value of this function becomes the value placed in the corresponding index in the output array.
+>>>
+>> **arr - a Ramba distributed array**
+>> 
+>>> The input array to the stencil operation.
+>>> 
+>> ***args - any type**
+>> 
+>>> Additional arguments to the stencil operation may be of any type including Ramba distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be of the same shape and have the same distribution.
+>>> 
+> **Returns**
+>
+>> A Ramba distributed array the same shape as the input.
 
-#### *spmd*
+---
 
-def spmd(func, * args)
+#### *ramba.scumulative*
 
-This skeleton takes a function that is run on each Ramba worker.  This skeleton also
-takes one or more additional arguments that may be of any type.
-Ramba distributed arrays passed to this function may have a special *get_local* call
-made on them that returns a NumPy array holding the contents of that array that are
-local to the executing worker.
+##### **scumulative(local\_func, final\_func, arr)**
+
+> This skeleton captures the algorithmic pattern where to compute the N'th element of the output you need the N'th element from input along with the N-1'th element of the output.  First, the cumulative results for the data resident on each worker are executed in parallel and then a sequential phase is entered whereby the results from previous workers are used to update the next worker.
+
+> **Parameters**
+>
+>> **local\_func - a Python or Numba function**
+>> 
+>>> A function that takes two arguments, the N'th element of the input and the N-1'th element of the output and returns the N'th element of the output.
+>>>
+>> **final\_func - a Python or Numba function**
+>> 
+>>> A function that takes two arguments, the final N-1'th element of the output array where this worker's portion of the output array begins at N and a NumPy array containing all the local elements of the output array on this worker as computed by local\_func.  final\_func returns a NumPy array with the final values of the cumulative output array for this worker.
+>>>
+>> **arr - a 1D Ramba distributed array**
+>> 
+>>> The input array to the cumulative operation.
+>>> 
+> **Returns**
+>
+>> A Ramba distributed array the same shape as the input.
+
+---
+
+#### *ramba.spmd*
+
+##### **spmd(func, * args)**
+
+> This skeleton enters a low-level mode where the same function is run on all Ramba workers.  This skeleton takes one or more additional arguments that may be of any type.  Ramba distributed arrays passed to this function may have a special *get_local* call made on them that returns a NumPy array holding the contents of that array that are local to the executing worker.  The use of this skeleton tends to be more difficult for programmers but allows functionality that is difficult or impossible to implement with other Ramba mechanisms to be accomplished.
+
+> **Parameters**
+>
+>> **func - a Python or Numba function**
+>> 
+>>> The function that is run on each Ramba worker.
+>>>
+>> ***args - any type**
+>> 
+>>> Additional arguments to spmd may be of any type including Ramba distributed arrays.
+>>> 
+> **Returns**
+>
+>> None
+
+---
+
+---
 
 ### Groupby
 
-def ndarray.groupby(self, dim, value\_to\_group, num\_groups=None)
+#### ramba.ndarray.groupby(self, dim, value\_to\_group, num\_groups=None)
 
-The groupby method on Ramba array class takes the dimension (i.e., *dim*) on which to group and a
-NumPy array *value_to_group* that maps indices on that dimension to a group identifier.
-The optional *num_groups* parameter specifies the maximum group number.
-If *num_groups* is not present then the maximum value in the *value_to_group* array is used as the number of groups.
-This method returns a *RambaGroupby* object.
+Method
 
-This *RambaGroupby* object supports array binary operators such as *+, -, \*, //, /, %, \*\*, >, <, >=, <=, ==, and !=*.
-It also supports groupby operations such as *mean, nanmean, sum, count, prod, min, max, var, std.*
+> Creates a grouping on an existing array similar to a groupby operation in Pandas or SQL.
+ 
+> **Parameters**
+>
+>> **self - a Ramba distributed array (ramba.ndarray)**
+>> 
+>>> The array to group.
+>>>
+>> **dim - integer**
+>>
+>>> The dimension that is to be used for grouping.
+>>> 
+>> **value\_to\_group - a NumPy array of integer**
+>> 
+>>> The N'th element of this array contains the group identifier for index N of *self's* dimension *dim*.
+>>> 
+>> **num\_groups - integer**
+>>
+>>> Specifies the maximum group number.  If not provided the maximum value in value\_to\_group is used.
+>>> 
+> **Returns**
+>
+>> This method returns a *RambaGroupby* object.  This *RambaGroupby* object supports array binary operators such as *+, -, \*, //, /, %, \*\*, >, <, >=, <=, ==, and !=*.  It also supports groupby operations such as *mean, nanmean, sum, count, prod, min, max, var, std.*
+
+---
+
+---
 
 ## Stencil
 
@@ -177,4 +257,3 @@ If you wish to use a Ramba stencil with a Ramba distributed array then use the R
 ## Optional Distribution Arguments
 
 Array generating routines in Ramba generally provide an optional *distribution* argument not present in the original NumPy API.
-
