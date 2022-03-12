@@ -70,28 +70,27 @@ certain communication patterns for classes of algorithms.  These functions typic
 on one element at a time and Ramba applies them to data in an efficient manner to achieve
 the collective operation.
 
-#### *smap*, *smap_index*
+#### **ramba.smap**, **ramba.smap\_index**
 
-def smap(func, * args)
-def smap\_index(func, * args)
+**smap(func, arr, * args)**
+**smap\_index(func, arr, * args)**
 
-These skeletons each take a function to be applied to each element of a distributed array to
-produce a new distributed array.
-The first argument after this function argument must be a Ramba distributed array but
-additional arguments are allowed and these may be of any type including other Ramba
-distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be
-of the same shape and have the same distribution.
-Conceptually, Ramba calls the function once for each element in the distributed arrays.
-This function will be passed those individual elements and not the array as a whole whereas
-all other argument types are passed to the function unmodified.
-In some cases, the point in the index space that is being computed is necessary for the
-computation itself.  For this purpose, *smap_index* first passes the point in the index space
-to the function followed by all the other arguments as in *smap*.
+: Apply a function over a Ramba distributed arrays and optionally other arguments to produce another Ramba distributed array.
+
+: **Parameters**
+: : **func - a Python or Numba function**
+: : : This function will be called once for each element in the input array and returns the value that is to be placed into the corresponding position in the output array.  The first argument to this function is the value of the input array at a given index.  Subsequent arguments to this function are the same as those passed to the smap function except that in the case of other Ramba distributed arrays the value at the same index of that array is passed instead.  For the smap\_index function, an additional argument is inserted at the beginning of the argument list that contains the given index on which the function is currently operating.
+: : **arr - a Ramba distributed array**
+: : : The input array to the map operation.  The output array will be of the same shape.
+: : ** * args - any type
+: : : Additional arguments to the map operation may be of any type including Ramba distributed arrays.  However, in this latter case, all the Ramba distributed arrays must be of the same shape and have the same distribution.
+: **Returns**
+: : A Ramba distributed array the same shape as the input array whose elements are the result of *func* applied to the corresponding elements of the input array.
 
 #### *sreduce*, *sreduce_index*
 
-def sreduce(func, reducer, identity, * args)
-def sreduce\_index(func, reducer, identity, * args)
+**ramba.sreduce(func, reducer, identity, * args)**
+**ramba.sreduce\_index(func, reducer, identity, * args)**
 
 These skeletons each take a function to be applied to each element of a distributed array
 (like *smap*) but the result of this function is then reduced.
