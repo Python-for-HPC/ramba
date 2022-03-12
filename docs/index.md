@@ -99,7 +99,6 @@ the collective operation.
 >> A Ramba distributed array the same shape as the input array whose elements are the result of *func* applied to the corresponding elements of the input array.
 >
 > Examples
-> ---
 > ```
 > import ramba
 > import numpy
@@ -156,7 +155,6 @@ the collective operation.
 
 >
 > Examples
-> ---
 > ```
 > import ramba
 > import numba
