@@ -4395,6 +4395,8 @@ class ndarray:
             return NotImplemented
 
     def groupby(self, dim, value_to_group, num_groups=None):
+        if num_groups is None:
+            num_groups = value_to_group.max()
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 
