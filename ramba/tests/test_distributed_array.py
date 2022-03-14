@@ -618,6 +618,42 @@ class TestRandom:
         ramba.sync()
 
 
+class TestDel:
+    def test1del(self):
+        def impl(app):
+            a = app.ones(100)
+            del a
+
+        run_both(impl)
+
+    def test2del(self):
+        def impl(app):
+            a = app.ones(100)
+            b = a + 3
+            del a
+            return b
+
+        run_both(impl)
+
+    def test3del(self):
+        def impl(app):
+            s = 0
+
+            c = ramba.ones(100)
+            d = c * 3
+            del c
+
+            for i in range(100):
+                a = ramba.ones(200)
+                b = a[37:137]
+                c = b * 3
+                s += c[42]
+
+            d += s
+            return d
+
+        run_both(impl)
+
 """
 class TestGeneric:
     def test6(self):

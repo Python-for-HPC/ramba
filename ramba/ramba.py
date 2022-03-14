@@ -4208,6 +4208,7 @@ class ndarray:
 
     """
     def __del__(self):
+        print("ndarray::__del__")
         #ndarray_gids[self.gid][0]-=1
         dprint(2, "Deleting ndarray",self.gid, self)
         #if ndarray_gids[self.gid][0] <=0:
@@ -4906,7 +4907,7 @@ class ndarray:
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
         if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
-            deferred_op.do_ops()
+            self.instantiate()
 
             owner = shardview.find_index(
                 self.distribution, index
