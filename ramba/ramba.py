@@ -5295,6 +5295,8 @@ class deferred_op:
         self.distribution = distribution
         self.flex_dist = fdist
         self.delete_gids = []
+        self.read_arrs = []   # (gid,dist) list of read arrays;  dist is None if flex_dist
+        self.write_arrs = []  # (gid,dist) list of write arrays; dist is None if flex_dist
         self.use_gids = (
             {}
         )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
@@ -5463,6 +5465,7 @@ class deferred_op:
         assert arr is not None, "Deferred op with no ndarray parameter"
         shape = arr.shape
         distribution = arr.distribution
+        # Check to see if existing deferred ops are compatible in size, else do ops
         if (cls.ramba_deferred_ops is not None) and (
             cls.ramba_deferred_ops.shape != shape
             or (
@@ -5482,6 +5485,33 @@ class deferred_op:
                 distribution,
             )
             cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 1;  op reads/writes shifted version of an array that was written previously
+        if ( cls.ramba_deferred_ops is not None and any([ 
+                isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
+                for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
+            dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
+            # force prior stuff to execute
+            cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 2:  op writes and reads from shifted versions of same array
+        #    NOTE:  works only for assignment / inplace operators, not general functions
+        if (write_array is not None) and (
+                any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ]) 
+                or (cls.ramba_deferred_ops is not None and any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
+            assert codes[0]==''
+            dprint(2, "Write after read with mismatched distributions detected. Will not fuse, adding temporary array.")
+            # make temp, assign computation to temp, do ops, then assign temp to write array
+            tmp_array = empty_like(write_array)
+            orig_op = codes[1]
+            oplist[1] = tmp_array
+            oplist[2] = ' = '
+            cls.add_op( oplist, tmp_array, imports )
+            cls.ramba_deferred_ops.do_ops()
+            oplist = [ '', write_array, orig_op, tmp_array ]
+            operands = [ write_array, tmp_array ]
+            codes = [ '', orig_op ]
+
         if cls.ramba_deferred_ops is None:
             dprint(2, "Create new deferred op set")
             cls.ramba_deferred_ops = cls(shape, distribution, arr.bdarray.flex_dist)
@@ -5489,10 +5519,12 @@ class deferred_op:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
             dprint(2, "fixing distribution")
-        # TODO: Need to check for aliasing
         # add vars
+        if (write_array is not None):
+            cls.ramba_deferred_ops.write_arrs.append((write_array.gid, None if write_array.bdarray.flex_dist else write_array.distribution))
         for i, x in enumerate(operands):
             if isinstance(x, ndarray):
+                cls.ramba_deferred_ops.read_arrs.append((x.gid, None if x.bdarray.flex_dist else x.distribution))
                 if x.shape == ():  # 0d check
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
                 else:
