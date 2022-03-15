@@ -3,3 +3,4 @@ ray
 pyzmq
 pickle5
 cloudpickle
+numpy

@@ -61,7 +61,7 @@ try:
     import dpctl
 
     dpctl_present = True
-except:
+except Exception:
     dpctl_present = False
 
 dprint(3, "dpctl present =", dpctl_present)
@@ -112,6 +112,7 @@ if not USE_MPI:
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
 
+
 class Filler:
     PER_ELEMENT = 0
     WHOLE_ARRAY_NEW = 1
@@ -136,7 +137,11 @@ class FillerFunc:
         return ret
 
     def __eq__(self, other):
-        return self.func.__code__.co_code == other.func.__code__.co_code
+        return (self.func.__code__.co_code == other.func.__code__.co_code and
+                self.func.__code__.co_argcount == other.func.__code__.co_argcount and
+                self.func.__code__.co_consts == other.func.__code__.co_consts and
+                self.func.__code__.co_freevars == other.func.__code__.co_freevars and
+                self.func.__code__.co_names == other.func.__code__.co_names)
 
 
 @functools.lru_cache()
@@ -148,7 +153,7 @@ def get_fm(func: FillerFunc, parallel):
 
 
 class FunctionMetadata:
-    def __init__(self, func, dargs, dkwargs, no_global_cache=False):
+    def __init__(self, func, dargs, dkwargs, no_global_cache=False, parallel=True):
         self.func = func
         self.dargs = dargs
         self.dkwargs = dkwargs
@@ -160,6 +165,7 @@ class FunctionMetadata:
         self.npfunc = {}
         self.ngfunc = {}
         self.no_global_cache = no_global_cache
+        self.parallel = parallel
         dprint(2, "FunctionMetadata finished")
 
     def __call__(self, *args, **kwargs):
@@ -170,17 +176,26 @@ class FunctionMetadata:
         in npfunc or nfunc so that we don't try the failed case again.  If
         neither of those work then fall back to Python.
         """
+        dprint(2, "FunctionMetadata::__call__", self.func.__name__)
         dprint(
-            2,
-            "FunctionMetadata::__call__",
-            self.func.__name__,
+            4,
+            "FunctionMetadata::__call__ args",
             args,
             kwargs,
             self.numba_args,
         )
         atypes = tuple([type(x) for x in args])
+        dprint(2, "types:", atypes)
         try_again = True
         count = 0
+        args_for_numba = []
+        for arg in args:
+            if inspect.isfunction(arg):
+                args_for_numba.append(numba.extending.register_jitable(arg))
+                #args_for_numba.append(numba.njit(arg))
+            else:
+                args_for_numba.append(arg)
+
         if not self.numba_pfunc:
             if len(self.numba_args) == 0 and not self.no_global_cache:
                 self.numba_pfunc = get_fm(FillerFunc(self.func), True)
@@ -191,7 +206,7 @@ class FunctionMetadata:
                 )
                 self.numba_func = numba.njit(**self.numba_args)(self.func)
 
-        if gpu_present:
+        if gpu_present and self.parallel:
             dprint(1, "using gpu context")
 
             with dpctl.device_context("level0:gpu"):
@@ -200,7 +215,7 @@ class FunctionMetadata:
                     try_again = False
                     if self.ngfunc.get(atypes, True):
                         try:
-                            ret = self.numba_pfunc(*args, **kwargs)
+                            ret = self.numba_pfunc(*args_for_numba, **kwargs)
                             self.ngfunc[atypes] = True
                             return ret
                         except numba.core.errors.TypingError as te:
@@ -236,7 +251,7 @@ class FunctionMetadata:
                                     "Numba GPU ParallelAccelerator attempt failed for",
                                     self.func,
                                 )
-                        except:
+                        except Exception:
                             self.ngfunc[atypes] = False
                             dprint(
                                 1,
@@ -244,12 +259,13 @@ class FunctionMetadata:
                                 self.func,
                             )
 
-        while try_again and count < 2:
+        while try_again and count < 2 and self.parallel:
+        #while num_threads > 1 and try_again and count < 2:
             count += 1
             try_again = False
             if self.npfunc.get(atypes, True):
                 try:
-                    ret = self.numba_pfunc(*args, **kwargs)
+                    ret = self.numba_pfunc(*args_for_numba, **kwargs)
                     self.npfunc[atypes] = True
                     return ret
                 except numba.core.errors.TypingError as te:
@@ -284,8 +300,9 @@ class FunctionMetadata:
                             self.func,
                             atypes,
                         )
-                except:
-                    traceback.print_exc()
+                except Exception:
+                    if ndebug >= 2:
+                        traceback.print_exc()
                     self.npfunc[atypes] = False
                     dprint(
                         1,
@@ -295,12 +312,12 @@ class FunctionMetadata:
                     )
                     try:
                         dprint(1, inspect.getsource(self.func))
-                    except:
+                    except Exception:
                         pass
 
         if self.nfunc.get(atypes, True):
             try:
-                ret = self.numba_func(*args, **kwargs)
+                ret = self.numba_func(*args_for_numba, **kwargs)
                 self.nfunc[atypes] = True
                 dprint(3, "Numba attempt succeeded.")
                 return ret
@@ -308,7 +325,7 @@ class FunctionMetadata:
                 print("Ramba TypingError:", te, type(te))
                 self.npfunc[atypes] = False
                 dprint(1, "Numba attempt failed for", self.func, atypes)
-            except:
+            except Exception:
                 self.nfunc[atypes] = False
                 dprint(1, "Numba attempt failed for", self.func, atypes)
                 raise
@@ -716,7 +733,7 @@ if not USE_MPI:
                 new_func += '        print("AttributeError:", ae.args)\n'
                 new_func += "    except NameError as ae:\n"
                 new_func += '        print("NameError:", ae.args)\n'
-                new_func += "    except:\n"
+                new_func += "    except Exception:\n"
                 new_func += '        print("error calling deobj", sys.exc_info()[0])\n'
                 new_func += "    return rv\n"
                 dprint(2, "new_func:", new_func)
@@ -779,7 +796,7 @@ if not USE_MPI:
             else:
                 try:
                     self.cndvar.wait(timeout=5)
-                except:
+                except Exception:
                     exp = sys.exc_info()[0]
                     print("cndvar.wait exception", exp, type(exp))
                     pass
@@ -787,7 +804,7 @@ if not USE_MPI:
 
     try:
         ramba_spmd_barrier = ray.get_actor("RambaSpmdBarrier")
-    except:
+    except Exception:
         ramba_spmd_barrier = BarrierActor.options(
             name="RambaSpmdBarrier", max_concurrency=num_workers
         ).remote(num_workers)
@@ -799,6 +816,13 @@ if not USE_MPI:
 ### TODO: Need non-Ray version for MPI
 
 ######### End Barrier code ##############
+
+
+def get_advindex_dim(index):
+    for i in range(len(index)):
+        if isinstance(index[i], np.ndarray):
+            return i
+    assert 0
 
 
 def distindex_internal(dist, dim, accum):
@@ -824,8 +848,8 @@ class bdarray:
         weakref.WeakValueDictionary()
     )  # global map from gid to weak references of bdarrays
 
-    def __init__(self, size, distribution, gid, pad, fdist, dtype):
-        self.size = size
+    def __init__(self, shape, distribution, gid, pad, fdist, dtype):
+        self.shape = shape
         self.gid = gid
         self.pad = pad
         self.distribution = distribution
@@ -857,7 +881,7 @@ class bdarray:
     def assign_bdarray(
         cls,
         nd,
-        size,
+        shape,
         gid=None,
         distribution=None,
         pad=0,
@@ -870,11 +894,11 @@ class bdarray:
         if gid not in cls.gid_map:
             if dtype is None:
                 dtype = np.float64  # default
-            if size == ():
-                distribution = np.ndarray(size, dtype=dtype)
+            if shape == ():
+                distribution = np.ndarray(shape, dtype=dtype)
             else:
                 distribution = (
-                    shardview.default_distribution(size, **kwargs)
+                    shardview.default_distribution(shape, **kwargs)
                     if distribution is None
                     else libcopy.deepcopy(distribution)
                 )
@@ -882,13 +906,13 @@ class bdarray:
                 for i in distribution:
                     tmp = shardview.get_base_offset(i)
                     tmp *= 0
-            bd = cls(size, distribution, gid, pad, flexible_dist, dtype)
+            bd = cls(shape, distribution, gid, pad, flexible_dist, dtype)
         else:
             bd = cls.gid_map[gid]
         bd.add_nd(nd)
         dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
-        dprint(3, "Distribution:", bd.distribution, size)
-        if len(size) != 0 and not isinstance(bd.distribution, np.ndarray):
+        dprint(3, "Distribution:", bd.distribution, shape)
+        if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
             dprint(
                 4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
             )
@@ -906,11 +930,13 @@ class bdarray:
 
 atexit.register(bdarray.atexit)
 
+"""
 # Hmm -- does not seem to be used
 def make_padded_shard(core, boundary):
     cshape = core.shape
     assert len(cshape) == len(boundary)
     new_size = [cshape[i] + boundary[i] for i in range(len(cshape))]
+"""
 
 
 class LocalNdarray:
@@ -953,7 +979,7 @@ class LocalNdarray:
             else:
                 self.bcontainer = gnp.empty(self.allocated_size, **gnpargs)
 
-    def init_like(self, gid):
+    def init_like(self, gid, dtype=None):
         return LocalNdarray(
             gid,
             self.remote,
@@ -964,7 +990,7 @@ class LocalNdarray:
             self.whole_space,
             self.from_border,
             self.to_border,
-            self.dtype,
+            self.dtype if dtype is None else dtype,
         )
 
     def getlocal(self, width=None):
@@ -1043,7 +1069,7 @@ class LocalNdarray:
                         incoming_slice, incoming_data, ruuid = self.remote.comm_queues[
                             self.remote.worker_num
                         ].get(timeout=5)
-                except:
+                except Exception:
                     print("some exception!", sys.exc_info()[0])
                     assert 0
                 # local_slice = slice_to_local(incoming_slice, self.subspace)
@@ -1078,6 +1104,7 @@ class LocalNdarray:
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
+        arr.flags.writeable = True  # Force enable writes -- TODO:  Need to check if safe!! May want to set only if ndarray is not readonly
         return arr
 
     def get_view(self, shard):
@@ -1264,12 +1291,13 @@ def reduce_list(x):
 @functools.lru_cache()
 def get_do_fill(filler: FillerFunc, num_dim):
     filler = filler.func
-    dprint(2, "get_do_fill", filler)
+    dprint(2, "get_do_fill", filler, num_dim)
     # FIX ME: What if njit(filler) fails during compile or runtime?
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     if num_dim > 1:
@@ -1300,7 +1328,8 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        else numba.extending.register_jitable(filler)
+        #else numba.njit(filler)
     )
 
     if num_dim > 1:
@@ -1323,38 +1352,193 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
         return FunctionMetadata(do_fill, [], {}, no_global_cache=True)
 
 
+smap_func = 0
+
 @functools.lru_cache()
-def get_smap_index(filler: FillerFunc, num_dim):
+def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
     filler = filler.func
-    dprint(2, "get_smap_index", filler)
+    dprint(2, "get_smap_fill", filler, num_dim, ramba_array_args)
+    #njfiller = filler
     njfiller = (
         filler
         if isinstance(filler, numba.core.registry.CPUDispatcher)
-        else numba.njit(filler)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
+        #else numba.njit(filler)
     )
+
+    global smap_func
+
+    fname = f"smap_fill{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(A, sz, {arg_names}):\n"
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+
+    if num_dim > 1:
+        fill_txt += "    for i in numba.pndindex(sz[0]):\n"
+    else:
+        fill_txt += "    for i in numba.prange(sz[0]):\n"
+
+    fill_txt += f"        A[i] = {fillername}(" + ",".join(arg_list) + ")\n"
+    dprint(2, "fill_txt:")
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+
+
+@functools.lru_cache()
+def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
+    filler = filler.func
+    dprint(2, "get_smap_fill_index", filler, type(filler), num_dim, ramba_array_args)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
+        #else numba.njit(filler)
+    )
+
+    global smap_func
+
+    fname = f"smap_fill_index{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(A, sz, starts, {arg_names}):\n"
 
     if num_dim > 1:
 
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, starts, *args):
-            for i in numba.pndindex(sz):
-                arg = sz
-                # Construct the global index.
-                for j in range(len(starts)):
-                    arg = UT.tuple_setitem(arg, j, i[j] + starts[j])
-                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
-                A[i] = njfiller(arg, *fargs)
+        fill_txt += "    for i in numba.pndindex(sz):\n"
+        fill_txt += "        si = ("
+        for nd in range(num_dim):
+            fill_txt += f"i[{nd}] + starts[{nd}]"
+            if nd < num_dim - 1:
+                fill_txt += ","
+        fill_txt += ")\n"
 
-        return do_fill
     else:
 
-        @numba.njit  # (parallel=True) # using parallel causes compile to fail
-        def do_fill(A, sz, starts, *args):
-            for i in numba.prange(sz[0]):
-                fargs = tuple([x[i] if len(np.shape(x)) > 0 else x for x in args])
-                A[i] = njfiller((i + starts[0],), *fargs)
+        fill_txt += "    for i in numba.prange(sz[0]):\n"
+        fill_txt += "        si = i + starts[0]\n"
 
-        return do_fill
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+    fill_txt += f"        A[i] = {fillername}(si, " + ",".join(arg_list) + ")\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+
+
+@functools.lru_cache()
+def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True):
+    filler = filler.func
+    reducer = reducer.func
+    dprint(2, "get_sreduce_fill", filler, reducer, num_dim, ramba_array_args)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
+        #else numba.njit(filler)
+    )
+    njreducer = (
+        reducer
+        if isinstance(reducer, numba.core.registry.CPUDispatcher)
+        else numba.extending.register_jitable(reducer)
+        #else numba.njit(reducer)
+    )
+
+    global smap_func
+
+    fname = f"sreduce_fill{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    reducername = f"njreducer{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(sz, identity, {arg_names}):\n"
+    fill_txt +=  "    result = identity\n"
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+
+    if num_dim > 1:
+        fill_txt +=  "    for i in numba.pndindex(sz):\n"
+    else:
+        fill_txt +=  "    for i in numba.prange(sz[0]):\n"
+
+    fill_txt += f"        fres = {fillername}(" + ",".join(arg_list) + ")\n"
+    fill_txt += f"        result = {reducername}(result, fres)\n"
+    fill_txt +=  "    return result\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    gdict[reducername] = njreducer
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+
+
+@functools.lru_cache()
+def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True):
+    filler = filler.func
+    reducer = reducer.func
+    dprint(2, "get_sreduce_fill_index", filler, reducer, num_dim, ramba_array_args)
+    njfiller = (
+        filler
+        if isinstance(filler, numba.core.registry.CPUDispatcher)
+        #else numba.extending.register_jitable(filler)
+        else numba.extending.register_jitable(inline="always")(filler)
+        #else numba.njit(filler)
+    )
+    njreducer = (
+        reducer
+        if isinstance(reducer, numba.core.registry.CPUDispatcher)
+        else numba.extending.register_jitable(reducer)
+        #else numba.extending.register_jitable(inline="always")(reducer)
+        #else numba.njit(reducer)
+    )
+
+    global smap_func
+
+    fname = f"sreduce_fill_index{smap_func}"
+    fillername = f"njfiller{smap_func}"
+    reducername = f"njreducer{smap_func}"
+    smap_func += 1
+    arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
+    fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+    fill_txt +=  "    result = identity\n"
+
+    if num_dim > 1:
+        fill_txt +=  "    for i in numba.pndindex(sz):\n"
+        fill_txt +=  "        si = ("
+        for nd in range(num_dim):
+            fill_txt += f"i[{nd}] + starts[{nd}]"
+            if nd < num_dim - 1:
+                fill_txt += ","
+        fill_txt +=  ")\n"
+    else:
+        fill_txt +=  "    for i in numba.prange(sz[0]):\n"
+        fill_txt +=  "        si = i + starts[0]\n"
+
+    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+    fill_txt += f"        fres = {fillername}(si, " + ",".join(arg_list) + ")\n"
+    fill_txt += f"        result = {reducername}(result, fres)\n"
+    fill_txt +=  "    return result\n"
+    dprint(2, "fill_txt:", num_dim)
+    dprint(2, fill_txt)
+    ldict = {}
+    gdict = globals()
+    gdict[fillername] = njfiller
+    gdict[reducername] = njreducer
+    exec(fill_txt, gdict, ldict)
+    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
 
 
 def rec_buf_summary(rec_buf):
@@ -1372,7 +1556,7 @@ def rec_buf_summary(rec_buf):
             depth -= 1
             if depth == 0:
                 total += rec[0] - start
-                # print("rec_buf_summary ending", rec[0], rec[0] - start, total)
+                #print("rec_buf_summary ending", rec, rec[0], rec[0] - start, total, rec[1].data["dispatcher"])
 
     return (num_compiled, total)
 
@@ -1405,9 +1589,17 @@ def get_aggregators(comm_queues):
     return []
 
 
+def unpickle_args(args):
+    for idx, value in enumerate(args):
+        if isinstance(value, bytes):
+            args[idx] = func_loads(value)
+
+def external_set_common_state(st):
+    set_common_state(st, globals())
+
 class RemoteState:
     def __init__(self, worker_num, common_state):
-        set_common_state(common_state)
+        external_set_common_state(common_state)
         z = numa.set_affinity(worker_num, numa_zones)
         dprint(
             1,
@@ -1544,7 +1736,7 @@ class RemoteState:
                             do_fill = get_do_fill_non_tuple(FillerFunc(filler), num_dim)
 
                         do_fill(new_bcontainer, dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         if ndebug >= 2:
                             traceback.print_exc()
@@ -1560,7 +1752,7 @@ class RemoteState:
                             else FunctionMetadata(filler, (), {})
                         )
                         filler_res = njfiller(dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         traceback.print_exc()
                         filler_res = filler(dim_lens, starts)
@@ -1579,7 +1771,7 @@ class RemoteState:
                             else FunctionMetadata(filler, (), {})
                         )
                         njfiller(new_bcontainer, dim_lens, starts)
-                    except:
+                    except Exception:
                         dprint(1, "Some exception running filler.", sys.exc_info()[0])
                         traceback.print_exc()
                         filler(new_bcontainer, dim_lens, starts)
@@ -1713,59 +1905,218 @@ class RemoteState:
             return ret
 
     # TODO: should use get_view
-    def smap(self, out_gid, first_gid, args, func):
+    def smap(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
-        lnd = first.init_like(out_gid)
+        lnd = first.init_like(out_gid, dtype=dtype)
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
+        unpickle_args(args)
         # uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
         # bcontainers = [self.numpy_map[x][0] for x in uuids]
-        for index in np.ndindex(first.dim_lens):
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            new_bcontainer[index] = func(*fargs)
+
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+            #fargs = tuple([self.numpy_map[x].get_view() if isinstance(x, uuid.UUID) else x for x in args])
+            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            do_fill(new_bcontainer, first.dim_lens, *fargs)
+        else:
+            for index in np.ndindex(first.dim_lens):
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                new_bcontainer[index] = func(*fargs)
 
     # TODO: should use get_view
-    def smap_index(self, out_gid, first_gid, args, func):
+    def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
-        self.numpy_map[out_gid] = first.init_like(out_gid)
+        self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         starts = tuple(shardview.get_start(first.subspace))
+        unpickle_args(args)
 
-        #        print("smap_index:", first.dim_lens, type(first.dim_lens), starts, type(starts))
-        #        do_fill = get_smap_index(FillerFunc(func), len(first.dim_lens))
-        #        fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-        #        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
-        for index in np.ndindex(first.dim_lens):
-            index_arg = tuple(map(operator.add, index, starts))
-            # index_arg = tuple(shardview.base_to_index(first.subspace,index))
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            new_bcontainer[index] = func(index_arg, *fargs)
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+            do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
+        else:
+            for index in np.ndindex(first.dim_lens):
+                index_arg = tuple(map(operator.add, index, starts))
+                # index_arg = tuple(shardview.base_to_index(first.subspace,index))
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                new_bcontainer[index] = func(index_arg, *fargs)
 
     # TODO: should use get_view
-    def sreduce(self, first_gid, args, func, reducer):
+    def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
+        start_time = timer()
         func = func_loads(func)
         reducer = func_loads(reducer)
+        reducer = func_loads(reducer_driver)
         first = self.numpy_map[first_gid]
         result = None
-        assert len(args) == 1
-        for index in np.ndindex(first.dim_lens):
-            fargs = [
-                self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                for x in args
-            ]
-            if result is None:
-                result = func(*fargs)
+        unpickle_args(args)
+        #assert len(args) == 1
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+            def fix_args(x):
+                if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x].bcontainer
+                elif callable(x):
+                    res = x()
+                    return res
+                else:
+                    return x
+            fargs = tuple([fix_args(x) for x in args])
+            """
+            for farg in fargs:
+                print("farg:", farg, type(farg))
+                if isinstance(farg, np.ndarray):
+                    print("shape:", farg.shape)
+            """
+            res = do_fill(first.dim_lens, identity, *fargs)
+            #print("worker do_fill res:", res, res[0].shape, res[1].shape)
+            #return res
+            after_map_time = timer()
+
+            # Distributed and Parallel Reduction
+            max_worker = num_workers
+            while max_worker > 1:
+                # midpoint is the index of the first worker that needs to send
+                midpoint = (max_worker + 1) // 2
+                # this worker will send
+                if self.worker_num >= midpoint:
+                    send_to = self.worker_num - midpoint
+                    self.comm_queues[send_to].put((a_send_recv, res))
+                    break
+                else:
+                    # If the remaining workers is odd and this worker is the last one then it won't receive
+                    # any communication or needs to do any compute but just goes to the next iteration where
+                    # it will send.
+                    if not (
+                        max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                    ):
+                        try:
+                            incoming_uuid, incoming_res = self.comm_queues[
+                                    self.worker_num
+                            ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
+                        except Exception:
+                            print("some exception!", sys.exc_info()[0])
+                            assert 0
+                        res = reducer_driver(res, incoming_res)
+
+                max_worker = midpoint
+
+            after_reduce_time = timer()
+            tprint(2, "sreduce map time:", self.worker_num, after_map_time - start_time)
+            tprint(2, "sreduce distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+
+            if self.worker_num == 0:
+                return res
             else:
-                result = reducer(result, func(*fargs))
-        return result
+                return None
+        else:
+            for index in np.ndindex(first.dim_lens):
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                if result is None:
+                    result = func(*fargs)
+                else:
+                    result = reducer(result, func(*fargs))
+            return result
+
+    def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
+        start_time = timer()
+        func = func_loads(func)
+        reducer = func_loads(reducer)
+        reducer_driver = func_loads(reducer_driver)
+        first = self.numpy_map[first_gid]
+        result = None
+        starts = tuple(shardview.get_start(first.subspace))
+        unpickle_args(args)
+        if callable(identity):
+            identity = identity()
+        #assert len(args) == 1
+        if True:
+            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+            def fix_args(x):
+                if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x].bcontainer
+                elif callable(x):
+                    res = x()
+                    return res
+                else:
+                    return x
+            fargs = tuple([fix_args(x) for x in args])
+            """
+            for farg in fargs:
+                print("farg:", farg, type(farg))
+                if isinstance(farg, np.ndarray):
+                    print("shape:", farg.shape)
+            """
+            res = do_fill(first.dim_lens, starts, identity, *fargs)
+            #print("worker do_fill res:", res, res.shape)
+            after_map_time = timer()
+
+            # Distributed and Parallel Reduction
+            max_worker = num_workers
+            while max_worker > 1:
+                # midpoint is the index of the first worker that needs to send
+                midpoint = (max_worker + 1) // 2
+                # this worker will send
+                if self.worker_num >= midpoint:
+                    send_to = self.worker_num - midpoint
+                    self.comm_queues[send_to].put((a_send_recv, res))
+                    break
+                else:
+                    # If the remaining workers is odd and this worker is the last one then it won't receive
+                    # any communication or needs to do any compute but just goes to the next iteration where
+                    # it will send.
+                    if not (
+                        max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                    ):
+                        try:
+                            incoming_uuid, incoming_res = self.comm_queues[
+                                    self.worker_num
+                            ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
+                        except Exception:
+                            print("some exception!", sys.exc_info()[0])
+                            assert 0
+                        res = reducer_driver(res, incoming_res)
+
+                max_worker = midpoint
+
+            after_reduce_time = timer()
+            tprint(2, "sreduce_index map time:", self.worker_num, after_map_time - start_time)
+            tprint(2, "sreduce_index distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+
+            if self.worker_num == 0:
+                return res
+            else:
+                return None
+        else:
+            for index in np.ndindex(first.dim_lens):
+                # Make the global index.
+                index_arg = tuple(map(operator.add, index, starts))
+                fargs = [
+                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
+                    for x in args
+                ]
+                if result is None:
+                    result = func(index_arg, *fargs)
+                else:
+                    result = reducer(result, func(index_arg, *fargs))
+            return result
 
     def reshape(
         self,
@@ -1959,7 +2310,7 @@ class RemoteState:
                         ret.append((in_block_intersection, incoming_data))
                         end_time = timer()
                         recv_stats.append((end_time - start_time, incoming_data.size))
-                    except:
+                    except Exception:
                         print("some exception!", sys.exc_info()[0])
                         assert 0
             # print ("ret: ", ret)
@@ -1984,7 +2335,7 @@ class RemoteState:
                 return self.bcontainer[the_slice]
 
             def get_view(self, shard):
-                print(shard, self.core_slice)
+                #print(shard, self.core_slice)
                 return self.get_partial_view(
                     shardview.to_base_slice(shard), shard, global_index=False
                 )
@@ -2091,7 +2442,7 @@ class RemoteState:
                                 incoming_uuid, incoming_partial = self.comm_queues[
                                     self.worker_num
                                 ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
-                            except:
+                            except Exception:
                                 print("some exception!", sys.exc_info()[0])
                                 assert 0
                             partial_numpy += incoming_partial
@@ -2316,7 +2667,7 @@ class RemoteState:
                                 bstartcol - cstartcol : bendcol - cstartcol,
                             ]
                             # d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
-                    except:
+                    except Exception:
                         print("subfail", cremote, sys.exc_info()[0])
 
                     try:
@@ -2356,7 +2707,7 @@ class RemoteState:
                             d += ashifted @ bshifted
                             # d += np.dot(ashifted, bshifted)
                     #                            print("general dot:", ashifted.shape, bshifted.shape)
-                    except:
+                    except Exception:
                         print(self.worker_num, sys.exc_info()[0])
                         print(
                             "shifted shapes exception:",
@@ -2466,7 +2817,7 @@ class RemoteState:
                     else:
                         received_b.append((in_block_intersection, incoming_data))
                         await push_ready_pairs(received_a, received_b, ready, False)
-                except:
+                except Exception:
                     print("some exception!", sys.exc_info()[0])
                     assert(0)
 
@@ -2508,7 +2859,7 @@ class RemoteState:
             if kend > kstart:
                 try:
                     d = clocal.bcontainer[astartrow-cstartrow:aendrow-cstartrow,bstartcol-cstartcol:bendcol-cstartcol]
-                except:
+                except Exception:
                     print("subfail", sys.exc_info()[0])
 
                 try:
@@ -2522,7 +2873,7 @@ class RemoteState:
                         ashifted = adataarray[:,kstart-adata[0][0,1]:kstart-adata[0][0,1]+ktotal]
                         bshifted = bdataarray[kstart-bdata[0][0,0]:kstart-bdata[0][0,0]+ktotal,:]
                         d += np.dot(ashifted, bshifted)
-                except:
+                except Exception:
                     print(self.worker_num, sys.exc_info()[0])
                     print("shifted shapes exception:", adataarray.shape, bdataarray.shape, ashifted.shape, bshifted.shape, "kstart", kstart, "kend", kend, "ktotal", ktotal, adata[0][0,1], bdata[0][0,0], adata[0][0,1]-kstart, bdata[0][0,0]-kstart)
                     print("cross-ranges:", self.worker_num, clocal.whole, adata, bdata, "astartrow", astartrow, aendrow, "bstartcol", bstartcol, bendcol, "kstart", kstart, kend, "cstart", cstartrow, cstartcol, "indices", astartrow-cstartrow, aendrow-cstartrow, bstartcol-cstartcol, bendcol-bstartcol)
@@ -2679,7 +3030,7 @@ class RemoteState:
                 )
                 in_send_recv_uuid, incoming_data, map_out_combined, region = get_result
                 # incoming_data, map_out_combined, region = self.comm_queues[self.worker_num].get(timeout = 5)
-            except:
+            except Exception:
                 print("some exception!", sys.exc_info()[0])
                 print("get_result:", get_result)
                 assert 0
@@ -2785,7 +3136,7 @@ class RemoteState:
             dprint(3, "Before local spmd fmfunc call")
             fmfunc(*fargs)
             dprint(3, "After local spmd fmfunc call")
-        except:
+        except Exception:
             print("some exception in remote spmd")
             traceback.print_exc()
             pass
@@ -2831,7 +3182,7 @@ class RemoteState:
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
-            dprint(2, "function does not exist, creating it")
+            dprint(2, "function does not exist, creating it\n", code)
             exec(code, gdict, ldict)
             gdict[fname] = FunctionMetadata(ldict[fname], [], {})
             # print (gdict.keys())
@@ -2954,7 +3305,7 @@ class RemoteState:
         #    try:
         #        _, v, part, sl = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==uuid, timeout=5)
         #        arr_parts[v].append( (part, sl) )
-        #    except:
+        #    except Exception:
         #        print("some exception", sys.exc_info()[0])
         #        assert(0)
         msgs = []
@@ -3149,7 +3500,7 @@ class RemoteState:
             try:
                 op = getattr(self, method)
                 retval = op(*args, **kwargs)
-            except:
+            except Exception:
                 traceback.print_exc()
                 rvq.put(("ERROR", self.worker_num, traceback.format_exc()))
                 break
@@ -3417,10 +3768,29 @@ def find_index(distribution, index):
 HANDLED_FUNCTIONS = {}
 
 
+def unify_args(lhs, rhs, dtype):
+    if hasattr(rhs, "dtype"):
+        rhs_dtype = rhs.dtype
+    else:
+        try:
+            rhs_dtype = np.dtype(rhs)
+        except Exception:
+            rhs_dtype = None
+    if dtype is None:
+        dtype = np.result_type(lhs, rhs_dtype)
+    elif dtype == "float":
+        dtype = (
+            np.float32
+            if rhs_dtype == np.float32 and lhs == np.float32
+            else np.float64
+        )
+    return dtype
+
+
 class ndarray:
     def __init__(
         self,
-        size,
+        shape,
         gid=None,
         distribution=None,
         local_border=0,
@@ -3432,10 +3802,10 @@ class ndarray:
     ):
         t0 = timer()
         self.bdarray = bdarray.assign_bdarray(
-            self, size, gid, distribution, local_border, flex_dist, dtype, **kwargs
+            self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
         )  # extra options for distribution hints
         # self.gid = self.bdarray.gid
-        self.size = size
+        self.shape = shape
         self.distribution = (
             distribution
             if ((distribution is not None) and (gid is not None))
@@ -3446,7 +3816,7 @@ class ndarray:
         # TODO: move to_border, from_border out of ndarray; put into bdarray, or just compute when needed to construct Local_NDarray on remotes
         if local_border > 0:
             self.from_border, self.to_border = shardview.compute_from_border(
-                size, self.distribution, local_border
+                shape, self.distribution, local_border
             )
         else:
             self.from_border = None
@@ -3463,13 +3833,13 @@ class ndarray:
         self.readonly = readonly
         self.maskarray = maskarray
         t1 = timer()
-        dprint(2, "Created ndarray", self.gid, "size", size, "time", (t1 - t0) * 1000)
+        dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
         return tuple(
             [
-                self.size,
+                self.shape,
                 self.distribution,
                 self.local_border,
                 self.from_border,
@@ -3483,19 +3853,19 @@ class ndarray:
         return self.bdarray.gid
 
     @property
-    def shape(self):
-        return self.size
+    def size(self):
+        return np.prod(self.shape)
 
     @property
     def ndim(self):
-        return len(self.size)
+        return len(self.shape)
 
     @property
     def dtype(self):
         return np.dtype(self.bdarray.dtype)
 
     def transpose(self, *args):
-        ndims = len(self.size)
+        ndims = len(self.shape)
         if len(args) == 0:
             return self.remapped_axis([ndims - i - 1 for i in range(ndims)])
         else:
@@ -3513,11 +3883,11 @@ class ndarray:
 
     # @property
     # def T(self):
-    #    assert(len(self.size) == 2)
+    #    assert(len(self.shape) == 2)
     #    divs = shardview.distribution_to_divisions(self.distribution)
     #    outdiv = np.flip(divs, axis=2)
     #    rev_base_offsets = [np.flip(x.base_offset) for x in self.distribution]
-    #    return ndarray((self.size[1], self.size[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
+    #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
     """
     def __del__(self):
@@ -3530,24 +3900,24 @@ class ndarray:
     """
 
     def __str__(self):
-        return str(self.gid) + " " + str(self.size) + " " + str(self.local_border)
+        return str(self.gid) + " " + str(self.shape) + " " + str(self.local_border)
 
     def remapped_axis(self, newmap):
         # make sure array distribution can't change (ie, not flexible or is already constructed)
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
-        newsize, newdist = shardview.remap_axis(self.size, self.distribution, newmap)
-        return ndarray(newsize, self.gid, newdist, readonly=self.readonly)
+        newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
+        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
 
     def asarray(self):
-        if self.size == ():
+        if self.shape == ():
             return self.distribution
 
         deferred_op.do_ops()
-        ret = np.empty(self.size, dtype=self.dtype)
+        ret = np.empty(self.shape, dtype=self.dtype)
         # dist_shape = self.distribution.shape
         # topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
-        dprint(2, "asarray:", self.distribution, self.size)
+        dprint(2, "asarray:", self.distribution, self.shape)
         dprint(2, "asarray:", shardview.distribution_to_divisions(self.distribution))
         # shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
         # shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
@@ -3565,7 +3935,7 @@ class ndarray:
             #            dprint(2, "for:", i, dist_shape[2])
             # gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
             # rindex = slice_minus_offset(gindex, topleft)
-            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].size)
+            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].shape)
             dprint(
                 3,
                 "gslice:",
@@ -3637,7 +4007,7 @@ class ndarray:
             return ret
         else:
             new_ndarray = create_array_with_divisions(
-                self.size,
+                self.shape,
                 self.distribution,
                 local_border=self.local_border,
                 dtype=dtype,
@@ -3649,28 +4019,28 @@ class ndarray:
             )
             return new_ndarray
 
-    def broadcastable_to(self, size):
-        new_dims = len(size) - len(self.size)
-        sslice = size[-len(self.size) :]
-        z1 = zip(sslice, self.size)
+    def broadcastable_to(self, shape):
+        new_dims = len(shape) - len(self.shape)
+        sslice = shape[-len(self.shape) :]
+        z1 = zip(sslice, self.shape)
         if any([a > 1 and b > 1 and a != b for a, b in z1]):
             return False
         return True
 
-    def broadcast_to(self, size):
-        dprint(4, "broadcast_to:", self.size, size)
-        new_dims = len(size) - len(self.size)
+    def broadcast_to(self, shape):
+        dprint(4, "broadcast_to:", self.shape, shape)
+        new_dims = len(shape) - len(self.shape)
         dprint(4, "new_dims:", new_dims)
-        sslice = size[-len(self.size) :]
+        sslice = shape[-len(self.shape) :]
         dprint(4, "sslice:", sslice)
-        z1 = zip(sslice, self.size)
+        z1 = zip(sslice, self.shape)
         dprint(4, "zip check:", z1)
         if any([a > 1 and b > 1 and a != b for a, b in z1]):
             raise ValueError("Non-broadcastable.")
 
         bd = [
-            i < new_dims or (size[i] != 1 and self.size[i - new_dims] == 1)
-            for i in range(len(size))
+            i < new_dims or (shape[i] != 1 and self.shape[i - new_dims] == 1)
+            for i in range(len(shape))
         ]
         dprint(4, "broadcasted_dims:", bd)
 
@@ -3678,33 +4048,33 @@ class ndarray:
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
         return ndarray(
-            size,
+            shape,
             gid=self.gid,
-            distribution=shardview.broadcast(self.distribution, bd, size),
+            distribution=shardview.broadcast(self.distribution, bd, shape),
             local_border=0,
             readonly=True,
         )
 
     @classmethod
     def broadcast(cls, a, b):
-        new_array_size = numpy_broadcast_size(a, b)
+        new_array_shape = numpy_broadcast_shape(a, b)
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(a, ndarray) and a.shape == ():
             aview = a.distribution
-        elif not isinstance(a, ndarray) or new_array_size == a.size:
+        elif not isinstance(a, ndarray) or new_array_shape == a.shape:
             aview = a
         else:
-            aview = a.broadcast_to(new_array_size)
+            aview = a.broadcast_to(new_array_shape)
 
         # Check for 0d case first.  If so then return the internal value (stored in distribution).
         if isinstance(b, ndarray) and b.shape == ():
             bview = b.distribution
-        elif not isinstance(b, ndarray) or new_array_size == b.size:
+        elif not isinstance(b, ndarray) or new_array_shape == b.shape:
             bview = b
         else:
-            bview = b.broadcast_to(new_array_size)
+            bview = b.broadcast_to(new_array_shape)
 
-        return (new_array_size, aview, bview)
+        return (new_array_shape, aview, bview)
 
     def astype(self, dtype, copy=True):
         dprint(3, "astype:", self.dtype, type(self.dtype), dtype, type(dtype), copy)
@@ -3716,7 +4086,7 @@ class ndarray:
 
         if copy:
             new_ndarray = create_array_with_divisions(
-                self.size, self.distribution, dtype=dtype
+                self.shape, self.distribution, dtype=dtype
             )
             deferred_op.add_op(["", new_ndarray, " = ", self], new_ndarray)
         else:
@@ -3731,7 +4101,7 @@ class ndarray:
             rhs = fromarray(rhs)
         if inplace:
             sz, selfview, rhsview = ndarray.broadcast(self, rhs)
-            assert self.size == sz
+            assert self.shape== sz
 
             if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
                 getattr(selfview, op)(rhsview)
@@ -3745,13 +4115,16 @@ class ndarray:
             lb = max(
                 self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
             )
-            new_array_size, selfview, rhsview = ndarray.broadcast(self, rhs)
+            new_array_shape, selfview, rhsview = ndarray.broadcast(self, rhs)
+
+            dtype = unify_args(self.dtype, rhs, dtype)
+            """
             if hasattr(rhs, "dtype"):
                 rhs_dtype = rhs.dtype
             else:
                 try:
                     rhs_dtype = np.dtype(rhs)
-                except:
+                except Exception:
                     rhs_dtype = None
             if dtype is None:
                 dtype = np.result_type(self.dtype, rhs_dtype)
@@ -3761,15 +4134,16 @@ class ndarray:
                     if rhs_dtype == np.float32 and self.dtype == np.float32
                     else np.float64
                 )
+            """
 
-            if isinstance(new_array_size, tuple):
-                if len(new_array_size) > 0:
-                    new_ndarray = empty(new_array_size, local_border=lb, dtype=dtype)
+            if isinstance(new_array_shape, tuple):
+                if len(new_array_shape) > 0:
+                    new_ndarray = empty(new_array_shape, local_border=lb, dtype=dtype)
                 else:
                     res = getattr(selfview, op)(rhsview)
                     if isinstance(res, np.ndarray):
                         return fromarray(res)
-                    elif isinstance(res, numbers.Number) and new_array_size == ():
+                    elif isinstance(res, numbers.Number) and new_array_shape == ():
                         return array(res)
                     else:
                         return res
@@ -3803,14 +4177,14 @@ class ndarray:
         elif not isinstance(key, tuple):
             key = (key,)
 
-        if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.size):
+        if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
-            elif value.broadcastable_to(view.size):
-                if (value.size!=view.size):
-                    value = value.broadcast_to(view.size)
+            elif value.broadcastable_to(view.shape):
+                if (value.shape!=view.shape):
+                    value = value.broadcast_to(view.shape)
                 # avoid adding code in case of inplace operations
                 if not (
                     view.gid == value.gid
@@ -3819,11 +4193,11 @@ class ndarray:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                # TODO:  Should try to broadcast value to view.size before giving up; Done?
-                print("Mismatched sizes", view.size, value.size)
+                # TODO:  Should try to broadcast value to view.shape before giving up;  Done?
+                print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
-        if all([isinstance(i, int) for i in key]) and len(key) == len(self.size):
+        if all([isinstance(i, int) for i in key]) and len(key) == len(self.shape):
             print("Setting individual element is not handled yet!")
             assert 0
 
@@ -3831,7 +4205,7 @@ class ndarray:
         if isinstance(key[0], slice):
             if key.start is None and key.stop is None:   # a[:] = b
                 if isinstance(value, ndarray):
-                    if self.size == value.size:
+                    if self.shape == value.shape:
                         deferred_op.add_op(["", self, " = ", value, ""], self)
                         #[remote_states[i].setitem1.remote(self.gid, value.gid) for i in range(num_workers)]
                         return
@@ -3840,37 +4214,41 @@ class ndarray:
                     return
             else:   # a[s:e] = b
                 view = self[key]
-                if view.size == value.size:
+                if view.shape == value.shape:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                     return
         """
         # Need to handle all possible remaining cases.
-        print("Don't know how to set index", key, " of dist array of size", self.size)
+        print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
 
     def __getitem__(self, index):
         if isinstance(index, ndarray):
             return self.__getitem__real(index)
         indhash = pickle.dumps(index)
+        dprint(3, "__getitem__", index, type(index), self.shape, indhash in self.getitem_cache)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.__getitem__real(index)
         return self.getitem_cache[indhash]
 
     def __getitem__real(self, index):
-        dprint(1, "ndarray::__getitem__:", index, type(index))
+        dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
 
         # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.size):
-            if index.size != self.size:
-                index = index.broadcast_to(self.size)
-            return ndarray( self.size, gid=self.gid, distribution=self.distribution, local_border=0, 
+        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+            if index.shape != self.shape:
+                index = index.broadcast_to(self.shape)
+            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0, 
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
 
         if not isinstance(index, tuple):
             index = (index,)
 
+        if index[-1] is Ellipsis:
+            index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
+
         # If all the indices are integers and the number of indices equals the number of array dimensions.
-        if all([isinstance(i, int) for i in index]) and len(index) == len(self.size):
+        if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
             deferred_op.do_ops()
 
             owner = shardview.find_index(
@@ -3883,27 +4261,30 @@ class ndarray:
             )
             return ret
 
+        index_has_slice = any([isinstance(i, slice) for i in index])
+        index_has_array = any([isinstance(i, np.ndarray) for i in index])
+
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
-        if any([isinstance(i, slice) for i in index]) or len(index) < len(self.size):
+        if index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
             for i in range(len(index)):
-                if isinstance(index[i], int) and index[i] >= self.size[i]:
+                if isinstance(index[i], int) and index[i] >= self.shape[i]:
                     raise IndexError(
                         "index "
                         + str(index[i])
                         + " is out of bounds for axis "
                         + str(i)
-                        + " with size "
-                        + str(self.size[i])
+                        + " with shape "
+                        + str(self.shape[i])
                     )
 
             # make sure array distribution can't change (ie, not flexible or is already constructed)
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
                 deferred_op.do_ops()
-            num_dim = len(self.size)
-            cindex = canonical_index(index, self.size)
-            dim_sizes = tuple([max(0, x.stop - x.start) for x in cindex])
-            dprint(2, "getitem slice:", cindex, dim_sizes)
+            num_dim = len(self.shape)
+            cindex = canonical_index(index, self.shape)
+            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+            dprint(2, "getitem slice:", cindex, dim_shapes)
 
             # sdistribution = [
             #                 [[max(self.distribution[i][0][j], cindex[j].start)  for j in range(num_dim)],
@@ -3913,19 +4294,19 @@ class ndarray:
             # reduce dimensionality as needed
             axismap = [
                 i
-                for i in range(len(dim_sizes))
+                for i in range(len(dim_shapes))
                 if i >= len(index) or isinstance(index[i], slice)
             ]
-            if len(axismap) < len(dim_sizes):
-                dim_sizes, sdistribution = shardview.remap_axis(
-                    dim_sizes, sdistribution, axismap
+            if len(axismap) < len(dim_shapes):
+                dim_shapes, sdistribution = shardview.remap_axis(
+                    dim_shapes, sdistribution, axismap
                 )
-            dprint(2, "getitem slice:", dim_sizes, sdistribution)
+            dprint(2, "getitem slice:", dim_shapes, sdistribution)
             #            deferred_op.add_op(["", self, " = ", value, ""])
-            # return ndarray(self.gid, tuple(dim_sizes), np.asarray(sdistribution))
+            # return ndarray(self.gid, tuple(dim_shapes), np.asarray(sdistribution))
             # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
             return ndarray(
-                dim_sizes,
+                dim_shapes,
                 gid=self.gid,
                 distribution=sdistribution,
                 local_border=0,
@@ -3933,7 +4314,18 @@ class ndarray:
                 dtype=self.dtype,
             )
 
-        print("Don't know how to get index", index, " of dist array of size", self.size)
+        if (isinstance(index, tuple) and
+            all([isinstance(i, np.ndarray) for i in index]) and
+            all([i.ndim == self.ndim for i in index])):
+            # Advanced indexing always creates a copy.
+            if len(index) == 1 and self.ndim == 1:
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of shape", self.shape)
+                assert 0
+            else:
+                print("Ramba does not current support this form of advanced indexing", index, type(index), " of dist array of shape", self.shape)
+                assert 0
+
+        print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
 
     def get_remote_ranges(self, required_division):
@@ -3960,7 +4352,7 @@ class ndarray:
         return rv
 
     # def __len__(self):
-    #    return self.size[0]
+    #    return self.shape[0]
 
     def __array_function__(self, func, types, args, kwargs):
         dprint(
@@ -3968,6 +4360,7 @@ class ndarray:
             "__array_function__",
             func,
             types,
+            len(args),
             args,
             kwargs,
             func in HANDLED_FUNCTIONS,
@@ -3980,6 +4373,8 @@ class ndarray:
         hf = HANDLED_FUNCTIONS[func]
         if hf[1]:
             new_args.append(self)
+        new_args.extend(args)
+        """
         for arg in args:
             if isinstance(arg, np.ndarray):
                 new_args.append(fromarray(arg))
@@ -3987,6 +4382,7 @@ class ndarray:
                 new_args.append(arg)
             else:
                 return NotImplemented
+        """
         return hf[0](*new_args, **kwargs)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
@@ -4024,6 +4420,11 @@ class ndarray:
             return sreduce(lambda x: x, ufunc, *inputs)
         else:
             return NotImplemented
+
+    def groupby(self, dim, value_to_group, num_groups=None):
+        if num_groups is None:
+            num_groups = value_to_group.max()
+        return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 
 # We only have to put functions here where the ufunc name is different from the
@@ -4219,7 +4620,7 @@ def matmul(a, b, reduction=False, out=None):
                 out_ndarray.gid,
                 out_ndarray.distribution,
                 a.gid,
-                a.size,
+                a.shape,
                 a.distribution,
                 blocal,
                 0,
@@ -4343,10 +4744,10 @@ def matmul(a, b, reduction=False, out=None):
                 out_ndarray.gid,
                 out_ndarray.distribution,
                 a.gid,
-                a.size,
+                a.shape,
                 a.distribution,
                 b.gid,
-                b.size,
+                b.shape,
                 b.distribution,
                 bextend,
                 a_send_recv,
@@ -4615,21 +5016,21 @@ def matmul(a, b, reduction=False, out=None):
     end_compute_comm_set = timer()
 
     # matmul_workers = remote_call_all("matmul", out_ndarray.gid,
-    #                                a.gid, a.size, a.distribution,
-    #                                b.gid, b.size, b.distribution, bextend,
+    #                                a.gid, a.shape, a.distribution,
+    #                                b.gid, b.shape, b.distribution, bextend,
     #                                a_send_recv, b_send_recv)
 
     launch_start_time = timer()
     matmul_workers = remote_async_call_all(
         "matmul",
         out_ndarray.gid,
-        out_ndarray.size,
+        out_ndarray.shape,
         out_ndarray.distribution,
         a.gid,
-        a.size,
+        a.shape,
         a.distribution,
         b.gid,
-        b.size,
+        b.shape,
         b.distribution,
         bextend,
         a_send_recv,
@@ -4741,7 +5142,7 @@ def canonical_index(index, size):
     return tuple(newindex)
 
 
-def numpy_broadcast_size(a, b):
+def numpy_broadcast_shape(a, b):
     rev_ashape = a.shape[::-1]
     if isinstance(b, ndarray):
         rev_bshape = b.shape[::-1]
@@ -4756,7 +5157,7 @@ def numpy_broadcast_size(a, b):
     ):
         return None
 
-    dprint(3, "numpy_broadcast_size:", rev_ashape, rev_bshape)
+    dprint(3, "numpy_broadcast_shape:", rev_ashape, rev_bshape)
 
     # make sure that ashape is not shorter than bshape
     if len(rev_bshape) > len(rev_ashape):
@@ -4811,7 +5212,7 @@ def make_method(
             t0 = timer()
             #            print("make_method", name, type(self), type(rhs))
             #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
-            #                assert(self.size == rhs.size)
+            #                assert(self.shape == rhs.shape)
             new_ndarray = self.array_binop(
                 rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype
             )
@@ -4915,11 +5316,13 @@ class deferred_op:
     last_call_time = timer()
     last_add_time = timer()
 
-    def __init__(self, size, distribution, fdist):
-        self.size = size
+    def __init__(self, shape, distribution, fdist):
+        self.shape = shape
         self.distribution = distribution
         self.flex_dist = fdist
         self.delete_gids = []
+        self.read_arrs = []   # (gid,dist) list of read arrays;  dist is None if flex_dist
+        self.write_arrs = []  # (gid,dist) list of write arrays; dist is None if flex_dist
         self.use_gids = (
             {}
         )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
@@ -5079,17 +5482,18 @@ class deferred_op:
         # get code and variables from oplist
         codes = oplist[::2]
         operands = oplist[1::2]
-        # find ndarray -- assume all are compatible (same size, divisions);  TODO: should check
+        # find ndarray -- assume all are compatible (same shape, divisions);  TODO: should check
         arr = (
             write_array
             if write_array is not None
             else next(filter(lambda x: isinstance(x, ndarray), operands), None)
         )
         assert arr is not None, "Deferred op with no ndarray parameter"
-        size = arr.size
+        shape = arr.shape
         distribution = arr.distribution
+        # Check to see if existing deferred ops are compatible in size, else do ops
         if (cls.ramba_deferred_ops is not None) and (
-            cls.ramba_deferred_ops.size != size
+            cls.ramba_deferred_ops.shape != shape
             or (
                 not shardview.compatible_distributions(
                     cls.ramba_deferred_ops.distribution, distribution
@@ -5101,28 +5505,59 @@ class deferred_op:
             dprint(
                 2,
                 "deferred ops mismatch:",
-                cls.ramba_deferred_ops.size,
-                size,
+                cls.ramba_deferred_ops.shape,
+                shape,
                 cls.ramba_deferred_ops.distribution,
                 distribution,
             )
             cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 1;  op reads/writes shifted version of an array that was written previously
+        if ( cls.ramba_deferred_ops is not None and any([ 
+                isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
+                for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
+            dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
+            # force prior stuff to execute
+            cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 2:  op writes and reads from shifted versions of same array
+        #    NOTE:  works only for assignment / inplace operators, not general functions
+        if (write_array is not None) and (
+                any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ]) 
+                or (cls.ramba_deferred_ops is not None and any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
+            assert codes[0]==''
+            dprint(2, "Write after read with mismatched distributions detected. Will not fuse, adding temporary array.")
+            # make temp, assign computation to temp, do ops, then assign temp to write array
+            tmp_array = empty_like(write_array)
+            orig_op = codes[1]
+            oplist[1] = tmp_array
+            oplist[2] = ' = '
+            cls.add_op( oplist, tmp_array, imports )
+            cls.ramba_deferred_ops.do_ops()
+            oplist = [ '', write_array, orig_op, tmp_array ]
+            operands = [ write_array, tmp_array ]
+            codes = [ '', orig_op ]
+
         if cls.ramba_deferred_ops is None:
             dprint(2, "Create new deferred op set")
-            cls.ramba_deferred_ops = cls(size, distribution, arr.bdarray.flex_dist)
+            cls.ramba_deferred_ops = cls(shape, distribution, arr.bdarray.flex_dist)
         if not arr.bdarray.flex_dist:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
             dprint(2, "fixing distribution")
+
         # Handle masked array write
         if write_array.maskarray is not None:
             oplist = [ "if ", write_array.maskarray, ": "+oplist[0] ] + oplist[1:]
             operands = [ write_array.maskarray ] + operands
-        # TODO: Need to check for aliasing
+
         # add vars
+        if (write_array is not None):
+            cls.ramba_deferred_ops.write_arrs.append((write_array.gid, None if write_array.bdarray.flex_dist else write_array.distribution))
         for i, x in enumerate(operands):
             if isinstance(x, ndarray):
-                if x.size == ():  # 0d check
+                cls.ramba_deferred_ops.read_arrs.append((x.gid, None if x.bdarray.flex_dist else x.distribution))
+                if x.shape == ():  # 0d check
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
                 else:
                     bd = bdarray.get_by_gid(x.gid)
@@ -5150,9 +5585,9 @@ class deferred_op:
         dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)
 
 
-def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
+def create_array_with_divisions(shape, divisions, local_border=0, dtype=None):
     new_ndarray = ndarray(
-        size,
+        shape,
         distribution=shardview.clean_dist(divisions),
         local_border=local_border,
         dtype=dtype,
@@ -5162,7 +5597,7 @@ def create_array_with_divisions(size, divisions, local_border=0, dtype=None):
 
 
 def create_array(
-    size,
+    shape,
     filler,
     local_border=0,
     dtype=None,
@@ -5173,13 +5608,13 @@ def create_array(
     **kwargs
 ):
     new_ndarray = ndarray(
-        size,
+        shape,
         local_border=local_border,
         dtype=dtype,
         distribution=distribution,
         **kwargs
     )
-    if size == ():
+    if shape == ():
         if isinstance(filler, str):
             new_ndarray.distribution = np.array(eval(filler), dtype=new_ndarray.dtype)
         elif isinstance(filler, numbers.Number):
@@ -5200,7 +5635,7 @@ def create_array(
                 "create_array",
                 new_ndarray.gid,
                 new_ndarray.distribution[i],
-                size,
+                shape,
                 filler,
                 local_border,
                 dtype,
@@ -5219,7 +5654,7 @@ def create_array(
 
 
 def init_array(
-    size,
+    shape,
     filler,
     local_border=0,
     dtype=None,
@@ -5227,10 +5662,10 @@ def init_array(
     tuple_arg=True,
     **kwargs
 ):
-    if isinstance(size, int):
-        size = (size,)
+    if isinstance(shape, int):
+        shape = (shape,)
     return create_array(
-        size,
+        shape,
         filler,
         local_border=local_border,
         dtype=dtype,
@@ -5240,14 +5675,14 @@ def init_array(
     )
 
 
-def fromfunction(lfunc, size, dtype=None, **kwargs):
-    return init_array(size, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
+def fromfunction(lfunc, shape, dtype=None, **kwargs):
+    return init_array(shape, lfunc, dtype=dtype, tuple_arg=False, **kwargs)
 
 
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
-def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
+def empty(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     return init_array(
-        size,
+        shape,
         None,
         local_border=local_border,
         dtype=dtype,
@@ -5258,16 +5693,16 @@ def empty(size, local_border=0, dtype=None, distribution=None, **kwargs):
 
 def empty_like(other_ndarray,**kwargs):
     return empty(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
         **kwargs
     )
 
 
-def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
+def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     return init_array(
-        size,
+        shape,
         "0",
         local_border=local_border,
         dtype=dtype,
@@ -5278,26 +5713,26 @@ def zeros(size, local_border=0, dtype=None, distribution=None, **kwargs):
 
 def zeros_like(other_ndarray):
     return zeros(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
     )
 
 
-def ones(size, local_border=0, dtype=None, **kwargs):
-    return init_array(size, "1", local_border=local_border, dtype=dtype, **kwargs)
+def ones(shape, local_border=0, dtype=None, **kwargs):
+    return init_array(shape, "1", local_border=local_border, dtype=dtype, **kwargs)
 
 
 def ones_like(other_ndarray):
     return ones(
-        other_ndarray.size,
+        other_ndarray.shape,
         local_border=other_ndarray.local_border,
         dtype=other_ndarray.dtype,
     )
 
 
-def full(size, v, local_border=0, **kwargs):
-    return init_array(size, str(v), local_border=local_border, **kwargs)
+def full(shape, v, local_border=0, **kwargs):
+    return init_array(shape, str(v), local_border=local_border, **kwargs)
 
 
 def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
@@ -5314,7 +5749,7 @@ def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
 
 def copy(arr, local_border=0):
     new_ndarray = create_array_with_divisions(
-        arr.size, arr.distribution, local_border=local_border
+        arr.shape, arr.distribution, local_border=local_border
     )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
     """
@@ -5343,12 +5778,14 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
         return create_array((), filler=x, dtype=dtype, **kwargs)
     if isinstance(x, np.ndarray) and x.shape == ():  # 0d array
         return create_array((), filler=x, dtype=dtype, **kwargs)
+    if isinstance(x, list):
+        x = np.array(x)
 
-    size = x.shape
+    shape = x.shape
     if dtype is None:
         dtype = x.dtype
     new_ndarray = create_array(
-        size, None, local_border=local_border, dtype=dtype, **kwargs
+        shape, None, local_border=local_border, dtype=dtype, **kwargs
     )
     distribution = new_ndarray.distribution
     [
@@ -5357,7 +5794,7 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
             "push_array",
             new_ndarray.gid,
             distribution[i],
-            size,
+            shape,
             x[shardview.to_slice(distribution[i])],
             local_border,
             distribution,
@@ -5458,6 +5895,17 @@ def _compute_remote_ranges(out_distribution, out_mapping):
     return from_ret, to_ret
 
 
+def implements(numpy_function, uses_self):
+    numpy_function = "np." + numpy_function
+
+    def decorator(func):
+        HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
+        return func
+
+    return decorator
+
+
+@implements("concatenate", False)
 def concatenate(arrayseq, axis=0, out=None, **kwargs):
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
@@ -5516,14 +5964,19 @@ def concatenate(arrayseq, axis=0, out=None, **kwargs):
     return out
 
 
-def implements(numpy_function, uses_self):
-    numpy_function = "np." + numpy_function
+prop_to_array = [
+    "ndim",
+]
 
-    def decorator(func):
-        HANDLED_FUNCTIONS[eval(numpy_function)] = (func, uses_self)
-        return func
 
-    return decorator
+for mfunc in prop_to_array:
+    mcode = "def " + mfunc + "(the_array):\n"
+    mcode += "    if isinstance(the_array, ndarray):\n"
+    mcode += "        return the_array." + mfunc + "\n"
+    mcode += "    else:\n"
+    mcode += "        return np." + mfunc + "(the_array)\n"
+    exec(mcode)
+    implements(mfunc, False)(eval(mfunc))
 
 
 mod_to_array = [
@@ -5580,24 +6033,28 @@ def power(a, b):
 
 @implements("where", False)
 def where(cond, a, b):
+    if isinstance(a, np.ndarray):
+        a = fromarray(a)
+    if isinstance(b, np.ndarray):
+        b = fromarray(b)
     assert (
         isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray)
     )
     dprint(2, "where:", cond.shape, a.shape, b.shape, cond, a, b)
 
     lb = max(a.local_border, b.local_border)
-    ab_new_array_size, ab_aview, ab_bview = ndarray.broadcast(a, b)
-    conda_new_array_size, conda_condview, conda_aview = ndarray.broadcast(
+    ab_new_array_shape, ab_aview, ab_bview = ndarray.broadcast(a, b)
+    conda_new_array_shape, conda_condview, conda_aview = ndarray.broadcast(
         cond, ab_aview
     )
-    condb_new_array_size, condb_condview, condb_bview = ndarray.broadcast(
+    condb_new_array_shape, condb_condview, condb_bview = ndarray.broadcast(
         cond, ab_bview
     )
-    assert conda_new_array_size == condb_new_array_size
+    assert conda_new_array_shape == condb_new_array_shape
 
-    dprint(2, "newsize:", ab_new_array_size)
-    new_ndarray = empty(conda_new_array_size, dtype=a.dtype, local_border=lb)
-    # new_ndarray = create_array_with_divisions(conda_new_array_size, conda_aview.distribution, local_border=lb)
+    dprint(2, "newshape:", ab_new_array_shape)
+    new_ndarray = empty(conda_new_array_shape, dtype=a.dtype, local_border=lb)
+    # new_ndarray = create_array_with_divisions(conda_new_array_shape, conda_aview.distribution, local_border=lb)
     deferred_op.add_op(
         [
             "",
@@ -5638,6 +6095,40 @@ class ReshapeError(Exception):
     pass
 
 
+def expand_dims(a, axis):
+    ashape = a.shape
+    if not isinstance(axis, (list, tuple)):
+        axis = (axis,)
+    new_shape = [0 for _ in range(len(ashape) + len(axis))]
+    for newd in axis:
+        if newd >= len(new_shape):
+            assert 0 # should throw AxisError
+        new_shape[newd] = 1
+    next_index = 0
+    for i in range(len(new_shape)):
+        if i in axis:
+            continue
+        new_shape[i] = ashape[next_index]
+        next_index += 1
+
+    return reshape(a, tuple(new_shape))
+
+
+def squeeze(a, axis=None):
+    ashape = a.shape
+    if axis is None:
+        # axis is tuple of indices that have length 1
+        axis = tuple(filter(lambda x: ashape[x] == 1, range(len(ashape))))
+    if not isinstance(axis, tuple):
+        axis = (axis,)
+    # Make sure all the indices they try to remove have length 1
+    if not all([ashape[x] == 1 for x in axis]):
+        assert 0  # TO-DO: should raise some error
+
+    new_shape = [ashape[i] for i in range(len(ashape)) if i not in axis]
+    return reshape(a, tuple(new_shape))
+
+
 def reshape(arr, newshape):
     # first check if this is just for adding / removing dinmensions of size 1 -- this will require no data movement
     realshape = tuple([i for i in arr.shape if i != 1])
@@ -5649,12 +6140,12 @@ def reshape(arr, newshape):
         if arr.bdarray.flex_dist or not arr.bdarray.remote_constructed:
             deferred_op.do_ops()
         realaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v != 1
         ]
         junkaxes = [
-            shardview._axis_map(arr.distribution[0])[i]
+            i
             for i, v in enumerate(arr.shape)
             if v == 1
         ]
@@ -5691,14 +6182,14 @@ def reshape(arr, newshape):
 
 
 def reshape_copy(arr, newshape):
-    assert np.prod(arr.size) == np.prod(newshape)
+    assert np.prod(arr.shape) == np.prod(newshape)
     new_arr = empty(newshape, dtype=arr.dtype)
 
     deferred_op.do_ops()
     dprint(
         2,
         "reshape_copy",
-        arr.size,
+        arr.shape,
         newshape,
         shardview.distribution_to_divisions(arr.distribution),
         shardview.distribution_to_divisions(new_arr.distribution),
@@ -5706,10 +6197,10 @@ def reshape_copy(arr, newshape):
     reshape_workers = remote_call_all(
         "reshape",
         new_arr.gid,
-        new_arr.size,
+        new_arr.shape,
         new_arr.distribution,
         arr.gid,
-        arr.size,
+        arr.shape,
         arr.distribution,
         uuid.uuid4(),
     )
@@ -5773,7 +6264,7 @@ def triu(m, k=0):
     # return smap_index(triu_internal, m, k)
     deferred_op.do_ops()
     new_ndarray = create_array_with_divisions(
-        m.size, m.distribution, local_border=m.local_border
+        m.shape, m.distribution, local_border=m.local_border
     )
     remote_exec_all(
         "triu",
@@ -5790,12 +6281,12 @@ def triu(m, k=0):
 ##### Skeletons ######
 
 
-def smap_internal(func, attr, *args, dtype=None):
+def smap_internal(func, attr, *args, dtype=None, parallel=True):
     # TODO: should see if this can be converted into a deferred op
     deferred_op.do_ops()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     dist = partitioned[0].distribution
     for arg in partitioned:
         assert shardview.dist_is_eq(arg.distribution, dist)
@@ -5803,59 +6294,88 @@ def smap_internal(func, attr, *args, dtype=None):
     if dtype is None:
         dtype = partitioned[0].dtype
     new_ndarray = create_array_with_divisions(
-        size, dist, partitioned[0].local_border, dtype=dtype
+        shape, dist, partitioned[0].local_border, dtype=dtype
     )
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
-        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func)
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
     )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+    dprint(2, "smap_internal done")
     return new_ndarray
 
 
-def smap(func, *args, dtype=None):
-    return smap_internal(func, "smap", *args, dtype=dtype)
+def smap(func, *args, dtype=None, parallel=True):
+    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel)
 
 
-def smap_index(func, *args, dtype=None):
-    return smap_internal(func, "smap_index", *args, dtype=dtype)
+def smap_index(func, *args, dtype=None, parallel=True):
+    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel)
 
 
-def sreduce(func, reducer, *args):
+class SreduceReducer:
+    def __init__(self, worker_func, driver_func):
+        self.worker_func = worker_func
+        self.driver_func = driver_func
+
+
+def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     deferred_op.do_ops()
+    start_time = timer()
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     for arg in partitioned:
-        assert arg.size == size
+        assert arg.shape == shape
+    if not isinstance(reducer, SreduceReducer):
+        reducer = SreduceReducer(reducer, reducer)
 
+    a_send_recv = uuid.uuid4()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # worker_results = ray.get([remote_states[i].sreduce.remote(partitioned[0].gid, args_to_remote, func, reducer) for i in range(num_workers)])
     worker_results = remote_call_all(
-        "sreduce",
+        attr,
         partitioned[0].gid,
         args_to_remote,
         func_dumps(func),
-        func_dumps(reducer),
+        func_dumps(reducer.worker_func),
+        func_dumps(reducer.driver_func),
+        identity,
+        a_send_recv,
+        parallel
     )
+    after_remote_time = timer()
     final_result = worker_results[0]
+    #dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
+    """
     for result in worker_results[1:]:
-        final_result = reducer(final_result, result)
+        final_result = reducer.driver_func(final_result, result, *args)
+    """
+    tprint(2, "sreduce remote time:", after_remote_time - start_time)
+    tprint(2, "sreduce local reduction time:", timer() - after_remote_time)
     return final_result
+
+
+def sreduce(func, reducer, identity, *args, parallel=True):
+    return sreduce_internal(func, reducer, identity, "sreduce", *args, parallel=parallel)
+
+
+def sreduce_index(func, reducer, identity, *args, parallel=True):
+    return sreduce_internal(func, reducer, identity, "sreduce_index", *args, parallel=parallel)
 
 
 def sstencil(func, *args, **kwargs):
     deferred_op.do_ops()
     if func.neighborhood is None:
         fake_args = [
-            np.empty(tuple([1] * len(x.size))) if isinstance(x, ndarray) else x
+            np.empty(tuple([1] * len(x.shape))) if isinstance(x, ndarray) else x
             for x in args
         ]
         slocal = func.compile_local()
         try:
             slocal(*fake_args)
-        except:
+        except Exception:
             pass
         func.neighborhood = slocal.neighborhood
     neighborhood = func.neighborhood
@@ -5867,10 +6387,10 @@ def sstencil(func, *args, **kwargs):
 
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
-    size = partitioned[0].size
+    shape = partitioned[0].shape
     border = partitioned[0].local_border
     for arg in partitioned:
-        assert arg.size == size
+        assert arg.shape == shape
         assert arg.local_border == border
     assert border >= nmax
 
@@ -5878,10 +6398,10 @@ def sstencil(func, *args, **kwargs):
     if "out" in kwargs:
         new_ndarray = kwargs["out"]
         create_flag = False
-        # TODO:  Check sizes
+        # TODO:  Check shapes
     else:
         new_ndarray = create_array_with_divisions(
-            size, partitioned[0].distribution, partitioned[0].local_border
+            shape, partitioned[0].distribution, partitioned[0].local_border
         )
         create_flag = True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
@@ -5903,11 +6423,11 @@ def sstencil(func, *args, **kwargs):
 def scumulative(local_func, final_func, array):
     deferred_op.do_ops()
     assert isinstance(array, ndarray)
-    size = array.size
-    assert len(size) == 1
+    shape = array.shape
+    assert len(shape) == 1
 
     new_ndarray = create_array_with_divisions(
-        size, array.distribution, array.local_border
+        shape, array.distribution, array.local_border
     )
     # Can we do this without ray.get?
     # ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
@@ -5951,3 +6471,418 @@ def spmd(func, *args):
     dprint(2, "Before exec_all spmd")
     remote_exec_all("spmd", func_dumps(func), args_to_remote)
     dprint(2, "After exec_all spmd")
+
+
+#-------------------------------------------------------------------------------
+
+class mean_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
+
+class mean_sum:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+
+class mean_count:
+    def __init__(self, drop_groupdim):
+        self.drop_groupdim = drop_groupdim
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=int)
+
+#-------------------------------------------------------------------------------
+
+class sum_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+class count_identity:
+    def __init__(self, drop_groupdim):
+        self.drop_groupdim = drop_groupdim
+
+    def __call__(self, *args, **kwargs):
+        return np.zeros(self.drop_groupdim, dtype=int)
+
+#-------------------------------------------------------------------------------
+
+class prod_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        return np.ones(self.drop_groupdim, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+class min_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        if np.issubdtype(self.dtype, np.integer):
+            max_val = np.iinfo(self.dtype).max
+        elif np.issubdtype(self.dtype, np.floating):
+            max_val = np.inf
+        else:
+            assert 0
+        return np.full(self.drop_groupdim, max_val, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+class max_identity:
+    def __init__(self, drop_groupdim, dtype):
+        self.drop_groupdim = drop_groupdim
+        self.dtype = dtype
+
+    def __call__(self, *args, **kwargs):
+        if np.issubdtype(self.dtype, np.integer):
+            min_val = np.iinfo(self.dtype).min
+        elif np.issubdtype(self.dtype, np.floating):
+            min_val = -np.inf
+        else:
+            assert 0
+        return np.full(self.drop_groupdim, min_val, dtype=self.dtype)
+
+#-------------------------------------------------------------------------------
+
+# aggregations done: mean, sum, count, prod, min, max, var, std
+# aggregations to do: argmin, argmax, first, last, all, any
+
+class RambaGroupby:
+    def __init__(self, array_to_group, dim, group_array, num_groups=None):
+        self.array_to_group = array_to_group
+        self.dim = dim
+        self.group_array = group_array
+        self.num_groups = num_groups
+        # performance warning that ndarray partitioned only on groupby dimension.
+        if isinstance(self.group_array, ndarray):
+            self.np_group = asarray(self.group_array)
+        else:
+            self.np_group = self.group_array
+        assert(isinstance(self.np_group, np.ndarray))
+
+    def mean(self, dim=None, ret_separate=False):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby mean.")
+        mean_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        mean_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        mean_func_txt +=  "    sumout[groupid] += value\n"
+        mean_func_txt +=  "    countout[groupid] += 1\n"
+        mean_func_txt +=  "    return (sumout, countout)\n"
+        ldict = {}
+        gdict = globals()
+        exec(mean_func_txt, gdict, ldict)
+
+        def mean_reducer_driver(result, fres):
+            return (result[0] + fres[0], result[1] + fres[1])
+
+        def mean_reducer_worker(result, fres):
+            return fres
+
+        #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
+        tprint(2, "groupby mean time:", timer() - mean_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
+        if ret_separate:
+            return res[0], res[1]
+        else:
+            return res[0] / res[1]
+
+    def nanmean(self, dim=None, ret_separate=False):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby nammean.")
+        mean_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        mean_func_txt +=  "    if value != np.nan:\n"
+        mean_func_txt += f"        groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        mean_func_txt +=  "        sumout[groupid] += value\n"
+        mean_func_txt +=  "        countout[groupid] += 1\n"
+        mean_func_txt +=  "    return (sumout, countout)\n"
+        ldict = {}
+        gdict = globals()
+        exec(mean_func_txt, gdict, ldict)
+
+        def mean_reducer_driver(result, fres):
+            return (result[0] + fres[0], result[1] + fres[1])
+
+        def mean_reducer_worker(result, fres):
+            return fres
+
+        #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
+        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
+        tprint(2, "groupby mean time:", timer() - mean_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
+        if ret_separate:
+            return res[0], res[1]
+        else:
+            return res[0] / res[1]
+
+    def sum(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby sum.")
+        sum_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        sum_func_txt  =  "def sum_func(idx, value, group_array, sumout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        sum_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        sum_func_txt +=  "    sumout[groupid] += value\n"
+        sum_func_txt +=  "    return sumout\n"
+        ldict = {}
+        gdict = globals()
+        exec(sum_func_txt, gdict, ldict)
+
+        def sum_reducer_driver(result, fres):
+            return result + fres
+
+        def sum_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["sum_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        tprint(2, "groupby sum time:", timer() - sum_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res)
+        return res
+
+    def count(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby count.")
+        count_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        count_func_txt  =  "def count_func(idx, value, group_array, countout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        count_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        count_func_txt +=  "    countout[groupid] += 1\n"
+        count_func_txt +=  "    return countout\n"
+        ldict = {}
+        gdict = globals()
+        exec(count_func_txt, gdict, ldict)
+
+        def count_reducer_driver(result, fres):
+            return result + fres
+
+        def count_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_identity(drop_groupdim), parallel=False)
+        tprint(2, "groupby count time:", timer() - count_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("count last:", res)
+        return res
+
+    def prod(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby prod.")
+        prod_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        prod_func_txt  =  "def prod_func(idx, value, group_array, prodout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        prod_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        prod_func_txt +=  "    prodout[groupid] *= value\n"
+        prod_func_txt +=  "    return prodout\n"
+        ldict = {}
+        gdict = globals()
+        exec(prod_func_txt, gdict, ldict)
+
+        def prod_reducer_driver(result, fres):
+            return result * fres
+
+        def prod_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["prod_func"], SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        tprint(2, "groupby prod time:", timer() - prod_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("prod last:", res)
+        return res
+
+    def min(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby min.")
+        min_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        min_func_txt  =  "def min_func(idx, value, group_array, minout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        min_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        min_func_txt +=  "    minout[groupid] = min(value, minout[groupid])\n"
+        min_func_txt +=  "    return minout\n"
+        ldict = {}
+        gdict = globals()
+        exec(min_func_txt, gdict, ldict)
+
+        def min_reducer_driver(result, fres):
+            return np.minimum(result, fres)
+
+        def min_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["min_func"], SreduceReducer(min_reducer_worker, min_reducer_driver), min_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, min_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        tprint(2, "groupby min time:", timer() - min_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("min last:", res)
+        return res
+
+    def max(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby max.")
+        max_start = timer()
+        # original dimensions maxus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        max_func_txt  =  "def max_func(idx, value, group_array, maxout):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        max_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        max_func_txt +=  "    maxout[groupid] = max(value, maxout[groupid])\n"
+        max_func_txt +=  "    return maxout\n"
+        ldict = {}
+        gdict = globals()
+        exec(max_func_txt, gdict, ldict)
+
+        def max_reducer_driver(result, fres):
+            return np.maximum(result, fres)
+
+        def max_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["max_func"], SreduceReducer(max_reducer_worker, max_reducer_driver), max_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, max_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        tprint(2, "groupby max time:", timer() - max_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("max last:", res)
+        return res
+
+    def var(self, dim=None):
+        assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        tprint(2, "Starting groupby var.")
+        var_start = timer()
+        # original dimensions minus groupby dimension with num-groups added to front
+        orig_dims = self.array_to_group.shape
+        drop_groupdim = list(orig_dims)
+        drop_groupdim[self.dim] = self.num_groups
+        drop_groupdim = tuple(drop_groupdim)
+
+        mean_groupby_sum, mean_groupby_count = self.mean(dim=dim, ret_separate=True)
+        mean_groupby = mean_groupby_sum / mean_groupby_count
+
+        sqr_mean_diff_func_txt  =  "def sqr_mean_diff_func(idx, value, group_array, sumout, mean_groupby):\n"
+        beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
+        sqr_mean_diff_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        sqr_mean_diff_func_txt +=  "    sumout[groupid] += (value - mean_groupby[groupid])**2\n"
+#        sqr_mean_diff_func_txt +=  "    print(idx, value, mean_groupby[groupid], sumout[groupid])\n"
+        sqr_mean_diff_func_txt +=  "    return sumout\n"
+        ldict = {}
+        gdict = globals()
+        exec(sqr_mean_diff_func_txt, gdict, ldict)
+
+        def sum_reducer_driver(result, fres):
+            return result + fres
+
+        def sum_reducer_worker(result, fres):
+            return fres
+
+        res = sreduce_index(ldict["sqr_mean_diff_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, mean_groupby.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, mean_groupby.dtype), mean_groupby, parallel=False)
+        res_var = res / mean_groupby_count
+        tprint(2, "groupby var time:", timer() - var_start)
+        #with np.printoptions(threshold=np.inf):
+        #    print("sum last:", res[0])
+        #    print("count last:", res[1])
+        return res_var
+
+    def std(self, dim=None):
+        return np.sqrt(self.var(dim=dim))
+
+
+def groupby_attr(item, itxt, imports, dtype):
+    func_txt =  f"def gba{item}(self, rhs):\n"
+    if ntiming:
+        func_txt +=  "    start_time = timer()\n"
+    func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
+    func_txt +=  "    beforedim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim)])\n"
+    func_txt +=  "    afterdim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim+1, self.array_to_group.ndim)])\n"
+    func_txt +=  "    gtext += f\"    drop_groupdim = ({beforedim}, groupid[idx[dim]],{afterdim})\\n\"\n"
+#    func_txt +=  "    gtext +=  \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
+#    func_txt +=  "    gtext += \"    print('group:', idx, value, drop_groupdim, rhs[drop_groupdim], dim)\\n\"\n"
+    func_txt += f"    gtext += \"    return value{itxt}rhs[drop_groupdim]\\n\"\n"
+    func_txt +=  "    ldict = {}\n"
+    func_txt +=  "    gdict = globals()\n"
+#    func_txt +=  "    print(\"running gtext\", gtext)\n"
+    func_txt +=  "    exec(gtext, gdict, ldict)\n"
+    func_txt +=  "    new_dtype = unify_args(self.array_to_group.dtype, rhs, None)\n"
+    func_txt += f"    res = smap_index(ldict[\"group{item}\"], self.array_to_group, rhs, self.np_group, self.dim, dtype=new_dtype)\n"
+    if ntiming:
+        func_txt +=  "    print(\"gba time:\", timer() - start_time)\n"
+    func_txt +=  "    return res\n"
+    ldict = {}
+    gdict = globals()
+    exec(func_txt, gdict, ldict)
+    return ldict[f"gba{item}"]
+
+
+# Add array binop style support to groupby's.
+for (abf, code) in array_binop_funcs.items():
+    new_func = groupby_attr(abf, code.code, imports=code.imports, dtype=code.dtype)
+    setattr(RambaGroupby, abf, new_func)
