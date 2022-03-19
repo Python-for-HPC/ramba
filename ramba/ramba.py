@@ -363,6 +363,7 @@ class StencilMetadata:
             gdict[self.hashname] = self.sfunc
             # make wrapper to ensure stencil is called from a parallel njit region
             fsrc = inspect.getsource(self.func)
+            dprint(3, "fsrc:\n", fsrc)
             fsrc_tokens = fsrc.split("\n")
             varlist = fsrc_tokens[1][
                 fsrc_tokens[1].find("(") + 1 : fsrc_tokens[1].find(")")
@@ -817,6 +818,90 @@ if not USE_MPI:
 
 ######### End Barrier code ##############
 
+# --------------- Global variables to hold timings of parts of Ramba -------------
+# The dict value {0:(0,0)} is explained as follows:
+# The first 0 is an identifier.  If it is 0 then it corresponds to the overall time for
+# that key entry.  Other key values indicate sub-parts of that time.
+# In the (0,0) tuple, the first zero is a counter of how many times have been recorded
+# and the second 0 is the total time.
+time_dict = {}
+"""
+time_dict = {
+    "matmul_b_c_not_dist": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_match": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_non_match": {0: (0, 0)},
+    "matmul_general": {0: (0, 0)},
+}
+"""
+
+if in_driver() and numba.version_info.short >= (0, 53):
+    global compile_recorder
+    compile_recorder = numba.core.event.RecordingListener()
+    numba.core.event.register("numba:compile", compile_recorder)
+
+
+def reset_timing():
+    for k, v in time_dict.items():
+        time_dict[k] = {0: (0, 0)}
+    if numba.version_info.short >= (0, 53):
+        compile_recorder.buffer = []
+    remote_exec_all("reset_compile_stats")
+    remote_exec_all("reset_def_ops_stats")
+
+
+def get_timing(details=False):
+    if numba.version_info.short >= (0, 53):
+        driver_summary = rec_buf_summary(compile_recorder.buffer)
+        stats = remote_call_all("get_compile_stats")
+        remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+        time_dict["numba_compile_time"] = {
+            0: tuple(map(operator.add, driver_summary, remote_maximum))
+        }
+
+    stats = remote_call_all("get_def_ops_stats")
+    remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+    time_dict["remote_deferred_ops"] = {0: remote_maximum}
+
+    if details:
+        return time_dict
+    else:
+        return {k: time_dict[k][0] for k in time_dict.keys()}
+
+
+def get_timing_str(details=False):
+    timings = get_timing(details=details)
+    res = ""
+    if details:
+        for k, v in timings.items():
+            res += k + ": " + str(v[0][1]) + "s(" + str(v[0][0]) + ")\n"
+            for tk, tv in v.items():
+                if tk != 0:
+                    res += "    " + tk + ": " + str(tv[1]) + "s(" + str(tv[0]) + ")\n"
+    else:
+        for k, v in timings.items():
+            res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
+    return res
+
+
+def add_time(time_name, val):
+    if time_name not in time_dict:
+        time_dict[time_name] = {0: (0, 0)}
+    tindex = time_dict[time_name]
+    assert isinstance(tindex, dict)
+    cur_val = tindex[0]
+    assert isinstance(cur_val, tuple)
+    tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
+
+
+def add_sub_time(time_name, sub_name, val):
+    tindex = time_dict[time_name]
+    if sub_name not in tindex:
+        tindex[sub_name] = (0, 0)
+    cur_val = tindex[sub_name]
+    tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
+
+
+# --------------- Global variables to hold timings of parts of Ramba -------------
 
 def get_advindex_dim(index):
     for i in range(len(index)):
@@ -3039,6 +3124,8 @@ class RemoteState:
     def sstencil(
         self, stencil_op_uuid, out_gid, neighborhood, first_gid, args, func, create_flag
     ):
+        sstencil_start = timer()
+
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         if create_flag:
@@ -3075,16 +3162,29 @@ class RemoteState:
             )
             for x in range(len(lnd.dim_lens))
         ]
+
+        before_compile = timer()
+
         sfunc = func.compile({"neighborhood": tuple(worker_neighborhood)})
         #        print("sstencil fargs:", first.remote.worker_num, sfunc, type(sfunc), worker_neighborhood, "\n", fargs)
-        t0 = timer()
+        after_compile = timer()
+
         if create_flag:
             sout = sfunc(*fargs)
             new_bcontainer[first.core_slice] = sout[first.core_slice]
         else:
             sfunc(*fargs, out=new_bcontainer)
-        t1 = timer()
-        dprint(1, "SStencil item", t1 - t0)
+
+        exec_time = timer()
+        add_time("sstencil_prep", before_compile - sstencil_start)
+        add_time("sstencil_compile", after_compile - before_compile)
+        add_time("sstencil_exec", exec_time - after_compile)
+        return (
+            before_compile - sstencil_start,
+            after_compile - before_compile,
+            exec_time - after_compile,
+            exec_time - sstencil_start
+        )
 
     #        print("sstencil sout:", first.remote.worker_num, sout)
     #        new_bcontainer[first.core_slice] = sout[first.core_slice]
@@ -4448,85 +4548,6 @@ def dot(a, b, out=None):
         assert 0
 
 
-# --------------- Global variables to hold timings of parts of Ramba -------------
-# The dict value {0:(0,0)} is explained as follows:
-# The first 0 is an identifier.  If it is 0 then it corresponds to the overall time for
-# that key entry.  Other key values indicate sub-parts of that time.
-# In the (0,0) tuple, the first zero is a counter of how many times have been recorded
-# and the second 0 is the total time.
-time_dict = {
-    "matmul_b_c_not_dist": {0: (0, 0)},
-    "matmul_c_not_dist_a_b_dist_match": {0: (0, 0)},
-    "matmul_c_not_dist_a_b_dist_non_match": {0: (0, 0)},
-    "matmul_general": {0: (0, 0)},
-}
-
-if in_driver() and numba.version_info.short >= (0, 53):
-    global compile_recorder
-    compile_recorder = numba.core.event.RecordingListener()
-    numba.core.event.register("numba:compile", compile_recorder)
-
-
-def reset_timing():
-    for k, v in time_dict.items():
-        time_dict[k] = {0: (0, 0)}
-    if numba.version_info.short >= (0, 53):
-        compile_recorder.buffer = []
-    remote_exec_all("reset_compile_stats")
-    remote_exec_all("reset_def_ops_stats")
-
-
-def get_timing(details=False):
-    if numba.version_info.short >= (0, 53):
-        driver_summary = rec_buf_summary(compile_recorder.buffer)
-        stats = remote_call_all("get_compile_stats")
-        remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-        time_dict["numba_compile_time"] = {
-            0: tuple(map(operator.add, driver_summary, remote_maximum))
-        }
-
-    stats = remote_call_all("get_def_ops_stats")
-    remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-    time_dict["remote_deferred_ops"] = {0: remote_maximum}
-
-    if details:
-        return time_dict
-    else:
-        return {k: time_dict[k][0] for k in time_dict.keys()}
-
-
-def get_timing_str(details=False):
-    timings = get_timing(details=details)
-    res = ""
-    if details:
-        for k, v in timings.items():
-            res += k + ": " + str(v[0][1]) + "s(" + str(v[0][0]) + ")\n"
-            for tk, tv in v.items():
-                if tk != 0:
-                    res += "    " + tk + ": " + str(tv[1]) + "s(" + str(tv[0]) + ")\n"
-    else:
-        for k, v in timings.items():
-            res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
-    return res
-
-
-def add_time(time_name, val):
-    tindex = time_dict[time_name]
-    assert isinstance(tindex, dict)
-    cur_val = tindex[0]
-    assert isinstance(cur_val, tuple)
-    tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
-
-
-def add_sub_time(time_name, sub_name, val):
-    tindex = time_dict[time_name]
-    if sub_name not in tindex:
-        tindex[sub_name] = (0, 0)
-    cur_val = tindex[sub_name]
-    tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
-
-
-# --------------- Global variables to hold timings of parts of Ramba -------------
 
 
 def matmul(a, b, reduction=False, out=None):
@@ -5098,7 +5119,7 @@ def matmul(a, b, reduction=False, out=None):
 
 
 def matmul_summary():
-    print(get_timing_str())
+    print(get_timing_str(details=True))
 
 
 if ntiming > 0:
@@ -5513,7 +5534,7 @@ class deferred_op:
             cls.ramba_deferred_ops.do_ops()
 
         # Alias check 1;  op reads/writes shifted version of an array that was written previously
-        if ( cls.ramba_deferred_ops is not None and any([ 
+        if ( cls.ramba_deferred_ops is not None and any([
                 isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
                 for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
             dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
@@ -5523,7 +5544,7 @@ class deferred_op:
         # Alias check 2:  op writes and reads from shifted versions of same array
         #    NOTE:  works only for assignment / inplace operators, not general functions
         if (write_array is not None) and (
-                any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ]) 
+                any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ])
                 or (cls.ramba_deferred_ops is not None and any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
             assert codes[0]==''
             dprint(2, "Write after read with mismatched distributions detected. Will not fuse, adding temporary array.")
@@ -6366,6 +6387,8 @@ def sreduce_index(func, reducer, identity, *args, parallel=True):
 
 
 def sstencil(func, *args, **kwargs):
+    sstencil_start = timer()
+
     deferred_op.do_ops()
     if func.neighborhood is None:
         fake_args = [
@@ -6406,7 +6429,8 @@ def sstencil(func, *args, **kwargs):
         create_flag = True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(num_workers)]
-    remote_exec_all(
+    sstencil_before_remote = timer()
+    stencil_workers = remote_async_call_all(
         "sstencil",
         stencil_op_uuid,
         new_ndarray.gid,
@@ -6416,6 +6440,19 @@ def sstencil(func, *args, **kwargs):
         func_dumps(func),
         create_flag,
     )
+    sstencil_after_remote = timer()
+    worker_timings = get_results(stencil_workers)
+    sstencil_end = timer()
+
+    add_time("sstencil", sstencil_end - sstencil_start)
+    add_sub_time("sstencil", "before_remote", sstencil_before_remote - sstencil_start)
+    add_sub_time("sstencil", "remote_call", sstencil_after_remote - sstencil_before_remote)
+    add_sub_time("sstencil", "get_results", sstencil_end - sstencil_after_remote)
+    add_sub_time("sstencil", "max_remote_prep", max([x[0] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_compile", max([x[1] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_exec", max([x[2] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_total", max([x[3] for x in worker_timings]))
+
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
