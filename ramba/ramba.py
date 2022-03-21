@@ -862,14 +862,14 @@ class bdarray:
         self.dtype = dtype
 
     def __del__(self):
-        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set))
+        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
         if self.remote_constructed:  # check remote constructed flag
             deferred_op.del_remote_array(self.gid)
 
     @staticmethod
     def atexit():
         def alternate_del(self):
-            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set))
+            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
 
         dprint(2,"at exit -- disabling del handing")
         bdarray.__del__ = alternate_del
@@ -1655,7 +1655,7 @@ class RemoteState:
         self.up_rvq = rvq
 
     def destroy_array(self, gid):
-        # if gid in self.numpy_map:
+        #if gid in self.numpy_map:
         self.numpy_map.pop(gid)
 
     def create_array(
@@ -3825,7 +3825,7 @@ class DAG:
             nres.idag = dag
         else:
             nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag)
-        dag.output = nres
+        dag.output = weakref.ref(nres)
         for dag_node in dag.backward_deps:
             dag_node.forward_deps.append(dag)
         cls.dag_nodes.add(dag)
@@ -3843,7 +3843,7 @@ class DAG:
 
     @classmethod
     def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
-        dprint(2, "dag_node:", id(dag_node.output), dag_node.name, dag_node.args)
+        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
         if dag_node in dag_node_processed:
             return
         dag_node_processed.add(dag_node)
@@ -3854,7 +3854,7 @@ class DAG:
         if dag_node.name == "stack":
             stack_dag = dag_node
             stack_arrays = stack_dag.args[0]
-            stack_res = stack_dag.output
+            stack_res = stack_dag.output()
             stack_preds = stack_dag.backward_deps
             # Make sure that the number of arrays matched the axis dimension of stack_res
             assert len(stack_arrays) == stack_res.shape[stack_dag.kwargs["axis"]]
@@ -3905,7 +3905,7 @@ class DAG:
                                 #return temp_array
 
                             dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array], (orig_array, getitem_axis, group_array, slot_indices), {})
-                            dag_node.output = stack_res
+                            dag_node.output = weakref.ref(stack_res)
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
         elif dag_node.name == "getitem_array":
             # Check dag_node indices!  FIX ME
@@ -3916,7 +3916,7 @@ class DAG:
                 assert len(concat_node.backward_deps) == len(arrayseq)
                 axis = concat_node.kwargs["axis"]
                 #out = concat_node.kwargs["out"]  Why isn't "out" in kwargs?
-                concat_res = concat_node.output
+                concat_res = concat_node.output()
                 dprint(3, "process concat:", id(concat_res), concat_res.shape, len(arrayseq), arrayseq[0].shape)
                 binops = concat_node.backward_deps
 
@@ -3961,7 +3961,7 @@ class DAG:
                                 dprint(2, "All remapped_ops have the same newmap, all remapped derive from reshape")
                                 dprint(2, "All reshapes have the same newshape")
                                 rhs_getitem_ops = [DAG.creator(x) for x in reshape_ops]
-                                orig_array_lhs = lhs_getitem_sources[0].output
+                                orig_array_lhs = lhs_getitem_sources[0].output()
 
                                 if (all([x.name == "getitem_array" for x in rhs_getitem_ops]) and
                                     all([DAG.one_creator(x) for x in rhs_getitem_ops])
@@ -3971,7 +3971,7 @@ class DAG:
                                     getitem_bases = [DAG.creator(x) for x in rhs_getitem_ops]
                                     if all([getitem_bases[0] is x for x in getitem_bases]):
                                         dprint(2, "All reshape bases are the same")
-                                        rhs = getitem_bases[0].output
+                                        rhs = getitem_bases[0].output()
                                         dprint(2, "rhs", id(rhs))
                                         slot_indices = [x.args[1][getitem_axis] for x in lhs_getitem_ops]
                                         dprint(3, "slot_indices:", slot_indices)
@@ -3993,7 +3993,7 @@ class DAG:
                                             return res
 
                                         dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs, rhs], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), {})
-                                        dag_node.output = concat_res
+                                        dag_node.output = weakref.ref(concat_res)
                                         # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
 
         for backward_dep in dag_node.backward_deps:
@@ -4008,18 +4008,21 @@ class DAG:
             cls.instantiate_dag_node(arr.dag)
 
     def execute(self):
-        exec_array_out = self.executor(self.output, *self.args, **self.kwargs)
+        soutput = self.output()
+        exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
         if not self.inplace and not isinstance(exec_array_out, ndarray):
             print("bad type", type(exec_array_out), self.name, self.args)
             breakpoint()
         assert self.inplace or isinstance(exec_array_out, ndarray)
         self.name = "Executed"
-        self.backward_deps = []
         self.executed = True
-        if not self.inplace and exec_array_out is not self.output:
-            self.output.assign(exec_array_out)
+        if not self.inplace and exec_array_out is not soutput:
+            soutput.assign(exec_array_out)
         for dag_node in self.backward_deps:
-            dag_node.forward_deps.remove(dag)
+            dag_node.forward_deps.remove(self)
+        self.args = None
+        self.kwargs = None
+        self.backward_deps = None
 
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True):
@@ -4029,7 +4032,7 @@ class DAG:
 
         cls.in_evaluate += 1
         depth_first_nodes = []
-        dprint(2,"Instantiate:", id(dag_node.output))
+        dprint(2,"Instantiate:", id(dag_node.output()))
         cls.depth_first_traverse(dag_node, depth_first_nodes, set())
         for op in depth_first_nodes:
             dprint(2, "Running DAG executor for", op.name)
@@ -4084,7 +4087,6 @@ class ndarray:
         dtype=None,
         flex_dist=True,
         readonly=False,
-        parent=None,
         dag=None,
         **kwargs
     ):
@@ -4119,7 +4121,6 @@ class ndarray:
         #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
-        self.parent = parent
         self.idag = dag
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
@@ -4223,7 +4224,7 @@ class ndarray:
     @classmethod
     def remapped_axis_executor(cls, temp_array, self, newmap):
         newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, gid=self.gid, distribution=newdist, readonly=self.readonly, parent=self)
+        return ndarray(newshape, gid=self.gid, distribution=newdist, readonly=self.readonly)
 
     @DAGapi
     def remapped_axis(self, newmap):
@@ -4235,7 +4236,7 @@ class ndarray:
         if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
             deferred_op.do_ops()
         newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, self.gid, newdist, readonly=self.readonly, parent=self)
+        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
     """
 
     def asarray(self):
@@ -4467,8 +4468,7 @@ class ndarray:
             gid=self.gid,
             distribution=shardview.broadcast(self.distribution, bd, shape),
             local_border=0,
-            readonly=True,
-            parent=self
+            readonly=True
         )
 
     @classmethod
@@ -4847,8 +4847,7 @@ class ndarray:
                 distribution=sdistribution,
                 local_border=0,
                 readonly=self.readonly,
-                dtype=self.dtype,
-                parent=self
+                dtype=self.dtype
             )
 
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
@@ -4982,8 +4981,7 @@ class ndarray:
                 distribution=sdistribution,
                 local_border=0,
                 readonly=self.readonly,
-                dtype=self.dtype,
-                parent=self
+                dtype=self.dtype
             )
 
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
@@ -7248,7 +7246,7 @@ def reshape_executor(temp_array, arr, newshape):
         sz, dist = shardview.remap_axis(oldsize, dist, newmap)
         dprint(2, sz, dist)
         return ndarray(
-            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly, parent=arr
+            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
         )
     # general reshape
     global reshape_forwarding
@@ -7344,7 +7342,7 @@ def reshape(arr, newshape):
         sz, dist = shardview.remap_axis(oldsize, dist, newmap)
         dprint(2, sz, dist)
         return ndarray(
-            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly, parent=arr
+            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
         )
     # general reshape
     global reshape_forwarding
