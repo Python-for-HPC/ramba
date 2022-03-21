@@ -7358,7 +7358,7 @@ def reshape(arr, newshape):
 
 def reshape_copy_executor(temp_array, arr, newshape):
     assert np.prod(arr.shape) == np.prod(newshape)
-    new_arr = empty(newshape, dtype=arr.dtype)
+    new_arr = empty(newshape, dtype=arr.dtype, no_defer=True)
 
     dprint(
         2,
