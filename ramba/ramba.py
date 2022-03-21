@@ -4065,7 +4065,7 @@ def DAGapi(func):
             nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
             if DAG.in_evaluate > 0:
                 dag.execute()
-                deferred_op.do_ops()
+                #deferred_op.do_ops()
             return nres
         else:
             return fres
