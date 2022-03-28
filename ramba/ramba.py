@@ -4022,12 +4022,12 @@ class DAG:
             dag_node.forward_deps.remove(self)
         self.args = None
         self.kwargs = None
-        self.backward_deps = None
+        self.backward_deps = []
 
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True):
         if dag_node.executed:
-            assert dag_node.backward_deps is None
+            assert len(dag_node.backward_deps) == 0
             return
 
         cls.in_evaluate += 1
