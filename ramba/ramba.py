@@ -4027,7 +4027,7 @@ class DAG:
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True):
         if dag_node.executed:
-            assert len(dag_node.backward_deps) == 0
+            assert dag_node.backward_deps is None
             return
 
         cls.in_evaluate += 1
