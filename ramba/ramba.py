@@ -862,7 +862,7 @@ class bdarray:
         self.dtype = dtype
 
     def __del__(self):
-        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
+        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self))
         if self.remote_constructed:  # check remote constructed flag
             deferred_op.del_remote_array(self.gid)
 
@@ -4009,15 +4009,17 @@ class DAG:
 
     def execute(self):
         soutput = self.output()
-        exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
-        if not self.inplace and not isinstance(exec_array_out, ndarray):
-            print("bad type", type(exec_array_out), self.name, self.args)
-            breakpoint()
-        assert self.inplace or isinstance(exec_array_out, ndarray)
+        # This can happen if we register an operator whose result is immediately not stored.
+        if soutput is not None:
+            exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
+            if not self.inplace and not isinstance(exec_array_out, ndarray):
+                print("bad type", type(exec_array_out), self.name, self.args)
+                breakpoint()
+            assert self.inplace or isinstance(exec_array_out, ndarray)
+            if not self.inplace and exec_array_out is not soutput:
+                soutput.assign(exec_array_out)
         self.name = "Executed"
         self.executed = True
-        if not self.inplace and exec_array_out is not soutput:
-            soutput.assign(exec_array_out)
         for dag_node in self.backward_deps:
             dag_node.forward_deps.remove(self)
         self.args = None
@@ -4209,7 +4211,7 @@ class ndarray:
 
     """
     def __del__(self):
-        print("ndarray::__del__")
+        print("ndarray::__del__", self, id(self))
         #ndarray_gids[self.gid][0]-=1
         dprint(2, "Deleting ndarray",self.gid, self)
         #if ndarray_gids[self.gid][0] <=0:
@@ -4790,7 +4792,7 @@ class ndarray:
 
     def __getitem__(self, index):
         indhash = pickle.dumps(index)
-        dprint(1, "__getitem__", index, type(index), self.shape, indhash in self.getitem_cache)
+        dprint(1, "__getitem__", id(self), index, type(index), self.shape, indhash in self.getitem_cache)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.getitem_real(index)
         return self.getitem_cache[indhash]
