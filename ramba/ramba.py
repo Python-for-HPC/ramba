@@ -1958,7 +1958,7 @@ class RemoteState:
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
         func = func_loads(func)
         reducer = func_loads(reducer)
-        reducer = func_loads(reducer_driver)
+        reducer_driver = func_loads(reducer_driver)
         first = self.numpy_map[first_gid]
         result = None
         unpickle_args(args)
