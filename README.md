@@ -1,3 +1,5 @@
+![Ramba logo](branding/logo/ramba_logo.png)
+
 # Ramba
 Ramba is a Python project that provides a fast, distributed, NumPy-like array API using compiled Numba functions 
 and a Ray or MPI-based distributed backend.  It also provides a way to easily integrate Numba-compiled remote
