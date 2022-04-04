@@ -1,4 +1,4 @@
-<img src="branding/logo/ramba_logo.png" alt="Ramba logo" width="100"/>
+<img src="branding/logo/ramba_logo.png" alt="Ramba logo" width="200"/>
 
 # Ramba
 Ramba is a Python project that provides a fast, distributed, NumPy-like array API using compiled Numba functions 
