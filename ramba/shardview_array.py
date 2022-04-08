@@ -223,6 +223,11 @@ def index_to_base_as_array(sv, index, end=False):
         ]
     )
 
+def as_base(sv, pv):
+    assert len_size(sv) == len_size(pv)
+    s = index_to_base_as_array(sv, _index_start(pv))
+    e = index_to_base_as_array(sv, _stop(pv))
+    return shardview(e-s, s)
 
 def slice_to_local(sv, sl):
     assert len(sl) == len_size(sv)
@@ -331,6 +336,16 @@ def intersect(sv, sl):
     return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
     # return shardview(e-s, s, axis_map=_axis_map(sv))
 
+@numba.njit(cache=True)
+def union(sv, sl):
+    assert len_size(sv) == len_size(sl)
+    sv_s = _index_start(sv)
+    sv_e = _stop(sv)
+    sl_s = _index_start(sl)
+    sl_e = _stop(sl)
+    s = np.array([min(sl_s[i], sv_s[i]) for i in range(len_size(sl))])
+    e = np.array([max(sl_e[i], sv_e[i]) for i in range(len_size(sl))])
+    return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
 
 # get a view of array (e.g. piece of a bcontainer) based on this shardview
 # output is an np array with shape same as shardview size

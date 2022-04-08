@@ -3294,9 +3294,7 @@ class RemoteState:
         arr_parts = (
             {}
         )  # place to keep array parts received and local parts, indexed by variable name
-        expected_parts = (
-            0  # count of parts that will be sent to this worker from others
-        )
+        expected_bits ={} # set of parts that will be sent to this worker from others
         to_send = {}  # save up list of messages to node i, send all as single message
         from_set = {}  # nodes to recieve from
         overlap_time = 0.0
@@ -3325,7 +3323,10 @@ class RemoteState:
                             info[1][i], exec_dist[self.worker_num]
                         )  # part of what we need but located at worker i
                         if not shardview.is_empty(part):
-                            expected_parts += 1
+                            if v in expected_bits:
+                                expected_bits[v] += [(part, info[1][self.worker_num])]
+                            else:
+                                expected_bits[v] = [(part, info[1][self.worker_num])]
                             from_set[i] = 1
                     # part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
                     part = shardview.intersect(
@@ -3334,23 +3335,14 @@ class RemoteState:
                     if shardview.is_empty(part):
                         continue
                     getview_time -= timer()
-                    sl = self.get_partial_view(
-                        g,
-                        shardview.to_slice(part),
-                        info[1][self.worker_num],
-                        remap_view=False,
-                    )
+                    #sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
                     getview_time += timer()
                     if i == self.worker_num:
                         # arr_parts[v].append( (part, sl) )
                         # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                         arrview_time -= timer()
-                        arr_parts[v].append(
-                            (
-                                shardview.clean_range(part),
-                                shardview.array_to_view(part, sl),
-                            )
-                        )
+                        sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                        arr_parts[v].append( ( shardview.clean_range(part), shardview.array_to_view(part, sl),) )
                         arrview_time += timer()
                         dprint(
                             2,
@@ -3368,9 +3360,18 @@ class RemoteState:
                             to_send[i] = []
                         copy_time -= timer()
                         # to_send[i].append( (v, part, sl) )
-                        to_send[i].append(
-                            (v, part, sl.copy())
-                        )  # pickling a slice is slower than copy+pickle !!
+                        # to_send[i].append( (v, part, sl.copy()))  # pickling a slice is slower than copy+pickle !!
+                        merge = False
+                        base_part = shardview.as_base(info[1][self.worker_num], part)
+                        for j in range(len(to_send[i])):
+                            if to_send[i][j][0] == g:
+                                # TODO:  should check if worth merging or sending separately
+                                to_send[i][j][1] = shardview.union( to_send[i][j][1], base_part )
+                                to_send[i][j] += [(v, part, base_part)]
+                                merge = True
+                                break
+                        if not merge:
+                            to_send[i].append([g, base_part, (v, part, base_part)])
                         copy_time += timer()
                         dprint(
                             2,
@@ -3385,11 +3386,17 @@ class RemoteState:
         times.append(timer())
 
         # actual sends
-        for (i, v) in to_send.items():
-            self.comm_queues[i].put((uuid, v, self.worker_num))
-        expected_parts = len(
-            from_set
-        )  # since messages are coalesced, expect 1 from each node sending to us
+        for (i, vl) in to_send.items():
+            msg = []
+            for v in vl: 
+                g = v[0]
+                base_part = v[1]
+                v = v[2:]
+                sl = self.get_partial_view( g, shardview.to_slice(base_part), None, global_index=False, remap_view=False )
+                msg.append((sl.copy(), base_part, v))
+            self.comm_queues[i].put((uuid, self.worker_num, msg))
+
+        expected_parts = len( from_set)  # since messages are coalesced, expect 1 from each node sending to us
 
         times.append(timer())
         othervars = {v: pickle.loads(val) for (v, val) in pickledvars}
@@ -3415,7 +3422,7 @@ class RemoteState:
                 gfilter=lambda x: x[0] == uuid,
                 timeout=5,
                 print_times=(ntiming >= 1 and self.worker_num == timing_debug_worker),
-                msginfo=lambda x: "[from " + str(x[2]) + "]",
+                msginfo=lambda x: "[from " + str(x[1]) + "]",
             )
             msgs += m
             expected_parts -= len(m)
@@ -3423,15 +3430,19 @@ class RemoteState:
                 print("Still waiting for", expected_parts, "items")
         # for _,v,part,sl in msgs:
         #    arr_parts[v].append( (part, sl) )
-        for _, l, _ in msgs:
-            for v, part, sl in l:
-                # arr_parts[v].append( (part, sl) )
-                # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
-                arrview_time -= timer()
-                arr_parts[v].append(
-                    (shardview.clean_range(part), shardview.array_to_view(part, sl))
-                )
-                arrview_time += timer()
+        for _, _, m in msgs:
+            for sl, full_part, l in m:
+                for v, part, base_part in l:
+                    # arr_parts[v].append( (part, sl) )
+                    # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
+                    arrview_time -= timer()
+                    x = shardview.get_start(base_part)
+                    x -= shardview.get_start(full_part)
+                    sl2 = sl[ shardview.to_slice(base_part) ]
+                    arr_parts[v].append(
+                        (shardview.clean_range(part), shardview.array_to_view(part, sl2))
+                    )
+                    arrview_time += timer()
 
         times.append(timer())
         # Construct set of ranges and array parts to use in each
