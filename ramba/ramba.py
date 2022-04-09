@@ -3380,7 +3380,7 @@ class RemoteState:
                             "Sending to worker",
                             i,
                             part,
-                            sl,
+                            #sl,
                             info[1],
                         )
         times.append(timer())
