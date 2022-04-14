@@ -364,6 +364,7 @@ class StencilMetadata:
             gdict[self.hashname] = self.sfunc
             # make wrapper to ensure stencil is called from a parallel njit region
             fsrc = inspect.getsource(self.func)
+            dprint(3, "fsrc:\n", fsrc)
             fsrc_tokens = fsrc.split("\n")
             varlist = fsrc_tokens[1][
                 fsrc_tokens[1].find("(") + 1 : fsrc_tokens[1].find(")")
@@ -818,6 +819,90 @@ if not USE_MPI:
 
 ######### End Barrier code ##############
 
+# --------------- Global variables to hold timings of parts of Ramba -------------
+# The dict value {0:(0,0)} is explained as follows:
+# The first 0 is an identifier.  If it is 0 then it corresponds to the overall time for
+# that key entry.  Other key values indicate sub-parts of that time.
+# In the (0,0) tuple, the first zero is a counter of how many times have been recorded
+# and the second 0 is the total time.
+time_dict = {}
+"""
+time_dict = {
+    "matmul_b_c_not_dist": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_match": {0: (0, 0)},
+    "matmul_c_not_dist_a_b_dist_non_match": {0: (0, 0)},
+    "matmul_general": {0: (0, 0)},
+}
+"""
+
+if in_driver() and numba.version_info.short >= (0, 53):
+    global compile_recorder
+    compile_recorder = numba.core.event.RecordingListener()
+    numba.core.event.register("numba:compile", compile_recorder)
+
+
+def reset_timing():
+    for k, v in time_dict.items():
+        time_dict[k] = {0: (0, 0)}
+    if numba.version_info.short >= (0, 53):
+        compile_recorder.buffer = []
+    remote_exec_all("reset_compile_stats")
+    remote_exec_all("reset_def_ops_stats")
+
+
+def get_timing(details=False):
+    if numba.version_info.short >= (0, 53):
+        driver_summary = rec_buf_summary(compile_recorder.buffer)
+        stats = remote_call_all("get_compile_stats")
+        remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+        time_dict["numba_compile_time"] = {
+            0: tuple(map(operator.add, driver_summary, remote_maximum))
+        }
+
+    stats = remote_call_all("get_def_ops_stats")
+    remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
+    time_dict["remote_deferred_ops"] = {0: remote_maximum}
+
+    if details:
+        return time_dict
+    else:
+        return {k: time_dict[k][0] for k in time_dict.keys()}
+
+
+def get_timing_str(details=False):
+    timings = get_timing(details=details)
+    res = ""
+    if details:
+        for k, v in timings.items():
+            res += k + ": " + str(v[0][1]) + "s(" + str(v[0][0]) + ")\n"
+            for tk, tv in v.items():
+                if tk != 0:
+                    res += "    " + tk + ": " + str(tv[1]) + "s(" + str(tv[0]) + ")\n"
+    else:
+        for k, v in timings.items():
+            res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
+    return res
+
+
+def add_time(time_name, val):
+    if time_name not in time_dict:
+        time_dict[time_name] = {0: (0, 0)}
+    tindex = time_dict[time_name]
+    assert isinstance(tindex, dict)
+    cur_val = tindex[0]
+    assert isinstance(cur_val, tuple)
+    tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
+
+
+def add_sub_time(time_name, sub_name, val):
+    tindex = time_dict[time_name]
+    if sub_name not in tindex:
+        tindex[sub_name] = (0, 0)
+    cur_val = tindex[sub_name]
+    tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
+
+
+# --------------- Global variables to hold timings of parts of Ramba -------------
 
 def get_advindex_dim(index):
     for i in range(len(index)):
@@ -1464,7 +1549,7 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     reducername = f"njreducer{smap_func}"
     smap_func += 1
     arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
-    fill_txt  = f"def {fname}(sz, starts, identity, {arg_names}):\n"
+    fill_txt  = f"def {fname}(sz, identity, {arg_names}):\n"
     fill_txt +=  "    result = identity\n"
     arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
 
@@ -1906,10 +1991,10 @@ class RemoteState:
             return ret
 
     # TODO: should use get_view
-    def smap(self, out_gid, first_gid, args, func, parallel):
+    def smap(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
-        lnd = first.init_like(out_gid)
+        lnd = first.init_like(out_gid, dtype=dtype)
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
         unpickle_args(args)
@@ -1956,6 +2041,7 @@ class RemoteState:
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
+        start_time = timer()
         func = func_loads(func)
         reducer = func_loads(reducer)
         reducer_driver = func_loads(reducer_driver)
@@ -1981,7 +2067,7 @@ class RemoteState:
                 if isinstance(farg, np.ndarray):
                     print("shape:", farg.shape)
             """
-            res = do_fill(first.dim_lens, starts, identity, *fargs)
+            res = do_fill(first.dim_lens, identity, *fargs)
             #print("worker do_fill res:", res, res[0].shape, res[1].shape)
             #return res
             after_map_time = timer()
@@ -3039,6 +3125,8 @@ class RemoteState:
     def sstencil(
         self, stencil_op_uuid, out_gid, neighborhood, first_gid, args, func, create_flag
     ):
+        sstencil_start = timer()
+
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         if create_flag:
@@ -3075,16 +3163,29 @@ class RemoteState:
             )
             for x in range(len(lnd.dim_lens))
         ]
+
+        before_compile = timer()
+
         sfunc = func.compile({"neighborhood": tuple(worker_neighborhood)})
         #        print("sstencil fargs:", first.remote.worker_num, sfunc, type(sfunc), worker_neighborhood, "\n", fargs)
-        t0 = timer()
+        after_compile = timer()
+
         if create_flag:
             sout = sfunc(*fargs)
             new_bcontainer[first.core_slice] = sout[first.core_slice]
         else:
             sfunc(*fargs, out=new_bcontainer)
-        t1 = timer()
-        dprint(1, "SStencil item", t1 - t0)
+
+        exec_time = timer()
+        add_time("sstencil_prep", before_compile - sstencil_start)
+        add_time("sstencil_compile", after_compile - before_compile)
+        add_time("sstencil_exec", exec_time - after_compile)
+        return (
+            before_compile - sstencil_start,
+            after_compile - before_compile,
+            exec_time - after_compile,
+            exec_time - sstencil_start
+        )
 
     #        print("sstencil sout:", first.remote.worker_num, sout)
     #        new_bcontainer[first.core_slice] = sout[first.core_slice]
@@ -3194,9 +3295,7 @@ class RemoteState:
         arr_parts = (
             {}
         )  # place to keep array parts received and local parts, indexed by variable name
-        expected_parts = (
-            0  # count of parts that will be sent to this worker from others
-        )
+        expected_bits ={} # set of parts that will be sent to this worker from others
         to_send = {}  # save up list of messages to node i, send all as single message
         from_set = {}  # nodes to recieve from
         overlap_time = 0.0
@@ -3225,7 +3324,10 @@ class RemoteState:
                             info[1][i], exec_dist[self.worker_num]
                         )  # part of what we need but located at worker i
                         if not shardview.is_empty(part):
-                            expected_parts += 1
+                            if v in expected_bits:
+                                expected_bits[v] += [(part, info[1][self.worker_num])]
+                            else:
+                                expected_bits[v] = [(part, info[1][self.worker_num])]
                             from_set[i] = 1
                     # part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
                     part = shardview.intersect(
@@ -3234,23 +3336,14 @@ class RemoteState:
                     if shardview.is_empty(part):
                         continue
                     getview_time -= timer()
-                    sl = self.get_partial_view(
-                        g,
-                        shardview.to_slice(part),
-                        info[1][self.worker_num],
-                        remap_view=False,
-                    )
+                    #sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
                     getview_time += timer()
                     if i == self.worker_num:
                         # arr_parts[v].append( (part, sl) )
                         # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                         arrview_time -= timer()
-                        arr_parts[v].append(
-                            (
-                                shardview.clean_range(part),
-                                shardview.array_to_view(part, sl),
-                            )
-                        )
+                        sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                        arr_parts[v].append( ( shardview.clean_range(part), shardview.array_to_view(part, sl),) )
                         arrview_time += timer()
                         dprint(
                             2,
@@ -3268,9 +3361,18 @@ class RemoteState:
                             to_send[i] = []
                         copy_time -= timer()
                         # to_send[i].append( (v, part, sl) )
-                        to_send[i].append(
-                            (v, part, sl.copy())
-                        )  # pickling a slice is slower than copy+pickle !!
+                        # to_send[i].append( (v, part, sl.copy()))  # pickling a slice is slower than copy+pickle !!
+                        merge = False
+                        base_part = shardview.as_base(info[1][self.worker_num], part)
+                        for j in range(len(to_send[i])):
+                            if to_send[i][j][0] == g:
+                                # TODO:  should check if worth merging or sending separately
+                                to_send[i][j][1] = shardview.union( to_send[i][j][1], base_part )
+                                to_send[i][j] += [(v, part, base_part)]
+                                merge = True
+                                break
+                        if not merge:
+                            to_send[i].append([g, base_part, (v, part, base_part)])
                         copy_time += timer()
                         dprint(
                             2,
@@ -3279,17 +3381,23 @@ class RemoteState:
                             "Sending to worker",
                             i,
                             part,
-                            sl,
+                            #sl,
                             info[1],
                         )
         times.append(timer())
 
         # actual sends
-        for (i, v) in to_send.items():
-            self.comm_queues[i].put((uuid, v, self.worker_num))
-        expected_parts = len(
-            from_set
-        )  # since messages are coalesced, expect 1 from each node sending to us
+        for (i, vl) in to_send.items():
+            msg = []
+            for v in vl: 
+                g = v[0]
+                base_part = v[1]
+                v = v[2:]
+                sl = self.get_partial_view( g, shardview.to_slice(base_part), None, global_index=False, remap_view=False )
+                msg.append((sl.copy(), base_part, v))
+            self.comm_queues[i].put((uuid, self.worker_num, msg))
+
+        expected_parts = len( from_set)  # since messages are coalesced, expect 1 from each node sending to us
 
         times.append(timer())
         othervars = {v: pickle.loads(val) for (v, val) in pickledvars}
@@ -3315,7 +3423,7 @@ class RemoteState:
                 gfilter=lambda x: x[0] == uuid,
                 timeout=5,
                 print_times=(ntiming >= 1 and self.worker_num == timing_debug_worker),
-                msginfo=lambda x: "[from " + str(x[2]) + "]",
+                msginfo=lambda x: "[from " + str(x[1]) + "]",
             )
             msgs += m
             expected_parts -= len(m)
@@ -3323,15 +3431,19 @@ class RemoteState:
                 print("Still waiting for", expected_parts, "items")
         # for _,v,part,sl in msgs:
         #    arr_parts[v].append( (part, sl) )
-        for _, l, _ in msgs:
-            for v, part, sl in l:
-                # arr_parts[v].append( (part, sl) )
-                # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
-                arrview_time -= timer()
-                arr_parts[v].append(
-                    (shardview.clean_range(part), shardview.array_to_view(part, sl))
-                )
-                arrview_time += timer()
+        for _, _, m in msgs:
+            for sl, full_part, l in m:
+                for v, part, base_part in l:
+                    # arr_parts[v].append( (part, sl) )
+                    # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
+                    arrview_time -= timer()
+                    x = shardview.get_start(base_part)
+                    x -= shardview.get_start(full_part)
+                    sl2 = sl[ shardview.to_slice(base_part) ]
+                    arr_parts[v].append(
+                        (shardview.clean_range(part), shardview.array_to_view(part, sl2))
+                    )
+                    arrview_time += timer()
 
         times.append(timer())
         # Construct set of ranges and array parts to use in each
@@ -4090,6 +4202,7 @@ class ndarray:
         flex_dist=True,
         readonly=False,
         dag=None,
+        maskarray=None,
         **kwargs
     ):
         t0 = timer()
@@ -4124,6 +4237,7 @@ class ndarray:
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
         self.idag = dag
+        self.maskarray = maskarray
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
 
@@ -4445,6 +4559,14 @@ class ndarray:
             return new_ndarray
     """
 
+    def broadcastable_to(self, shape):
+        new_dims = len(shape) - len(self.shape)
+        sslice = shape[-len(self.shape) :]
+        z1 = zip(sslice, self.shape)
+        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+            return False
+        return True
+
     def broadcast_to(self, shape):
         dprint(1, "broadcast_to:", self.shape, shape)
         new_dims = len(shape) - len(self.shape)
@@ -4704,18 +4826,20 @@ class ndarray:
         dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
         if self.readonly:
             raise ValueError("assignment destination is read-only")
-        if not isinstance(key, tuple):
+        is_mask = False
+        if isinstance(key, ndarray) and key.dtype==np.bool and key.broadcastable_to(self.shape):
+            is_mask = True
+        elif not isinstance(key, tuple):
             key = (key,)
-        if all([isinstance(i, int) for i in key]) and len(key) == len(self.shape):
-            print("Setting individual element is not handled yet!")
-            assert 0
 
-        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
+        if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
-            elif view.shape == value.shape:
+            elif value.broadcastable_to(view.shape):
+                if (value.shape!=view.shape):
+                    value = value.broadcast_to(view.shape)
                 # avoid adding code in case of inplace operations
                 if not (
                     view.gid == value.gid
@@ -4724,51 +4848,15 @@ class ndarray:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                # TODO:  Should try to broadcast value to view.shape before giving up
+                # TODO:  Should try to broadcast value to view.shape before giving up;  Done?
                 print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
-        # Need to handle all possible remaining cases.
-        print("Don't know how to set index", key, " of dist array of shape", self.shape)
-        assert 0
-
-    @DAGapi
-    def setitem(self, key, value):
-        return DAGshape(self.shape, self.dtype, self)
-
-    def __setitem__(self, key, value):
-        return self.setitem(key, value)
-
-    """
-    def __setitem__(self, key, value):
-        dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
-        if self.readonly:
-            raise ValueError("assignment destination is read-only")
-        if not isinstance(key, tuple):
-            key = (key,)
         if all([isinstance(i, int) for i in key]) and len(key) == len(self.shape):
             print("Setting individual element is not handled yet!")
             assert 0
 
-        if any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
-            view = self[key]
-            if isinstance(value, (int, bool, float, complex)):
-                deferred_op.add_op(["", view, " = ", value, ""], view)
-                return
-            elif view.shape == value.shape:
-                # avoid adding code in case of inplace operations
-                if not (
-                    view.gid == value.gid
-                    and shardview.dist_is_eq(view.distribution, value.distribution)
-                ):
-                    deferred_op.add_op(["", view, " = ", value, ""], view)
-                return
-            else:
-                # TODO:  Should try to broadcast value to view.shape before giving up
-                print("Mismatched shapes", view.shape, value.shape)
-                assert 0
-
-        #"#"#"
+        """
         if isinstance(key[0], slice):
             if key.start is None and key.stop is None:   # a[:] = b
                 if isinstance(value, ndarray):
@@ -4784,21 +4872,35 @@ class ndarray:
                 if view.shape == value.shape:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                     return
-        #"#"#"
+        """
         # Need to handle all possible remaining cases.
         print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
-    """
+
+    @DAGapi
+    def setitem(self, key, value):
+        return DAGshape(self.shape, self.dtype, self)
+
+    def __setitem__(self, key, value):
+        return self.setitem(key, value)
 
     def __getitem__(self, index):
+        if isinstance(index, ndarray):
+            return self.getitem_real(index)
         indhash = pickle.dumps(index)
-        dprint(1, "__getitem__", id(self), index, type(index), self.shape, indhash in self.getitem_cache)
+        dprint(3, "__getitem__", id(self), index, type(index), self.shape, indhash in self.getitem_cache)
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.getitem_real(index)
         return self.getitem_cache[indhash]
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
+        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+            if index.shape != self.shape:
+                index = index.broadcast_to(self.shape)
+            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0, 
+                    readonly=self.readonly, dtype=self.dtype, maskarray=index)
+
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
@@ -4857,6 +4959,11 @@ class ndarray:
 
     @DAGapi
     def getitem_array(self, index):
+        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+            # Is this right? true_elems = count_nonzero(index)
+            #return DAGshape((true_elems,), self.dtype, False)
+            return DAGshape(self.shape, self.dtype, False)
+
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
@@ -4895,6 +5002,10 @@ class ndarray:
 
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+            return self.getitem_array(index)
+
         if not isinstance(index, tuple):
             index = (index,)
 
@@ -5122,6 +5233,8 @@ class ndarray:
             return NotImplemented
 
     def groupby(self, dim, value_to_group, num_groups=None):
+        if num_groups is None:
+            num_groups = value_to_group.max()
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 
@@ -5147,85 +5260,6 @@ def dot(a, b, out=None):
         assert 0
 
 
-# --------------- Global variables to hold timings of parts of Ramba -------------
-# The dict value {0:(0,0)} is explained as follows:
-# The first 0 is an identifier.  If it is 0 then it corresponds to the overall time for
-# that key entry.  Other key values indicate sub-parts of that time.
-# In the (0,0) tuple, the first zero is a counter of how many times have been recorded
-# and the second 0 is the total time.
-time_dict = {
-    "matmul_b_c_not_dist": {0: (0, 0)},
-    "matmul_c_not_dist_a_b_dist_match": {0: (0, 0)},
-    "matmul_c_not_dist_a_b_dist_non_match": {0: (0, 0)},
-    "matmul_general": {0: (0, 0)},
-}
-
-if in_driver() and numba.version_info.short >= (0, 53):
-    global compile_recorder
-    compile_recorder = numba.core.event.RecordingListener()
-    numba.core.event.register("numba:compile", compile_recorder)
-
-
-def reset_timing():
-    for k, v in time_dict.items():
-        time_dict[k] = {0: (0, 0)}
-    if numba.version_info.short >= (0, 53):
-        compile_recorder.buffer = []
-    remote_exec_all("reset_compile_stats")
-    remote_exec_all("reset_def_ops_stats")
-
-
-def get_timing(details=False):
-    if numba.version_info.short >= (0, 53):
-        driver_summary = rec_buf_summary(compile_recorder.buffer)
-        stats = remote_call_all("get_compile_stats")
-        remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-        time_dict["numba_compile_time"] = {
-            0: tuple(map(operator.add, driver_summary, remote_maximum))
-        }
-
-    stats = remote_call_all("get_def_ops_stats")
-    remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
-    time_dict["remote_deferred_ops"] = {0: remote_maximum}
-
-    if details:
-        return time_dict
-    else:
-        return {k: time_dict[k][0] for k in time_dict.keys()}
-
-
-def get_timing_str(details=False):
-    timings = get_timing(details=details)
-    res = ""
-    if details:
-        for k, v in timings.items():
-            res += k + ": " + str(v[0][1]) + "s(" + str(v[0][0]) + ")\n"
-            for tk, tv in v.items():
-                if tk != 0:
-                    res += "    " + tk + ": " + str(tv[1]) + "s(" + str(tv[0]) + ")\n"
-    else:
-        for k, v in timings.items():
-            res += k + ": " + str(v[1]) + "s(" + str(v[0]) + ") "
-    return res
-
-
-def add_time(time_name, val):
-    tindex = time_dict[time_name]
-    assert isinstance(tindex, dict)
-    cur_val = tindex[0]
-    assert isinstance(cur_val, tuple)
-    tindex[0] = (cur_val[0] + 1, cur_val[1] + val)
-
-
-def add_sub_time(time_name, sub_name, val):
-    tindex = time_dict[time_name]
-    if sub_name not in tindex:
-        tindex[sub_name] = (0, 0)
-    cur_val = tindex[sub_name]
-    tindex[sub_name] = (cur_val[0] + 1, cur_val[1] + val)
-
-
-# --------------- Global variables to hold timings of parts of Ramba -------------
 
 def matmul(a, b, reduction=False, out=None):
     #DAG.in_evaluate += 1
@@ -5852,7 +5886,7 @@ def matmul_internal(a, b, reduction=False, out=None):
 
 
 def matmul_summary():
-    print(get_timing_str())
+    print(get_timing_str(details=True))
 
 
 if ntiming > 0:
@@ -6101,6 +6135,8 @@ class deferred_op:
         self.distribution = distribution
         self.flex_dist = fdist
         self.delete_gids = []
+        self.read_arrs = []   # (gid,dist) list of read arrays;  dist is None if flex_dist
+        self.write_arrs = []  # (gid,dist) list of write arrays; dist is None if flex_dist
         self.use_gids = (
             {}
         )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
@@ -6269,6 +6305,7 @@ class deferred_op:
         assert arr is not None, "Deferred op with no ndarray parameter"
         shape = arr.shape
         distribution = arr.distribution
+        # Check to see if existing deferred ops are compatible in size, else do ops
         if (cls.ramba_deferred_ops is not None) and (
             cls.ramba_deferred_ops.shape != shape
             or (
@@ -6288,6 +6325,33 @@ class deferred_op:
                 distribution,
             )
             cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 1;  op reads/writes shifted version of an array that was written previously
+        if ( cls.ramba_deferred_ops is not None and any([
+                isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
+                for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
+            dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
+            # force prior stuff to execute
+            cls.ramba_deferred_ops.do_ops()
+
+        # Alias check 2:  op writes and reads from shifted versions of same array
+        #    NOTE:  works only for assignment / inplace operators, not general functions
+        if (write_array is not None) and (
+                any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ])
+                or (cls.ramba_deferred_ops is not None and any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
+            assert codes[0]==''
+            dprint(2, "Write after read with mismatched distributions detected. Will not fuse, adding temporary array.")
+            # make temp, assign computation to temp, do ops, then assign temp to write array
+            tmp_array = empty_like(write_array)
+            orig_op = codes[1]
+            oplist[1] = tmp_array
+            oplist[2] = ' = '
+            cls.add_op( oplist, tmp_array, imports )
+            cls.ramba_deferred_ops.do_ops()
+            oplist = [ '', write_array, orig_op, tmp_array ]
+            operands = [ write_array, tmp_array ]
+            codes = [ '', orig_op ]
+
         if cls.ramba_deferred_ops is None:
             dprint(2, "Create new deferred op set")
             cls.ramba_deferred_ops = cls(shape, distribution, arr.bdarray.flex_dist)
@@ -6295,10 +6359,18 @@ class deferred_op:
             cls.ramba_deferred_ops.distribution = distribution
             cls.ramba_deferred_ops.flex_dist = False
             dprint(2, "fixing distribution")
-        # TODO: Need to check for aliasing
+
+        # Handle masked array write
+        if write_array.maskarray is not None:
+            oplist = [ "if ", write_array.maskarray, ": "+oplist[0] ] + oplist[1:]
+            operands = [ write_array.maskarray ] + operands
+
         # add vars
+        if (write_array is not None):
+            cls.ramba_deferred_ops.write_arrs.append((write_array.gid, None if write_array.bdarray.flex_dist else write_array.distribution))
         for i, x in enumerate(operands):
             if isinstance(x, ndarray):
+                cls.ramba_deferred_ops.read_arrs.append((x.gid, None if x.bdarray.flex_dist else x.distribution))
                 if x.shape == ():  # 0d check
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
                 else:
@@ -7642,7 +7714,7 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
     )
     after_remote_time = timer()
     final_result = worker_results[0]
-    dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
+    #dprint(2, "sreduce first result:", final_result[0].shape, final_result[0].shape * final_result[0].itemsize, final_result[0].shape)
     """
     for result in worker_results[1:]:
         final_result = reducer.driver_func(final_result, result, *args)
@@ -7661,8 +7733,8 @@ def sreduce_index(func, reducer, identity, *args, parallel=True):
 
 
 def sstencil(func, *args, **kwargs):
+    sstencil_start = timer()
     DAG.execute_all()
-    #deferred_op.do_ops()
     if func.neighborhood is None:
         fake_args = [
             np.empty(tuple([1] * len(x.shape))) if isinstance(x, ndarray) else x
@@ -7702,7 +7774,8 @@ def sstencil(func, *args, **kwargs):
         create_flag = True
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # [remote_states[i].sstencil.remote(stencil_op_uuid, new_ndarray.gid, neighborhood, partitioned[0].gid, args_to_remote, func, create_flag) for i in range(num_workers)]
-    remote_exec_all(
+    sstencil_before_remote = timer()
+    stencil_workers = remote_async_call_all(
         "sstencil",
         stencil_op_uuid,
         new_ndarray.gid,
@@ -7712,6 +7785,19 @@ def sstencil(func, *args, **kwargs):
         func_dumps(func),
         create_flag,
     )
+    sstencil_after_remote = timer()
+    worker_timings = get_results(stencil_workers)
+    sstencil_end = timer()
+
+    add_time("sstencil", sstencil_end - sstencil_start)
+    add_sub_time("sstencil", "before_remote", sstencil_before_remote - sstencil_start)
+    add_sub_time("sstencil", "remote_call", sstencil_after_remote - sstencil_before_remote)
+    add_sub_time("sstencil", "get_results", sstencil_end - sstencil_after_remote)
+    add_sub_time("sstencil", "max_remote_prep", max([x[0] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_compile", max([x[1] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_exec", max([x[2] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_total", max([x[3] for x in worker_timings]))
+
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
 
