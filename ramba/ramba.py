@@ -102,12 +102,10 @@ if not USE_MPI:
     # from the list because they have a bug.  This "if" can go away once the
     # fix for this issue this is in Ray mainline makes it into a Ray release.
     ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
-    if "PYTHON_MODE" in ray_imports:
-        ray_imports.remove("PYTHON_MODE")
-    if "dataget" in ray_imports:
-        ray_imports.remove("dataget")
-    if "show_in_dashboard" in ray_imports:
-        ray_imports.remove("show_in_dashboard")
+    do_not_import = ["PYTHON_MODE", "dataget", "show_in_dashboard", "java_actor_class"]
+    for no_import in do_not_import:
+        if no_import  in ray_imports:
+            ray_imports.remove(no_import)
     istmt = "from ray import {}".format(",".join(ray_imports))
     # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
     exec(istmt)
