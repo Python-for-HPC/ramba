@@ -98,19 +98,8 @@ dprint(3, "ramba_module:", ramba_module, type(ramba_module))
 
 
 if not USE_MPI:
-    # Import all the things that Ray exports.  We have to remove PYTHON_MODE
-    # from the list because they have a bug.  This "if" can go away once the
-    # fix for this issue this is in Ray mainline makes it into a Ray release.
-    ray_imports = list(filter(lambda x: isinstance(x, str), ray.__all__[:]))
-    do_not_import = ["PYTHON_MODE", "dataget", "show_in_dashboard", "java_actor_class"]
-    for no_import in do_not_import:
-        if no_import in ray_imports:
-            ray_imports.remove(no_import)
-    for no_import in ray_imports:
-        if no_import.startswith("java"):
-            ray_imports.remove(no_import)
-    istmt = "from ray import {}".format(",".join(ray_imports))
-    # Import the regular Ray API excluding PYTHON_MODE, which doesn't exist.
+    reexport = ["get", "put", "wait"]
+    istmt = "from ray import {}".format(",".join(reexport))
     exec(istmt)
 
 
