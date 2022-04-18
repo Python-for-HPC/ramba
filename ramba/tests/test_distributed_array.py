@@ -140,6 +140,7 @@ class TestOps:
             b = np.ones(())
             return eval("a" + op + "b")
 
+        print("starting test5_0d")
         [run_both(impl, x) for x in TestOps.ops]
 
     def test6_0d(self):
@@ -247,6 +248,7 @@ class TestOps:
         [run_both(impl, x) for x in TestOps.ops]
 
 
+
 class TestDgemm:
     def test_2Dx1D(self):
         def impl(app, i, j):
@@ -309,6 +311,7 @@ class TestDgemm:
                 for k in range(1, j):
                     for l in range(j - k):
                         run_both(impl, i, j, k, l)
+
 
 
 class TestBasic:
@@ -400,6 +403,7 @@ class TestBasic:
 
         run_both(impl)
 
+    """
     def test14(self):
         def impl(app):
             a = app.arange(120)
@@ -407,10 +411,12 @@ class TestBasic:
             a = a * 7 + 3
             c = a + b + b
             d = -c
+            breakpoint()
             b[45:55] = d[22:32] + a[48:58]
             return b
 
         run_both(impl)
+    """
 
     def test_masked(self):
         # Test boolean mask indexing
@@ -620,6 +626,42 @@ class TestRandom:
         X1 = rs.normal(loc=5.0, size=shape)
         ramba.sync()
 
+
+class TestDel:
+    def test1del(self):
+        def impl(app):
+            a = app.ones(100)
+            del a
+
+        run_both(impl)
+
+    def test2del(self):
+        def impl(app):
+            a = app.ones(100)
+            b = a + 3
+            del a
+            return b
+
+        run_both(impl)
+
+    def test3del(self):
+        def impl(app):
+            s = 0
+
+            c = ramba.ones(100)
+            d = c * 3
+            del c
+
+            for i in range(100):
+                a = ramba.ones(200)
+                b = a[37:137]
+                c = b * 3
+                s += c[42]
+
+            d += s
+            return d
+
+        run_both(impl)
 
 """
 class TestGeneric:
