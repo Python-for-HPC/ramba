@@ -3902,7 +3902,7 @@ class DAG:
     dag_nodes = weakref.WeakSet()
     in_evaluate = 0
 
-    def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs, executed=False):
+    def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs, executed=False, *, output=None):
         self.name = name
         self.executor = executor
         self.inplace = inplace
@@ -3911,7 +3911,7 @@ class DAG:
         self.forward_deps = []
         self.backward_deps = [x.dag for x in ndarray_deps]
         self.executed = executed
-        self.output = None
+        self.output = output
 
     def __repr__(self):
         return f"DAG({self.name}, {self.executed})"
@@ -4234,7 +4234,8 @@ class ndarray:
     @property
     def dag(self):
         if self.idag is None:
-            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True)
+            dprint(2, "idag is None in dag")
+            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
 
@@ -4251,6 +4252,7 @@ class ndarray:
         self.getitem_cache = other.getitem_cache
         self.from_border = other.from_border
         self.to_border = other.to_border
+        self.maskarray = other.maskarray
         self.bdarray = bdarray.assign_bdarray(self, self.shape, gid=other.gid, distribution=self.distribution)
         #self.bdarray = other.bdarray
         if hasattr(other, "internal_numpy"):
@@ -4950,8 +4952,6 @@ class ndarray:
     @DAGapi
     def getitem_array(self, index):
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
-            # Is this right? true_elems = count_nonzero(index)
-            #return DAGshape((true_elems,), self.dtype, False)
             return DAGshape(self.shape, self.dtype, False)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
