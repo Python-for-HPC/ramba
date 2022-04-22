@@ -610,6 +610,16 @@ def division_to_shape(divs):
     return tuple(divs[1, :] - divs[0, :] + 1)
 
 
+def div_to_factors(divs):
+    dshape = divs.shape
+    res = []
+    for i in range(dshape[2]):
+        diffset = set()
+        for j in range(dshape[0]):
+            diffset.add(divs[j,1,i])
+        res.append(len(diffset))
+    return res
+
 # @numba.njit(cache=True)
 def global_to_divisions(dist):
     ret = np.empty((2, dist.shape[1]), dtype=ramba_dist_dtype)

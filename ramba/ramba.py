@@ -321,7 +321,10 @@ class FunctionMetadata:
                 dprint(1, "Numba attempt failed for", self.func, atypes)
                 raise
 
-        return self.func(*args, **kwargs)
+        dprint(3, "Falling back to pure Python", self.func)
+        python_res = self.func(*args, **kwargs)
+        dprint(3, "Python function complete", self.func)
+        return python_res
 
 
 class StencilMetadata:
@@ -3223,7 +3226,8 @@ class RemoteState:
         try:
             func = func_loads(func)
             fargs = [self.numpy_map[x] if isinstance(x, uuid.UUID) else x for x in args]
-            fmfunc = FunctionMetadata(func, [], {})
+            fmfunc = func
+            #fmfunc = FunctionMetadata(func, [], {})
             dprint(3, "Before local spmd fmfunc call")
             fmfunc(*fargs)
             dprint(3, "After local spmd fmfunc call")
@@ -3379,7 +3383,7 @@ class RemoteState:
         # actual sends
         for (i, vl) in to_send.items():
             msg = []
-            for v in vl: 
+            for v in vl:
                 g = v[0]
                 base_part = v[1]
                 v = v[2:]
@@ -3897,10 +3901,170 @@ def get_ndarrays(item, outlist):
             outlist.append(i)
 
 
+def get_unified_constraints(arr):
+    flexset = {}
+    nonflexset = {}
+    cset = []
+    def add_array(arr):
+        if not arr:
+            return
+        if arr.bdarray.flex_dist:
+            if id(arr) not in flexset:
+                flexset[id(arr)] = arr
+                for constraint in arr.constraints:
+                    if constraint not in cset:
+                        cset.append(constraint)
+                for constraint in arr.constraints:
+                    for aconst in constraint.constraint_dict.values():
+                        add_array(aconst[0]())
+        else:
+            nonflexset[id(arr)] = arr
+
+    add_array(arr)
+
+    ret = {}
+    max_symbol = 0
+    for centry in cset:
+        cdict = centry.constraint_dict
+        this_entry_symbol_map = {}
+        def add_symbol_map(symbol):
+            if symbol in this_entry_symbol_map:
+                return this_entry_symbol_map[symbol]
+            else:
+                nonlocal max_symbol
+                max_symbol += 1
+                this_entry_symbol_map[symbol] = max_symbol
+                return max_symbol
+
+        for v in cdict.values():
+            varr = v[0]()
+            if varr is None:
+                print("how did this happen?")
+                assert 0
+
+            if id(varr) not in ret:
+                ret[id(varr)] = (v[0], [0] * len(v[1]))
+
+            prev = ret[id(varr)][1]
+            for i, symbol in enumerate(v[1]):
+                if symbol == -1:
+                    if prev[i] <= 0:
+                        prev[i] = -1
+                    else:
+                        return None
+                elif symbol > 0:
+                    if prev[i] < 0:
+                        return None
+                    elif prev[i] == 0:
+                        prev[i] = add_symbol_map(symbol)
+                    else:
+                        if symbol in this_entry_symbol_map:
+                            if prev[i] != this_entry_symbol_map[symbol]:
+                                return None
+                        else:
+                            this_entry_symbol_map[symbol] = prev[i]
+
+    nonflexdist_info = {k:(x, shardview.div_to_factors(shardview.distribution_to_divisions(x.distribution))) for k,x in nonflexset.items()}
+    return ret, flexset, nonflexdist_info
+
+
+def constraints_to_kwargs(arr, kwargs):
+    if len(arr.constraints) == 0:
+        return
+
+    if len(arr.constraints) > 1:
+        assert 0 # don't handle this case yet
+
+    unified = get_unified_constraints(arr)
+
+    if unified is None:
+        pass
+    else:
+        cset, flexset, nonflexset = unified
+        print("cset:", cset, flexset, nonflexset)
+        respar = compute_multi_partition(num_workers, cset, flexset, nonflexset)
+        print("respar:", respar, type(respar))
+
+    no_dist_constraints = []
+    dprint(3, "constraints_to_kwargs", arr, id(arr), type(arr), arr.constraints, type(arr.constraints))
+    for constraint_set in arr.constraints:
+        arr_info = constraint_set.constraint_dict[id(arr)]
+        do_not_distribute = [i for i, x in enumerate(arr_info[1]) if x == -1]
+        no_dist_constraints.append(do_not_distribute)
+
+    # This could be a "holistic" view where we determine a partitioning that
+    # fits all the constraints that we have but only instantiate the one for this array.
+
+    _, this_arr_info = arr.constraints[0].constraint_dict[id(arr)]
+    match_dims = [x for i, x in enumerate(this_arr_info) if x > 0]
+    new_distribution = None
+    copied_dims = []
+    for arr_id, constraint in arr.constraints[0].constraint_dict.items():
+        dprint(3, "arr_id:", arr_id, constraint[0](), constraint[1])
+        if arr_id != id(arr):
+            other_arr = constraint[0]()
+            if other_arr is None:
+                continue
+            if other_arr.bdarray.flex_dist:
+                continue
+            dprint(3, "next:", other_arr.shape, arr.shape, this_arr_info, constraint[1])
+            # Common case of same shape and matching constraint.
+            if other_arr.shape == arr.shape:
+                if constraint[1] == this_arr_info:
+                    other_divs = shardview.distribution_to_divisions(other_arr.distribution)
+                    if new_distribution is None:
+                        new_distribution = other_divs
+                        #new_distribution = libcopy.deepcopy(other_arr.distribution)
+                    else:
+                        if not np.array_equal(new_distribution, other_divs):
+                            print("new_distribution\n", new_distribution, type(new_distribution))
+                            print("other_divs\n", other_divs.distribution, type(other_divs))
+                            assert 0
+            else:
+                dprint(3, "this_arr_info:", this_arr_info)
+                dprint(3, "constraint[1]:", constraint[1])
+                dprint(3, "other_arr.distribution\n", other_arr.distribution, type(other_arr.distribution))
+                divs = shardview.distribution_to_divisions(other_arr.distribution)
+                dprint(3, "divisions:\n", divs, divs.shape)
+                match_dims = [i for i, x in enumerate(this_arr_info) if x > 0]
+                dprint(3, "match_dims:", match_dims)
+                if new_distribution is None:
+                    # divs.shape[0] is number of workers, second value always 2 for start and end
+                    new_distribution = np.empty((divs.shape[0], 2, arr.ndim), dtype=divs.dtype)
+                    for i, dimval in enumerate(this_arr_info):
+                        if dimval > 0:
+                            try:
+                                other_index = constraint[1].index(dimval)
+                                new_distribution[:,:,i] = divs[:,:,other_index]
+                            except ValueError:
+                                pass
+                        else:
+                            for j in range(divs.shape[0]):
+                                new_distribution[j,0,i] = 0
+                                new_distribution[j,1,i] = arr.shape[i] - 1
+                else:
+                    for i, dimval in enumerate(this_arr_info):
+                        if dimval > 0:
+                            try:
+                                other_index = constraint[1].index(dimval)
+                                assert np.array_equal(new_distribution[:,:,i], divs[:,:,other_index])
+                            except ValueError:
+                                pass
+
+    if new_distribution is not None and ("distribution" not in kwargs or kwargs["distribution"] is None):
+        kwargs["distribution"] = shardview.divisions_to_distribution(new_distribution)
+
+    # Fix this for case of multiple constraints.
+    #do_not_distribute = no_dist_constraints[0]
+    #if new_distribution is None and "dims_do_not_distribute" not in kwargs and len(do_not_distribute) > 0:
+    #    kwargs["dims_do_not_distribute"] = do_not_distribute
+
+
 # DAG stuff
 class DAG:
     dag_nodes = weakref.WeakSet()
     in_evaluate = 0
+    constraints = []
 
     def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs, executed=False, *, output=None):
         self.name = name
@@ -4105,9 +4269,9 @@ class DAG:
         depth_first_nodes.append(dag_node)
 
     @classmethod
-    def instantiate(cls, arr):
+    def instantiate(cls, arr, **kwargs):
         if isinstance(arr, ndarray):
-            cls.instantiate_dag_node(arr.dag)
+            cls.instantiate_dag_node(arr.dag, **kwargs)
 
     def execute(self):
         soutput = self.output()
@@ -4129,7 +4293,7 @@ class DAG:
         self.backward_deps = []
 
     @classmethod
-    def instantiate_dag_node(cls, dag_node, do_ops=True):
+    def instantiate_dag_node(cls, dag_node, do_ops=True, **kwargs):
         if dag_node.executed:
             assert len(dag_node.backward_deps) == 0
             return
@@ -4177,6 +4341,37 @@ def DAGapi(func):
         else:
             return fres
     return wrapper
+
+
+class Constraint:
+    def __init__(self, constraint_dict, requirement):
+        self.constraint_dict = constraint_dict
+        self.requirement = requirement
+
+
+# List in the form [(ndarray0, [symbolic])])
+def add_constraint(array_constraints, requirement=False):
+    assert isinstance(array_constraints, list)
+    constraint_dict = {}
+    for constraint in array_constraints:
+        assert isinstance(constraint, tuple)
+        assert len(constraint) == 2
+        arr = constraint[0]
+        assert isinstance(arr, ndarray)
+        constraint_dict[id(arr)] = (weakref.ref(arr), constraint[1])
+
+    for v in constraint_dict.values():
+        if v[0]() is not None:
+            v[0]().constraints.append(Constraint(constraint_dict, requirement))
+
+
+def instantiate_all(*args, **kwargs):
+    """
+    Make sure all arrays that are in args have been instantiated.
+    """
+    for a in args:
+        if isinstance(a, ndarray):
+            a.instantiate(**kwargs)
 
 
 # Deferred Ops stuff
@@ -4230,6 +4425,11 @@ class ndarray:
         self.maskarray = maskarray
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
+        self.constraints = []
+        if dag is None:
+            self.once = True
+        else:
+            self.once = False
 
     @property
     def dag(self):
@@ -4239,8 +4439,8 @@ class ndarray:
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
 
-    def instantiate(self):
-        DAG.instantiate(self)
+    def instantiate(self, **kwargs):
+        DAG.instantiate(self, **kwargs)
 
     def assign(self, other):
         assert(isinstance(other, ndarray))
@@ -4258,6 +4458,7 @@ class ndarray:
         if hasattr(other, "internal_numpy"):
             self.internal_numpy = other.internal_numpy
         dprint(2,"assign complete", id(self), id(other))
+        self.once = True
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
@@ -4890,7 +5091,7 @@ class ndarray:
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
             if index.shape != self.shape:
                 index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0, 
+            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
@@ -6412,11 +6613,13 @@ def create_array_executor(
     no_defer=False,
     **kwargs
 ):
+    kwargs["distribution"] = distribution
+    constraints_to_kwargs(temp_ndarray, kwargs)
+    dprint(2, "create_array_executor kwargs", kwargs)
     new_ndarray = ndarray(
         shape,
         local_border=local_border,
         dtype=dtype,
-        distribution=distribution,
         **kwargs
     )
     if shape == ():
@@ -6673,6 +6876,8 @@ def fromarray_executor(temp_array, x, local_border=0, dtype=None, **kwargs):
     if isinstance(x, list):
         x = np.array(x)
 
+    constraints_to_kwargs(temp_array, kwargs)
+    dprint(2, "fromarray kwargs", kwargs)
     shape = temp_array.shape
     dtype = temp_array.dtype
     new_ndarray = create_array(
@@ -7836,8 +8041,12 @@ def scumulative(local_func, final_func, array):
     return new_ndarray
 
 
-def spmd(func, *args):
-    deferred_op.do_ops()
+#def spmd_executor(temp_array, func, *args, **kwargs):
+
+#@DAGapi
+def spmd(func, *args, **kwargs):
+    instantiate_all(*args, **kwargs)
+    #deferred_op.do_ops()
     args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     # ray.get([remote_states[i].spmd.remote(func, args_to_remote) for i in range(num_workers)])
     dprint(2, "Before exec_all spmd")
