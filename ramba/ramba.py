@@ -6773,7 +6773,7 @@ def load(fname, dtype=None, local=False, ftype=None, **kwargs):
         if dtype is None:
             dtype = dt
         arr = empty(shp, dtype=dtype)
-        deferred_op.do_ops()
+        arr.instantiate()
         remote_exec_all("load", arr.gid, fname, **kwargs)
     return arr
 

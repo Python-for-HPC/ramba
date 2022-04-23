@@ -72,6 +72,7 @@ try:
 except:
     if in_driver(): print("No HDF5 support")
 
+
 try:
     from PIL import Image
 
@@ -99,3 +100,41 @@ try:
 
 except:
     if in_driver(): print("No PIL support")
+
+
+try:
+    import netCDF4
+
+    def nc_lazy_whole(fname, var_select):
+        p = netCDF4.Dataset(fname)
+        dset = set(p.dimensions.keys())
+        vset = set(p.variables.keys())
+        onlyv = vset - dset
+        if var_select is None:
+            assert len(onlyv) == 1
+            onlyv = onlyv.pop()
+        else:
+            assert var_select in onlyv
+            onlyv = var_select
+        return p.variables[onlyv]
+
+    def nc_getinfo(fname, var_select=None):
+        data = nc_lazy_whole(fname, var_select)
+        return data.shape, data.dtype
+
+    def nc_read(fname, arr, src_index, var_select=None, dst_index=None):
+        data = nc_lazy_whole(fname, var_select)
+
+        if dst_index is None:
+            arr[:] = data[src_index]
+        else:
+            arr[dst_index] = data[src_index]
+
+    def nc_readall(fname, var_select=None):
+        data = nc_lazy_whole(fname, var_select)
+        return data[:]
+
+    loader("nc", True, aliases=[])
+except:
+    if in_driver(): print("No netCDF4 support")
+
