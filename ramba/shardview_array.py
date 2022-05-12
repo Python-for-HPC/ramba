@@ -21,6 +21,8 @@ if ramba_big_data:
     dprint(1, "Will use big data.")
     ramba_dist_dtype = np.int64
 
+ramba_dummy_index = ramba_dist_dtype(0)
+
 # simple array to specify a shard or view
 # Here size is the k-dimensional size of the view/shard
 #   index_start specifies the beginning of the global index range for this shard/view portion
@@ -34,7 +36,7 @@ if ramba_big_data:
 
 
 @numba.njit(cache=True)
-def shardview(size, index_start=None, base_offset=None, axis_map=None):
+def shardview(size, index_start=None, base_offset=None, axis_map=None, dummy=ramba_dummy_index):
     # if np.any(size<1): size=size*0
     # i_s = size*0 if index_start is None else index_start
     # b_o = size*0 if base_offset is None else base_offset
@@ -414,8 +416,8 @@ def to_division(sv):
 
 
 @numba.njit(cache=True)
-def shape_to_div(shape):
-    res = np.zeros((2, len(shape)))
+def shape_to_div(shape, dummy=ramba_dummy_index):
+    res = np.zeros((2, len(shape)), dtype=ramba_dist_dtype)
     for i in range(len(shape)):
         res[1, i] = shape[i] - 1
     return res
@@ -572,7 +574,7 @@ def get_overlaps(k, dist1, dist2):
 
 
 @numba.njit(cache=True)
-def divisions_to_distribution(divs, base_offset=None, axis_map=None):
+def divisions_to_distribution(divs, base_offset=None, axis_map=None, dummy=ramba_dummy_index):
     # dprint(4,"Divisions to convert:", divs, divs.shape, type(divs))
     divshape = divs.shape
     if base_offset is None:

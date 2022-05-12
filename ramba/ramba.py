@@ -1747,7 +1747,8 @@ class RemoteState:
         filler_tuple_arg=True,
     ):
         dprint(
-            3, "RemoteState::create_array:", gid, subspace, filler, local_border, dtype
+            3, "RemoteState::create_array:", gid, subspace, filler, local_border, dtype,
+            "\ndtype of subspace", subspace.dtype,
         )
         num_dim = len(shardview.get_size(subspace))
         dim_lens = tuple(shardview.get_size(subspace))

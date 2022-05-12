@@ -152,6 +152,7 @@ def get_common_state():
         USE_ZMQ,
         USE_BCAST,
         USE_RAY_CALLS,
+        ramba_big_data,
     )
 
 
@@ -167,6 +168,7 @@ def set_common_state2(st):
     global USE_ZMQ
     global USE_BCAST
     global USE_RAY_CALLS
+    global ramba_big_data
     (
         num_workers,
         num_threads,
@@ -179,6 +181,7 @@ def set_common_state2(st):
         USE_ZMQ,
         USE_BCAST,
         USE_RAY_CALLS,
+        ramba_big_data,
     ) = st
 
 def set_common_state(st,gl):
@@ -194,6 +197,7 @@ def set_common_state(st,gl):
         gl['USE_ZMQ'],
         gl['USE_BCAST'],
         gl['USE_RAY_CALLS'],
+        gl['ramba_big_data'],
     ) = st
     set_common_state2(st)
 
