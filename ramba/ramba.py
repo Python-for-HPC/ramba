@@ -3650,10 +3650,34 @@ class RemoteState:
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
-    def load(self, gid, fname, ftype=None, **kwargs):
+    def load(self, gid, fname, index=None, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
         fldr = fileio.get_load_handler(fname, ftype)
-        fldr.read(fname, lnd.bcontainer, shardview.to_slice(lnd.subspace), **kwargs)
+        if index is None:
+            fldr.read(fname, lnd.bcontainer, shardview.to_slice(lnd.subspace), **kwargs)
+        else:
+            subslice = shardview.to_slice(lnd.subspace)
+
+            def inverter(subspace, cindex, axismap):
+                idxlist = []
+                for idx in range(len(cindex)):
+                    if idx not in axismap:
+                        if isinstance(cindex[idx], slice):
+                            idxlist.append(cindex[idx].start)
+                        else:
+                            idxlist.append(cindex[idx])
+                    else:
+                        amidx = axismap.index(idx)
+                        if isinstance(cindex[idx], slice):
+                            assert isinstance(subspace[amidx], slice)
+                            idxlist.append(slice(cindex[idx].start + subspace[amidx].start, cindex[idx].start + subspace[amidx].stop))
+                        else:
+                            idxlist.append(cindex[idx] + subspace[amidx])
+
+                return tuple(idxlist)
+
+            postindex = inverter(subslice, *index)
+            fldr.read(fname, lnd.bcontainer, postindex, **kwargs)
 
 
 if not USE_MPI:
@@ -3969,6 +3993,7 @@ def get_unified_constraints(arr):
 
 
 def constraints_to_kwargs(arr, kwargs):
+    start_time = timer()
     if len(arr.constraints) == 0:
         return
 
@@ -3981,9 +4006,22 @@ def constraints_to_kwargs(arr, kwargs):
         pass
     else:
         cset, flexset, nonflexset = unified
-        print("cset:", cset, flexset, nonflexset)
+        dprint(3, "cset:", cset, flexset, nonflexset)
         respar = compute_multi_partition(num_workers, cset, flexset, nonflexset)
-        print("respar:", respar, type(respar))
+        dprint(3, "respar:", respar, type(respar))
+        arr_factors = list(filter(lambda x: x[0] is arr, respar))
+        assert len(arr_factors) == 1
+        arr_factors = arr_factors[0][1]
+        #best, _ = compute_regular_schedule_core(num_workers, arr_factors, arr.shape, ())
+        #print("best:", best, type(best))
+        divisions = np.empty((num_workers, 2, arr.ndim), dtype=np.int64)
+        dprint(3, "arr_factors:", arr_factors, type(arr_factors))
+        create_divisions(divisions, arr.shape, arr_factors)
+        dprint(3, "divisions:", divisions)
+        kwargs["distribution"] = shardview.divisions_to_distribution(divisions)
+        end_time = timer()
+        tprint(2, "constraints_to_kwargs time:", end_time - start_time)
+        return
 
     no_dist_constraints = []
     dprint(3, "constraints_to_kwargs", arr, id(arr), type(arr), arr.constraints, type(arr.constraints))
@@ -3991,9 +4029,6 @@ def constraints_to_kwargs(arr, kwargs):
         arr_info = constraint_set.constraint_dict[id(arr)]
         do_not_distribute = [i for i, x in enumerate(arr_info[1]) if x == -1]
         no_dist_constraints.append(do_not_distribute)
-
-    # This could be a "holistic" view where we determine a partitioning that
-    # fits all the constraints that we have but only instantiate the one for this array.
 
     _, this_arr_info = arr.constraints[0].constraint_dict[id(arr)]
     match_dims = [x for i, x in enumerate(this_arr_info) if x > 0]
@@ -4372,6 +4407,20 @@ def instantiate_all(*args, **kwargs):
     for a in args:
         if isinstance(a, ndarray):
             a.instantiate(**kwargs)
+
+
+def apply_index(shape, index):
+    cindex = canonical_index(index, shape)
+    dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+    axismap = [
+        i
+        for i in range(len(dim_shapes))
+        if i >= len(index) or isinstance(index[i], slice)
+    ]
+    if len(axismap) < len(dim_shapes):
+        dim_shapes = shardview.remap_axis_result_shape(dim_shapes, axismap)
+
+    return dim_shapes, (cindex, axismap)
 
 
 # Deferred Ops stuff
@@ -5176,15 +5225,7 @@ class ndarray:
                         + str(self.shape[i])
                     )
 
-            cindex = canonical_index(index, self.shape)
-            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
-            axismap = [
-                i
-                for i in range(len(dim_shapes))
-                if i >= len(index) or isinstance(index[i], slice)
-            ]
-            if len(axismap) < len(dim_shapes):
-                dim_shapes = shardview.remap_axis_result_shape(dim_shapes, axismap)
+            dim_shapes, _ = apply_index(self.shape, index)
             dprint(2, "__getitem__array slice:", cindex, dim_shapes)
             return DAGshape(dim_shapes, self.dtype, False)
 
@@ -6963,6 +7004,25 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
 
 def array(*args):
     return fromarray(*args)
+
+
+class Dataset:
+    def __init__(self, fname, dtype=None, ftype=None, **kwargs):
+        self.fname = fname
+        self.dtype = dtype
+        fldr = fileio.get_load_handler(fname, ftype)
+        self.shape, dt = fldr.getinfo(fname, **kwargs)
+        if self.dtype is None:
+            self.dtype = dt
+        self.kwargs = kwargs
+
+    def __getitem__(self, index):
+        new_shape, inverter = apply_index(self.shape, index)
+        #new_shape, clean_index = apply_index(self.shape, index)
+        arr = empty(new_shape, dtype=self.dtype)
+        arr.instantiate()
+        remote_exec_all("load", arr.gid, self.fname, index=inverter, **self.kwargs)
+        return arr
 
 
 def load(fname, dtype=None, local=False, ftype=None, **kwargs):
