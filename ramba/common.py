@@ -264,9 +264,6 @@ def compute_multi_partition(
 ):
     # flexdist_info is map of array id to (array, divisions, dim_factors)
     flexdist_info = {k:(x, np.empty((num_workers, 2, x.ndim), dtype=np.int64), get_dim_factors(num_workers, x.ndim)) for k,x in flex_array_set.items()}
-    print("compute_multi:", constraint_dict, flex_array_set, nonflexdist_info)
-    # Some initial filtering of possible factorizations.
-#    for constraint in constraint_set:
 
     non_flex_symbols = {}
     # Get the set of symbols that come from already constructed arrays.
@@ -297,7 +294,6 @@ def compute_multi_partition(
     # Using the above, filter out partitionings that don't use the same split
     # as an already created array.
     for aconst in constraint_dict.values():
-    #for aconst in constraint.constraint_dict:
         arr = aconst[0]()
         if arr is None:
             continue
@@ -306,169 +302,90 @@ def compute_multi_partition(
             continue
         for i, symbol in enumerate(const_array):
             flexdist_info_for_arr = flexdist_info[id(arr)]
-            print("prefilter:", id(arr), const_array, flexdist_info_for_arr)
+            dprint(3, "prefilter:", id(arr), const_array, flexdist_info_for_arr)
             if symbol == -1:
                 flexdist_info[id(arr)] = (arr, aconst[1], list(filter(lambda x: x[i] == 1, flexdist_info_for_arr[2])))
-                print("postfilter:", id(arr), const_array, flexdist_info[id(arr)])
+                dprint(3, "postfilter:", id(arr), const_array, flexdist_info[id(arr)])
             elif symbol > 0:
                 if symbol in non_flex_symbols:
-                    print("symbol in non_flex_symbols")
+                    dprint(3, "symbol in non_flex_symbols")
                     flexdist_info[id(arr)] = (arr, aconst[1], list(filter(lambda x: x[i] == non_flex_symbols[symbol], flexdist_info_for_arr[2])))
-                    print("postfilter:", id(arr), const_array, flexdist_info[id(arr)])
+                    dprint(3, "postfilter:", id(arr), const_array, flexdist_info[id(arr)])
 
-    print("values:", flexdist_info.values())
+    dprint(3, "values:", flexdist_info.values())
     for v in flexdist_info.values():
-        print("v:", id(v[0]), v, type(v))
+        dprint(3, "v:", id(v[0]), v, type(v))
     # If any of array dim_factors are now empty then no solution possible.
     if any([len(v[2]) == 0 for v in flexdist_info.values()]):
         return None
 
     solutions = set()
-    def recursive_eliminator(flexdist_items, current_index, solutions, current_solution, constraint_set):
+    arr_factor_current = []
+    arr_factor_solutions = []
+    def recursive_eliminator(flexdist_items, current_index, solutions, current_solution, constraint_set, arr_factor_current, arr_factor_solutions):
         if current_index >= len(flexdist_items):
+            dprint(3, "adding solution", frozenset(current_solution.items()))
             solutions.add(frozenset(current_solution.items()))
+            cur_sum = 0
+            result = []
+            for test in arr_factor_current:
+                best, best_value = compute_regular_schedule_core(num_workers, ((test[1]),), test[0].shape, ())
+                cur_sum += best_value
+                result.append((test[0], best))
+                dprint(3, "test:", test[1], test[0].shape, best_value)
+            result.append(cur_sum)
+            arr_factor_solutions.append(result)
+            return
 
-        for i in range(current_index, len(flexdist_items)):
-            arr, _, arr_dim_factors = flexdist_items[i]
-            print("recursive:", current_index, i, arr, id(arr), arr_dim_factors, constraint_set)
-            arr_constraint = constraint_set[id(arr)]
-            carr, arr_constraint = arr_constraint
-            carr = carr()
-            assert carr is arr
-            for one_dim_factor in arr_dim_factors:
-                new_solution = libcopy.copy(current_solution)
-                factors_good = True
-                for i, factor in enumerate(one_dim_factor):
-                    isymbol = arr_constraint[i]
-                    if isymbol > 0:
-                        if isymbol in new_solution:
-                            if new_solution[isymbol] != factor:
-                                factors_good = False
-                                break
-                        else:
-                            new_solution[isymbol] = factor
-                if factors_good:
-                    recursive_eliminator(flexdist_items, current_index + 1, solutions, new_solution, constraint_set)
+        arr, _, arr_dim_factors = flexdist_items[current_index]
+        dprint(3, "recursive:", current_index, arr, id(arr), arr_dim_factors, constraint_set, current_solution, flexdist_items)
+        arr_constraint = constraint_set[id(arr)]
+        carr, arr_constraint = arr_constraint
+        carr = carr()
+        assert carr is arr
+        for one_dim_factor in arr_dim_factors:
+            new_solution = libcopy.copy(current_solution)
+            factors_good = True
+            for i, factor in enumerate(one_dim_factor):
+                isymbol = arr_constraint[i]
+                if isymbol > 0:
+                    if isymbol in new_solution:
+                        if new_solution[isymbol] != factor:
+                            factors_good = False
+                            break
+                    else:
+                        new_solution[isymbol] = factor
+            dprint(3, "in arr_dim_factors loop:", one_dim_factor, factors_good)
+            if factors_good:
+                arr_factor_current.append((arr, one_dim_factor))
+                recursive_eliminator(flexdist_items, current_index + 1, solutions, new_solution, constraint_set, arr_factor_current, arr_factor_solutions)
+                arr_factor_current.pop()
 
-    recursive_eliminator(list(flexdist_info.values()), 0, solutions, {}, constraint_dict)
-    print("solutions:", solutions)
+    recursive_eliminator(list(flexdist_info.values()), 0, solutions, {}, constraint_dict, arr_factor_current, arr_factor_solutions)
+    dprint(3, "solutions:", solutions)
+    for i in arr_factor_solutions:
+        dprint(3, i, i[0], id(i[0]))
+    best_solution = min(arr_factor_solutions, key = lambda x: x[-1])
+    return best_solution[:-1]
 
-    """
-    best = None
-    best_value = math.inf
-
-    largest = [0] * num_dim
-    smallest = [0] * num_dim
-
-    for factored in the_factors:
-        not_possible = False
-        for i in range(num_dim):
-            if factored[i] > size[i]:
-                not_possible = True
-                break
-            if mode == "ratio":
-                _, _, largest[i], smallest[i] = get_div_sizes(size[i], factored[i])
-        if not_possible:
-            continue
-
-        if mode == "ratio":
-            ratio = np.prod(largest) / np.prod(smallest)
-            if ratio < best_value:
-                best_value = ratio
-                best = factored
-        elif mode == "surface":
-            # We are trying to minimize the size of the portions of the blocks that are touching.
-            # For 2D, this is the blocks' perimeters.  For 3D, it is surface area, etc.
-            # We're really interested in the internal sharing between blocks but we
-            # note that I + E = W where I is the interior shared border, E is the
-            # exterior unshared border and W is the surface area of all the blocks.
-            # We can just compute W since E is a constant given the input array size.
-            # Moreover, since all the blocks are about the same, we can just compute
-            # for one block and don't have to explicitly count duplicate edges or
-            # faces that are symmetric because multiplying by a constant won't change
-            # the relative order of the possible partitions.
-
-            surface_area = 0
-            # List of the dimensions of each block on average.
-            blockSize = [size[i] / factored[i] for i in range(len(factored))]
-
-            for i in range(num_dim):
-                # Saves the average length of the block for the current dimension.
-                temp = blockSize[i]
-                # Ignores the current dimension so that the surface area of the
-                # N-dimensional face (edge for 2D, face for 3D, etc.) can be calculated.
-                blockSize[i] = 1
-                # Adds the calculated size of piece of the block to what has been
-                # calculated so far. At the end of the loop, the whole representation
-                # of a block surface area will be known.
-                surface_area += np.prod(blockSize)
-                # Restore the length of the current dimension for future iterations.
-                blockSize[i] = temp
-
-            # If the N-dimensional surface area of this factorization is the best
-            # thus far then remember it.
-            if surface_area < best_value:
-                best_value = surface_area
-                best = factored
-        elif mode == "nodesurface":
-            # Here we primarily optimize for the surface area between nodes.
-            # Only if there are ties do we look at the intra-node surface.
-
-            surface_area = 0
-            # List of the dimensions of each block on average.
-            blockSize = [size[i]/factored[i] for i in range(len(factored))]
-            create_divisions(divisions, size, factored)
-            wpn = workers_per_node()
-
-            for j in range(num_workers):
-                for i in range(num_dim):
-                    index_to_find = divisions[j, 0, :]
-                    index_to_find[i] = divisions[j, 1, i] + 1
-                    owning_worker = find_owning_worker(divisions, index_to_find)
-                    if owning_worker is not None and j // wpn != owning_worker // wpn:
-                        # Saves the average length of the block for the current dimension.
-                        temp = blockSize[i]
-                        # Ignores the current dimension so that the surface area of the
-                        # N-dimensional face (edge for 2D, face for 3D, etc.) can be calculated.
-                        blockSize[i] = 1
-                        # Adds the calculated size of piece of the block to what has been
-                        # calculated so far. At the end of the loop, the whole representation
-                        # of a block surface area will be known.
-                        surface_area += np.prod(blockSize)
-                        # Restore the length of the current dimension for future iterations.
-                        blockSize[i] = temp
-
-            # If the N-dimensional surface area of this factorization is the best
-            # thus far then remember it.
-            if surface_area < best_value:
-                best_value = surface_area
-                best = factored
-
-    if mode == "surface":
-        dprint(3, "Best:", best, "Smallest surface area:", best_value)
-
-    assert(best is not None)
-    create_divisions(divisions, size, best)
-    return divisions
-    """
 
 @functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(
-    num_workers, size, dims_do_not_distribute, mode="nodesurface"
+def compute_regular_schedule_core(
+    num_workers, the_factors, size, dims_do_not_distribute, mode="nodesurface"
 ):
     num_dim = len(size)
     divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
-    # Get the combinations of the prime factorization of the number of workers.
-    the_factors = get_dim_factors(num_workers, num_dim)
     best = None
     best_value = math.inf
 
     largest = [0] * num_dim
     smallest = [0] * num_dim
+    dprint(4, "core:", the_factors, type(the_factors))
 
     for factored in the_factors:
         not_possible = False
         for i in range(num_dim):
+            dprint(4, "factored:", factored, type(factored))
             if factored[i] != 1 and i in dims_do_not_distribute:
                 not_possible = True
                 break
@@ -557,6 +474,18 @@ def compute_regular_schedule_internal(
         dprint(3, "Best:", best, "Smallest surface area:", best_value)
 
     assert(best is not None)
+    return best, best_value
+
+
+@functools.lru_cache(maxsize=None)
+def compute_regular_schedule_internal(
+    num_workers, size, dims_do_not_distribute, mode="nodesurface"
+):
+    num_dim = len(size)
+    divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
+    # Get the combinations of the prime factorization of the number of workers.
+    the_factors = get_dim_factors(num_workers, num_dim)
+    best, _ = compute_regular_schedule_core(num_workers, frozenset(the_factors), size, dims_do_not_distribute, mode=mode)
     create_divisions(divisions, size, best)
     return divisions
 
