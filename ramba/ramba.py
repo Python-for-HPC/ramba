@@ -30,6 +30,7 @@ import weakref
 import operator
 import copy as libcopy
 import pickle as pickle
+import gc
 
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
@@ -4109,6 +4110,8 @@ class DAG:
         self.kwargs = kwargs
         self.forward_deps = []
         self.backward_deps = [x.dag for x in ndarray_deps]
+        for dag_node in self.backward_deps:
+            dag_node.forward_deps.append(self)
         self.executed = executed
         self.output = output
 
@@ -4127,8 +4130,8 @@ class DAG:
         else:
             nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag)
         dag.output = weakref.ref(nres)
-        for dag_node in dag.backward_deps:
-            dag_node.forward_deps.append(dag)
+        #for dag_node in dag.backward_deps:
+        #    dag_node.forward_deps.append(dag)
         cls.dag_nodes.add(dag)
         dprint(2, "DAG.add", name, len(ndarray_deps), id(nres))
         return nres, dag
@@ -4161,7 +4164,8 @@ class DAG:
             assert len(stack_arrays) == stack_res.shape[stack_dag.kwargs["axis"]]
             assert len(stack_arrays) == len(stack_preds)
             # If all the arrays part of stack have not been constructed yet and they are all for nanmean calls.
-            if all([x.name == "nanmean" for x in stack_preds]):
+            dprint(2, "stack", all([x.name in ["nanmean", "ndarray.nanmean"] for x in stack_preds]), [x.name for x in stack_preds])
+            if all([x.name in ["nanmean", "ndarray.nanmean"] for x in stack_preds]):
                 nanmeans = stack_preds
                 assert isinstance(nanmeans[0], DAG)
                 # Get the first array's join axis
@@ -4170,7 +4174,7 @@ class DAG:
                 # If all the arrays use the same join axis in nanmean
                 if (all([x.kwargs["axis"] == join_axis for x in nanmeans]) and
                     all([DAG.one_creator(x) for x in nanmeans]) and
-                    all([DAG.creator(x).name == "getitem_array" for x in nanmeans])
+                    all([DAG.creator(x).name in ["getitem_array", "ndarray.getitem_array"] for x in nanmeans])
                 ):
                     dprint(3, "All axis match and each nanmean array has one creator that is a getitem_array")
                     getitem_ops = [DAG.creator(x) for x in nanmeans]
@@ -4198,18 +4202,24 @@ class DAG:
                                 dprint(3, "group_array:", group_array)
 
                             def run_and_post(temp_array, orig_array, getitem_axis, group_array, slot_indices):
-                                print("run_and_post stack", id(temp_array))
+                                dprint(2, "run_and_post stack", id(temp_array))
                                 gb = orig_array.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
+                                dprint(2, "run_and_post stack after groupby")
                                 res = gb.nanmean()
-                                return fromarray(np.moveaxis(res, -1, 0))
+                                dprint(2, "run_and_post stack after nanmean")
+                                fa = fromarray(np.moveaxis(res, -1, 0))
+                                dprint(2, "run_and_post stack after fromarray")
+                                return fa
                                 #temp_array.internal_numpy = res
                                 #return temp_array
 
                             dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array], (orig_array, getitem_axis, group_array, slot_indices), {})
                             dag_node.output = weakref.ref(stack_res)
+                            stack_dag.replaced()
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
-        elif dag_node.name == "getitem_array":
+        elif dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
             # Check dag_node indices!  FIX ME
+            gia_node = dag_node
 
             if DAG.one_creator(dag_node) and DAG.creator(dag_node).name == "concatenate":
                 concat_node = DAG.creator(dag_node)
@@ -4222,7 +4232,7 @@ class DAG:
                 binops = concat_node.backward_deps
 
                 # If all the arrays to concat are uninstantiated from one array and the result of an array_binop.
-                if all([x.name == "array_binop" for x in binops]):
+                if all([x.name in ["array_binop", "ndarray.array_binop"] for x in binops]):
                     dprint(2, "Add concat operations are array_binop")
                     # Get the array_binop operators for each array to concat.
                     # Get the internal operator (e.g., sub) for the first binop.
@@ -4238,8 +4248,8 @@ class DAG:
                         remapped_ops = [x.backward_deps[1] for x in binops]
                         # If all the lhs arrays are uninstantiated and derived from getitem_array and all
                         # the rhs arrays are uninstantiated and derived from remapped_axis.
-                        if (all([x.name == "getitem_array" for x in lhs_getitem_ops]) and
-                            all([x.name == "remapped_axis" for x in remapped_ops]) and
+                        if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]) and
+                            all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and
                             all([DAG.one_creator(x) for x in lhs_getitem_ops]) and
                             all([DAG.one_creator(x) for x in remapped_ops])
                         ):
@@ -4255,7 +4265,7 @@ class DAG:
                             if (all([remapped_ops[0].args[1] == x.args[1] for x in remapped_ops]) and
                                 all([getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops]) and
                                 all([x is lhs_getitem_sources[0] for x in lhs_getitem_sources]) and
-                                all([x.name == "reshape" for x in reshape_ops]) and
+                                all([x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]) and
                                 all([DAG.one_creator(x) for x in reshape_ops]) and
                                 all([reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
                             ):
@@ -4264,7 +4274,7 @@ class DAG:
                                 rhs_getitem_ops = [DAG.creator(x) for x in reshape_ops]
                                 orig_array_lhs = lhs_getitem_sources[0].output()
 
-                                if (all([x.name == "getitem_array" for x in rhs_getitem_ops]) and
+                                if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops]) and
                                     all([DAG.one_creator(x) for x in rhs_getitem_ops])
                                 ):
                                     dprint(2, "All reshape bases are derived from getitem_array")
@@ -4296,6 +4306,7 @@ class DAG:
                                         dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs, rhs], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), {})
                                         dag_node.output = weakref.ref(concat_res)
                                         # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
+                                        gia_node.replaced()
 
         for backward_dep in dag_node.backward_deps:
             cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed)
@@ -4327,6 +4338,15 @@ class DAG:
         self.kwargs = None
         self.backward_deps = []
 
+    def replaced(self):
+        self.name = "Replaced"
+        self.executed = True
+        for dag_node in self.backward_deps:
+            dag_node.forward_deps.remove(self)
+        self.args = None
+        self.kwargs = None
+        self.backward_deps = []
+
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True, **kwargs):
         if dag_node.executed:
@@ -4344,6 +4364,22 @@ class DAG:
         if do_ops:
             deferred_op.do_ops()
         cls.in_evaluate -= 1
+
+    @classmethod
+    def print_nodes(cls):
+        print("DAG::print_nodes---------------------------------")
+        gc.collect()
+        for dag_node in cls.dag_nodes:
+            print("    ", dag_node.name, dag_node.executed, id(dag_node.output()), sys.getrefcount(dag_node))
+            if dag_node.name in ["ndarray.getitem_array", "ndarray.nanmean"]: #sys.getrefcount(dag_node) == 4:
+                referrers = gc.get_referrers(dag_node)
+                for referrer in referrers:
+                    print("        ", type(referrer))
+                    #print("        ", referrer, type(referrer))
+                    if isinstance(referrer, (list, dict)):
+                        lreferrers = gc.get_referrers(referrer)
+                        for lreferrer in lreferrers:
+                            print("            ", lreferrer, type(lreferrer))
 
     @classmethod
     def execute_all(cls):
@@ -5225,7 +5261,7 @@ class ndarray:
                         + str(self.shape[i])
                     )
 
-            dim_shapes, _ = apply_index(self.shape, index)
+            dim_shapes, (cindex, _) = apply_index(self.shape, index)
             dprint(2, "__getitem__array slice:", cindex, dim_shapes)
             return DAGshape(dim_shapes, self.dtype, False)
 
