@@ -935,6 +935,16 @@ class bdarray:
         assert gid not in self.gid_map
         self.gid_map[gid] = self
         self.dtype = dtype
+        self.idag = None
+
+    @property
+    def dag(self):
+        if self.idag is None:
+            dprint(2, "idag is None in dag")
+            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
+        # FIX ME?
+        # Add this fake DAG node to DAG.dag_nodes?
+        return self.idag
 
     def __del__(self):
         dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self))
@@ -3895,7 +3905,8 @@ def get_ndarrays(item, outlist):
         if isinstance(i, (list, tuple)):
             get_ndarrays(i, outlist)
         elif isinstance(i, ndarray):
-            outlist.append(i)
+            if i.bdarray not in outlist:
+                outlist.append(i.bdarray)
 
 
 # DAG stuff
@@ -3925,9 +3936,10 @@ class DAG:
         dag = DAG(name, executor, delayed.inplace, ndarray_deps, args, kwargs)
         if delayed.inplace:
             nres = delayed.inplace
-            nres.idag = dag
+            nres.bdarray.idag = dag
+            #nres.idag = dag
         else:
-            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag)
+            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.gid)
         dag.output = weakref.ref(nres)
         for dag_node in dag.backward_deps:
             dag_node.forward_deps.append(dag)
@@ -4157,10 +4169,11 @@ class DAG:
 
 
 class DAGshape:
-    def __init__(self, shape, dtype, inplace):
+    def __init__(self, shape, dtype, inplace, gid=None):
         self.shape = shape
         self.dtype = dtype
         self.inplace = inplace
+        self.gid = gid
 
 
 def DAGapi(func):
@@ -4227,18 +4240,22 @@ class ndarray:
         #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
-        self.idag = dag
+        self.bdarray.idag = dag
+        #self.idag = dag
         self.maskarray = maskarray
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
 
     @property
     def dag(self):
+        return self.bdarray.dag
+        """
         if self.idag is None:
             dprint(2, "idag is None in dag")
             self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
+        """
 
     def instantiate(self):
         DAG.instantiate(self)
@@ -4337,7 +4354,7 @@ class ndarray:
 
     @DAGapi
     def remapped_axis(self, newmap):
-        return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False)
+        return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False, gid=self.gid)
 
     """
     def remapped_axis(self, newmap):
@@ -4878,6 +4895,8 @@ class ndarray:
         return self.setitem(key, value)
 
     def __getitem__(self, index):
+        return self.getitem_real(index)
+        """
         if isinstance(index, ndarray):
             return self.getitem_real(index)
         indhash = pickle.dumps(index)
@@ -4885,6 +4904,7 @@ class ndarray:
         if indhash not in self.getitem_cache:
             self.getitem_cache[indhash] = self.getitem_real(index)
         return self.getitem_cache[indhash]
+        """
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
@@ -4953,7 +4973,7 @@ class ndarray:
     @DAGapi
     def getitem_array(self, index):
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
-            return DAGshape(self.shape, self.dtype, False)
+            return DAGshape(self.shape, self.dtype, False, gid=self.gid)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
@@ -4961,7 +4981,7 @@ class ndarray:
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
             dim_sizes = dim_sizes_from_index(index, self.shape)
-            return DAGshape(dim_sizes, self.dtype, False)
+            return DAGshape(dim_sizes, self.dtype, False, gid=self.gid)
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
@@ -4986,7 +5006,7 @@ class ndarray:
             if len(axismap) < len(dim_shapes):
                 dim_shapes = shardview.remap_axis_result_shape(dim_shapes, axismap)
             dprint(2, "__getitem__array slice:", cindex, dim_shapes)
-            return DAGshape(dim_shapes, self.dtype, False)
+            return DAGshape(dim_shapes, self.dtype, False, gid=self.gid)
 
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
@@ -5024,73 +5044,6 @@ class ndarray:
 
         return self.getitem_array(index)
 
-        """
-        index_has_slice = any([isinstance(i, slice) for i in index])
-        index_has_array = any([isinstance(i, np.ndarray) for i in index])
-
-        if index_has_array:
-            # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
-            dprint(2, "created advindex ndarray")
-            res = ndarray(
-                dim_sizes,
-                dtype=self.dtype,
-                advindex=("__getitem__", (self, index))
-            )
-            return res
-        # If any of the indices are slices or the number of indices is less than the number of array dimensions.
-        elif index_has_slice or len(index) < len(self.shape):
-            # check for out-of-bounds
-            for i in range(len(index)):
-                if isinstance(index[i], int) and index[i] >= self.shape[i]:
-                    raise IndexError(
-                        "index "
-                        + str(index[i])
-                        + " is out of bounds for axis "
-                        + str(i)
-                        + " with shape "
-                        + str(self.shape[i])
-                    )
-
-            # make sure array distribution can't change (ie, not flexible or is already constructed)
-            if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
-                deferred_op.do_ops()
-            num_dim = len(self.shape)
-            cindex = canonical_index(index, self.shape)
-            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
-            dprint(2, "getitem slice:", cindex, dim_shapes)
-
-            # sdistribution = [
-            #                 [[max(self.distribution[i][0][j], cindex[j].start)  for j in range(num_dim)],
-            #                  [max(max(self.distribution[i][0][j]-1, cindex[j].start), min(self.distribution[i][1][j], cindex[j].stop-1)) for j in range(num_dim)]]
-            #                  for i in range(len(self.distribution))]
-            sdistribution = shardview.slice_distribution(cindex, self.distribution)
-            # reduce dimensionality as needed
-            axismap = [
-                i
-                for i in range(len(dim_shapes))
-                if i >= len(index) or isinstance(index[i], slice)
-            ]
-            if len(axismap) < len(dim_shapes):
-                dim_shapes, sdistribution = shardview.remap_axis(
-                    dim_shapes, sdistribution, axismap
-                )
-            dprint(2, "getitem slice:", dim_shapes, sdistribution)
-            #            deferred_op.add_op(["", self, " = ", value, ""])
-            # return ndarray(self.gid, tuple(dim_shapes), np.asarray(sdistribution))
-            # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
-            return ndarray(
-                dim_shapes,
-                gid=self.gid,
-                distribution=sdistribution,
-                local_border=0,
-                readonly=self.readonly,
-                dtype=self.dtype
-            )
-
-        print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
-        assert 0  # Handle other types
-        """
 
     def get_remote_ranges(self, required_division):
         return get_remote_ranges(self.distribution, required_division)
@@ -7354,7 +7307,7 @@ def reshape(arr, newshape):
             junkaxes = [i for i in range(newdims)] + [i + newdims for i in junkaxes]
             oldsize = tuple(bcastsize)
         newmap = [junkaxes.pop(0) if v == 1 else realaxes.pop(0) for v in newshape]
-        return DAGshape(shardview.remap_axis_result_shape(oldsize, newmap), arr.dtype, False)
+        return DAGshape(shardview.remap_axis_result_shape(oldsize, newmap), arr.dtype, False, gid=arr.gid)
 
     # general reshape
     global reshape_forwarding
@@ -7365,59 +7318,6 @@ def reshape(arr, newshape):
             "ramba.reshape not supported as distributed array reshape cannot be done inplace.  Use reshape_copy instead to create a non-inplace reshape or set RAMBA_RESHAPE_COPY environment variable to convert all reshape calls to reshape_copy."
         )
 
-
-"""
-def reshape(arr, newshape):
-    # first check if this is just for adding / removing dinmensions of size 1 -- this will require no data movement
-    realshape = tuple([i for i in arr.shape if i != 1])
-    realnewshape = tuple([i for i in newshape if i != 1])
-    dprint(2, arr.shape, realshape, newshape, realnewshape)
-    if realshape == realnewshape:
-        dprint(1, "reshape can be done")
-        # make sure array distribution can't change (ie, not flexible or is already constructed)
-        if arr.bdarray.flex_dist or not arr.bdarray.remote_constructed:
-            deferred_op.do_ops()
-        realaxes = [
-            i
-            for i, v in enumerate(arr.shape)
-            if v != 1
-        ]
-        junkaxes = [
-            i
-            for i, v in enumerate(arr.shape)
-            if v == 1
-        ]
-        dist = arr.distribution
-        oldsize = arr.shape
-        dprint(2, realaxes, junkaxes, dist)
-        if len(arr.shape) < len(newshape):
-            dprint(1, "need to add axes")
-            newdims = len(newshape) - len(arr.shape)
-            bcastdim = [True if i < newdims else False for i in range(len(newshape))]
-            bcastsize = [
-                1 if i < newdims else arr.shape[i - newdims]
-                for i in range(len(newshape))
-            ]
-            dist = shardview.broadcast(dist, bcastdim, bcastsize)
-            realaxes = [i + newdims for i in realaxes]
-            junkaxes = [i for i in range(newdims)] + [i + newdims for i in junkaxes]
-            oldsize = tuple(bcastsize)
-        dprint(2, realaxes, junkaxes, dist)
-        newmap = [junkaxes.pop(0) if v == 1 else realaxes.pop(0) for v in newshape]
-        sz, dist = shardview.remap_axis(oldsize, dist, newmap)
-        dprint(2, sz, dist)
-        return ndarray(
-            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
-        )
-    # general reshape
-    global reshape_forwarding
-    if reshape_forwarding:
-        return reshape_copy(arr, newshape)
-    else:
-        raise ReshapeError(
-            "ramba.reshape not supported as distributed array reshape cannot be done inplace.  Use reshape_copy instead to create a non-inplace reshape or set RAMBA_RESHAPE_COPY environment variable to convert all reshape calls to reshape_copy."
-        )
-"""
 
 def reshape_copy_executor(temp_array, arr, newshape):
     assert np.prod(arr.shape) == np.prod(newshape)
