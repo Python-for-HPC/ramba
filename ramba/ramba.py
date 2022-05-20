@@ -30,6 +30,7 @@ import weakref
 import operator
 import copy as libcopy
 import pickle as pickle
+import inspect
 
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
@@ -941,7 +942,7 @@ class bdarray:
     def dag(self):
         if self.idag is None:
             dprint(2, "idag is None in dag")
-            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
+            self.idag = DAG("Unknown", None, False, [], (), ("Unknown DAG", 0), {}, executed=True, output=weakref.ref(self))
         # FIX ME?
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
@@ -1188,6 +1189,7 @@ class LocalNdarray:
             else slice_index
         )
         arr = self.bcontainer[local_slice]
+        print("lnd::get_partial_view:", slice_index, shard, global_index, local_slice, arr, self.bcontainer)
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
@@ -1966,6 +1968,7 @@ class RemoteState:
         self, gid, slice_index, shard, global_index=True, remap_view=True
     ):
         lnd = self.numpy_map[gid]
+        print("get_partial_view:", slice_index, shard, global_index, lnd)
         return lnd.get_partial_view(
             slice_index, shard, global_index=global_index, remap_view=remap_view
         )
@@ -3390,7 +3393,7 @@ class RemoteState:
         # actual sends
         for (i, vl) in to_send.items():
             msg = []
-            for v in vl: 
+            for v in vl:
                 g = v[0]
                 base_part = v[1]
                 v = v[2:]
@@ -3913,29 +3916,55 @@ def get_ndarrays(item, outlist):
 class DAG:
     dag_nodes = weakref.WeakSet()
     in_evaluate = 0
+    dot_number = 0
 
-    def __init__(self, name, executor, inplace, ndarray_deps, args, kwargs, executed=False, *, output=None):
+    def __init__(self, name, executor, inplace, ndarray_deps, args, caller,  kwargs, executed=False, *, output=None):
         self.name = name
         self.executor = executor
         self.inplace = inplace
         self.args = args
+        self.caller = caller
         self.kwargs = kwargs
         self.forward_deps = []
         self.backward_deps = [x.dag for x in ndarray_deps]
         self.executed = executed
         self.output = output
 
+    def get_dot_name(self):
+        return self.name + " " + str(self.caller) + ("T" if self.executed else "F")
+
     def __repr__(self):
         return f"DAG({self.name}, {self.executed})"
+
+    @classmethod
+    def output_dot(cls):
+        fn = "dag" + str(cls.dot_number) + ".dot"
+        with open(fn, 'w') as f:
+            f.write("digraph G {\n")
+            for dag_node in cls.dag_nodes:
+                nodename = dag_node.get_dot_name()
+                f.write(str(id(dag_node)) + " [label=\"" + nodename + "\"]\n")
+                for fdep in dag_node.forward_deps:
+                    #fname = fdep.get_dot_name()
+                    f.write(str(id(dag_node)) + " -> " + str(id(fdep)) + "\n")
+                    #f.write(nodename + " -> " + fname + "\n")
+            f.write("}\n")
+        cls.dot_number += 1
 
     @classmethod
     def add(cls, delayed, name, executor, args, kwargs):
         ndarray_deps = []
         get_ndarrays(list(args), ndarray_deps)
         get_ndarrays(list(kwargs.values()), ndarray_deps)
-        dag = DAG(name, executor, delayed.inplace, ndarray_deps, args, kwargs)
+        the_stack = inspect.stack()
+        caller = get_non_ramba_callsite(the_stack)
+        dag = DAG(name, executor, delayed.inplace, ndarray_deps, args, caller, kwargs)
         if delayed.inplace:
             nres = delayed.inplace
+            for forward_dep in nres.bdarray.idag.forward_deps:
+                if forward_dep not in dag.backward_deps:
+                    dprint(3, "forward_dep from current idag for inplace operation being added to new DAG node backward_deps", nres.bdarray.idag, forward_dep, dag)
+                    dag.backward_deps.append(forward_dep)
             nres.bdarray.idag = dag
             #nres.idag = dag
         else:
@@ -3945,6 +3974,8 @@ class DAG:
             dag_node.forward_deps.append(dag)
         cls.dag_nodes.add(dag)
         dprint(2, "DAG.add", name, len(ndarray_deps), id(nres))
+        if ndebug >= 3:
+            cls.output_dot()
         return nres, dag
 
     @classmethod
@@ -4114,7 +4145,7 @@ class DAG:
         for backward_dep in dag_node.backward_deps:
             cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed)
 
-        dprint(2, "Adding depth first node:", dag_node.name, dag_node.args)
+        dprint(2, "Adding depth first node:", dag_node.get_dot_name(), dag_node.args)
         depth_first_nodes.append(dag_node)
 
     @classmethod
@@ -4149,10 +4180,10 @@ class DAG:
 
         cls.in_evaluate += 1
         depth_first_nodes = []
-        dprint(2,"Instantiate:", id(dag_node.output()))
+        dprint(2,"Instantiate:", id(dag_node.output()), dag_node.get_dot_name())
         cls.depth_first_traverse(dag_node, depth_first_nodes, set())
         for op in depth_first_nodes:
-            dprint(2, "Running DAG executor for", op.name)
+            dprint(2, "Running DAG executor for", op.get_dot_name())
             op.execute()
         # FIX ME?  Does this need to go in the loop above if we alternate between deferred_ops and something else?
         if do_ops:
@@ -4175,6 +4206,14 @@ class DAGshape:
         self.inplace = inplace
         self.gid = gid
 
+def get_non_ramba_callsite(the_stack):
+    ind = 1
+    while ind < len(the_stack):
+        caller = inspect.getframeinfo(the_stack[ind][0])
+        if not caller.filename.endswith("ramba.py"):
+            return (caller.filename, caller.lineno)
+        ind += 1
+    return ("Unknown", 0)
 
 def DAGapi(func):
     name = func.__qualname__
@@ -4388,7 +4427,7 @@ class ndarray:
                 for i in range(num_workers)
             ]
         )
-        #        print("shards:", shards)
+        print("shards:", shards)
         #        for i in range(dist_shape[0]):
         for i in range(num_workers):
             #            dprint(2, "for:", i, dist_shape[2])
@@ -4398,6 +4437,7 @@ class ndarray:
             dprint(
                 3,
                 "gslice:",
+                self.distribution[i],
                 shardview.to_slice(self.distribution[i]),
                 "bslice:",
                 shardview.to_base_slice(self.distribution[i]),
@@ -4911,7 +4951,7 @@ class ndarray:
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
             if index.shape != self.shape:
                 index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0, 
+            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
