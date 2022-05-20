@@ -47,7 +47,9 @@ try:
     import socket
     nodename = socket.gethostname()
     #print(nodename, rank)
-    allnodes = set(comm.allgather(nodename))
+    #allnodes = set(comm.allgather(nodename))
+    allnodes = comm.allgather(nodename)
+    allnodes = set(allnodes[:-1])     # Don't include driver process node (in case it is different)
     #if rank==0: print(allnodes)
     num_nodes = len(allnodes)
 
@@ -339,13 +341,17 @@ def compute_regular_schedule_internal(
             blockSize = [size[i]/factored[i] for i in range(len(factored))]
             create_divisions(divisions, size, factored)
             wpn = workers_per_node()
+            #print (3, wpn, divisions)
 
             for j in range(num_workers):
                 for i in range(num_dim):
-                    index_to_find = divisions[j, 0, :]
+                    index_to_find = divisions[j, 0, :].copy()
                     index_to_find[i] = divisions[j, 1, i] + 1
                     owning_worker = find_owning_worker(divisions, index_to_find)
-                    if owning_worker is not None and j // wpn != owning_worker // wpn:
+                    #print(factored, j, i, owning_worker, index_to_find, owning_worker is not None and j // wpn != owning_worker // wpn)
+                    #if owning_worker is not None and j // wpn != owning_worker // wpn:
+                    # Add surface area if different node; add smaller fraction if same node
+                    if owning_worker is not None:
                         # Saves the average length of the block for the current dimension.
                         temp = blockSize[i]
                         # Ignores the current dimension so that the surface area of the
@@ -354,7 +360,10 @@ def compute_regular_schedule_internal(
                         # Adds the calculated size of piece of the block to what has been
                         # calculated so far. At the end of the loop, the whole representation
                         # of a block surface area will be known.
-                        surface_area += np.prod(blockSize)
+                        if  j // wpn != owning_worker // wpn:
+                            surface_area += np.prod(blockSize)
+                        else:
+                            surface_area += np.prod(blockSize)*0.1
                         # Restore the length of the current dimension for future iterations.
                         blockSize[i] = temp
 
@@ -364,7 +373,7 @@ def compute_regular_schedule_internal(
                 best_value = surface_area
                 best = factored
 
-    if mode == "surface":
+    if mode == "surface" or mode == "nodesurface":
         dprint(3, "Best:", best, "Smallest surface area:", best_value)
 
     assert(best is not None)
