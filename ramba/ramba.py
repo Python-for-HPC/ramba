@@ -4820,7 +4820,7 @@ class ndarray:
         if self.readonly:
             raise ValueError("assignment destination is read-only")
         is_mask = False
-        if isinstance(key, ndarray) and key.dtype==np.bool and key.broadcastable_to(self.shape):
+        if isinstance(key, ndarray) and key.dtype==bool and key.broadcastable_to(self.shape):
             is_mask = True
         elif not isinstance(key, tuple):
             key = (key,)
@@ -4888,7 +4888,7 @@ class ndarray:
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             if index.shape != self.shape:
                 index = index.broadcast_to(self.shape)
             return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0, 
@@ -4952,7 +4952,7 @@ class ndarray:
 
     @DAGapi
     def getitem_array(self, index):
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             return DAGshape(self.shape, self.dtype, False)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
@@ -4994,7 +4994,7 @@ class ndarray:
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
         # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             return self.getitem_array(index)
 
         if not isinstance(index, tuple):
@@ -6180,7 +6180,8 @@ class deferred_op:
         # Change distributions for any flexible arrays -- we should not have slices here
         for (_, (_, d, _, flex)) in live_gids.items():
             if flex:
-                dcopy = libcopy.deepcopy(self.distribution)
+                #dcopy = libcopy.deepcopy(self.distribution)
+                dcopy = shardview.clean_dist(self.distribution)
                 # d.clear()
                 for i, v in enumerate(
                     dcopy

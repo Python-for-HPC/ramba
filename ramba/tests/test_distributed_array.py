@@ -417,6 +417,19 @@ class TestBasic:
 
         run_both(impl)
     """
+    def test_slice(self):
+        # Test slice indexing / views
+        def impl(app):
+            a = app.arange(200)
+            a[20:120] += 50
+            b = a[40:140]
+            b -= 20
+            c = a[60:160] - 25
+            d = b + a[80:180]
+            return b+c+d
+
+        run_both(impl)
+
 
     def test_masked(self):
         # Test boolean mask indexing
