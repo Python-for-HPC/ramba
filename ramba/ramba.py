@@ -4305,7 +4305,7 @@ class ndarray:
         #return self.bdarray.dag
         if self.idag is None:
             dprint(2, "idag is None in dag")
-            self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
+            self.idag = DAG("Unknown", None, False, [], (), ("Unknown DAG", 0), {}, executed=True, output=weakref.ref(self))
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
 
