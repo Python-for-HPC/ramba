@@ -3904,26 +3904,16 @@ def unify_args(lhs, rhs, dtype):
     return dtype
 
 
-def get_ndarrays(item, outlist):
+def get_ndarrays(item, dagout):
     for i in item:
         if isinstance(i, (list, tuple)):
-            get_ndarrays(i, outlist)
+            get_ndarrays(i, dagout)
         elif isinstance(i, ndarray):
-            if i.bdarray not in outlist:
-                outlist.append(i.bdarray)
-            if i.aliases_another():
-                print("i.aliases_another:", i, id(i))
+            if i.dag not in dagout:
+                dagout.append(i.dag)
+            if i.bdarray.dag not in dagout:
+                dagout.append(i.bdarray.dag)
 
-"""
-def add_aliases(ndarray_deps):
-    new_deps = []
-
-    for dep in ndarray_deps:
-        if dep.aliases_another():
-            print("add_aliases:", dep, id(dep))
-
-    ndarray_deps.extend(new_deps)
-"""
 
 # DAG instances are nodes in the directed acyclic graph of lazy work to be completed
 # held in the class member dag_nodes, a weakSet of all existing DAG nodes.
@@ -3932,23 +3922,26 @@ class DAG:
     in_evaluate = 0
     dot_number = 0
 
-    def __init__(self, name, executor, inplace, ndarray_deps, args, caller,  kwargs, executed=False, *, output=None):
+    def __init__(self, name, executor, inplace, dag_deps, args, caller, kwargs, aliases=None, executed=False, *, output=None):
         self.name = name
         self.executor = executor
         self.inplace = inplace
         self.args = args
         self.caller = caller
         self.kwargs = kwargs
+        self.aliases = aliases
         self.forward_deps = []
-        self.backward_deps = [x.dag for x in ndarray_deps]
+        self.backward_deps = dag_deps
         self.executed = executed
         self.output = output
 
     def get_dot_name(self):
-        return self.name + " " + str(self.caller) + ("T" if self.executed else "F")
+        exec_str = "T" if self.executed else "F"
+        return f"{self.name}, {str(self.caller)}, {exec_str}"
 
     def __repr__(self):
-        return f"DAG({self.name}, {self.executed})"
+        return f"DAG({self.get_dot_name()})"
+        #return f"DAG({self.name}, {self.executed})"
 
     @classmethod
     def output_dot(cls):
@@ -3967,28 +3960,30 @@ class DAG:
 
     @classmethod
     def add(cls, delayed, name, executor, args, kwargs):
-        ndarray_deps = []
-        get_ndarrays(list(args), ndarray_deps)
-        get_ndarrays(list(kwargs.values()), ndarray_deps)
-        #add_aliases(ndarray_deps)
+        dag_deps = []
+        get_ndarrays(list(args), dag_deps)
+        get_ndarrays(list(kwargs.values()), dag_deps)
         the_stack = inspect.stack()
         caller = get_non_ramba_callsite(the_stack)
-        dag = DAG(name, executor, delayed.inplace, ndarray_deps, args, caller, kwargs)
+        dag = DAG(name, executor, delayed.inplace, dag_deps, args, caller, kwargs, delayed.aliases)
+
         if delayed.inplace:
             nres = delayed.inplace
+
             for forward_dep in nres.bdarray.idag.forward_deps:
                 if forward_dep not in dag.backward_deps:
-                    dprint(3, "forward_dep from current idag for inplace operation being added to new DAG node backward_deps", nres.bdarray.idag, forward_dep, dag)
                     dag.backward_deps.append(forward_dep)
+
             nres.bdarray.idag = dag
-            #nres.idag = dag
+            nres.idag = dag
         else:
             nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.aliases.gid if delayed.aliases is not None else None)
+
         dag.output = weakref.ref(nres)
         for dag_node in dag.backward_deps:
             dag_node.forward_deps.append(dag)
         cls.dag_nodes.add(dag)
-        dprint(2, "DAG.add", name, len(ndarray_deps), id(nres), caller)
+        dprint(2, "DAG.add", name, len(dag_deps), id(nres), caller, delayed)
         if ndebug >= 3:
             cls.output_dot()
         return nres, dag
@@ -4065,7 +4060,7 @@ class DAG:
                                 #temp_array.internal_numpy = res
                                 #return temp_array
 
-                            dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array], (orig_array, getitem_axis, group_array, slot_indices), {})
+                            dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array.dag], (orig_array, getitem_axis, group_array, slot_indices), {})
                             dag_node.output = weakref.ref(stack_res)
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
         elif dag_node.name == "getitem_array":
@@ -4153,7 +4148,7 @@ class DAG:
                                             res = eval("gb" + binoptext + "rhsasarray")
                                             return res
 
-                                        dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs, rhs], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), {})
+                                        dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), {})
                                         dag_node.output = weakref.ref(concat_res)
                                         # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
 
@@ -4220,6 +4215,10 @@ class DAGshape:
         self.dtype = dtype
         self.inplace = inplace
         self.aliases = aliases
+
+    def __repr__(self):
+        return f"DAGshape({self.shape}, {self.dtype}, {self.inplace}, {self.aliases})"
+
 
 def get_non_ramba_callsite(the_stack):
     ind = 1
@@ -4294,22 +4293,21 @@ class ndarray:
         #     ndarray_gids[gid] = [1, False, weakref.WeakSet([self])]
         # self.broadcasted_dims = broadcasted_dims
         self.readonly = readonly
-        self.bdarray.idag = dag
-        #self.idag = dag
+        if gid is None:
+            self.bdarray.idag = dag
+        self.idag = dag
         self.maskarray = maskarray
         t1 = timer()
         dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
 
     @property
     def dag(self):
-        return self.bdarray.dag
-        """
+        #return self.bdarray.dag
         if self.idag is None:
             dprint(2, "idag is None in dag")
             self.idag = DAG("Unknown", None, False, [], (), {}, executed=True, output=weakref.ref(self))
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
-        """
 
     def aliases_another(self):
         return np.array_equal(self.distribution, self.bdarray.distribution)
