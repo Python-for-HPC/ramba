@@ -22,45 +22,62 @@ import copy as libcopy
 distribute_min_size = 100
 NUM_WORKERS_FOR_BCAST = 100
 
-try:
-    from mpi4py import MPI
+non_dist_mode = int(os.environ.get("RAMBA_NON_DIST", "0"))
 
-    comm = MPI.COMM_WORLD
-    nranks = comm.Get_size()
-    rank = comm.Get_rank()
-    assert nranks > 1
-    USE_MPI = True
-    if rank == nranks - 1:
-        print("Using MPI with", nranks - 1, "workers, 1 driver")
-    num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
-    if num_workers != -1 and rank == 0:
-        print("RAMBA_WORKERS setting ignored.")
-    num_workers = nranks - 1
-    numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
-    # print ("MPI rank", rank, os.uname()[1])
-    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
-    default_bcast = None if USE_ZMQ else "1"
-
-    # number of threads per worker
-    num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
-
-    # number of nodes
-    import socket
-    nodename = socket.gethostname()
-    #print(nodename, rank)
-    allnodes = set(comm.allgather(nodename))
-    #if rank==0: print(allnodes)
-    num_nodes = len(allnodes)
+if non_dist_mode != 0:
+    USE_NON_DIST = True
+    num_workers = 1
+    USE_MPI = False
+    default_bcast = "1"
+    USE_ZMQ = False
+    numa_zones = os.environ.get("RAMBA_NUMA_ZONES", None)  # override detected numa zones
+    num_nodes = 1
 
     def in_driver():
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        return rank==num_workers
+        return True
+else:
+    USE_NON_DIST = False
 
-except:
-    USE_MPI = False
-    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
-    default_bcast = None
+if not USE_NON_DIST:
+    try:
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+        nranks = comm.Get_size()
+        rank = comm.Get_rank()
+        assert nranks > 1
+        USE_MPI = True
+        if rank == nranks - 1:
+            print("Using MPI with", nranks - 1, "workers, 1 driver")
+        num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+        if num_workers != -1 and rank == 0:
+            print("RAMBA_WORKERS setting ignored.")
+        num_workers = nranks - 1
+        numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
+        # print ("MPI rank", rank, os.uname()[1])
+        USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
+        default_bcast = None if USE_ZMQ else "1"
+
+        # number of threads per worker
+        num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
+
+        # number of nodes
+        import socket
+        nodename = socket.gethostname()
+        #print(nodename, rank)
+        allnodes = set(comm.allgather(nodename))
+        #if rank==0: print(allnodes)
+        num_nodes = len(allnodes)
+
+        def in_driver():
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+            return rank==num_workers
+
+    except:
+        USE_MPI = False
+        USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
+        default_bcast = None
 
 
 # USE_RAY_CALLS=True
@@ -115,7 +132,7 @@ def dprint(level, *args):
         sys.stdout.flush()
 
 
-if not USE_MPI:
+if not USE_MPI and not USE_NON_DIST:
     num_workers = int(os.environ.get("RAMBA_WORKERS", "4"))  # number of machines
     numa_zones = os.environ.get("RAMBA_NUMA_ZONES", None)  # override detected numa zones
 
@@ -595,7 +612,7 @@ def gen_prime_factors(n):
     return factors, exps
 
 
-if not USE_MPI:
+if not USE_MPI and not USE_NON_DIST:
     import ray
 
     #num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines

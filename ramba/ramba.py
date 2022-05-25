@@ -14,10 +14,11 @@ from ramba.common import *
 
 import os
 
-if USE_MPI:
-    import mpi4py
-else:
-    import ray
+if not USE_NON_DIST:
+    if USE_MPI:
+        import mpi4py
+    else:
+        import ray
 import numba
 import types
 import inspect
@@ -774,7 +775,7 @@ if not USE_MPI:
 
 ######### Barrier code ##############
 
-if not USE_MPI:
+if not USE_MPI and not USE_NON_DIST:
 
     @ray.remote(num_cpus=0)
     class BarrierActor:
@@ -3697,7 +3698,12 @@ class RemoteState:
 
 
 if not USE_MPI:
-    RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
+    if USE_NON_DIST:
+        #RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
+        pass
+        #assert False
+    else:
+        RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
 
 
 # Wrappers to abstract away Ray method calls
@@ -3749,6 +3755,9 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
 
 
 def get_results(refs):
+    if USE_NON_DIST:
+        assert isinstance(refs, list)
+        return refs
     if USE_RAY_CALLS:
         return ray.get(refs)
     if isinstance(refs, list):
@@ -3762,31 +3771,52 @@ def get_results(refs):
 
 
 def remote_exec(nodeid, method, *args, **kwargs):
-    _real_remote(nodeid, method, False, args, kwargs)
+    if USE_NON_DIST:
+        assert nodeid == 0
+        getattr(remote_states[0], method)(*args, **kwargs)
+    else:
+        _real_remote(nodeid, method, False, args, kwargs)
 
 
 def remote_async_call(nodeid, method, *args, **kwargs):
-    return _real_remote(nodeid, method, True, args, kwargs)
+    if USE_NON_DIST:
+        assert nodeid == 0
+        return getattr(remote_states[0], method)(*args, **kwargs)
+    else:
+        return _real_remote(nodeid, method, True, args, kwargs)
 
 
 def remote_call(nodeid, method, *args, **kwargs):
-    return get_results(_real_remote(nodeid, method, True, args, kwargs))
+    if USE_NON_DIST:
+        assert nodeid == 0
+        return getattr(remote_states[0], method)(*args, **kwargs)
+    else:
+        return get_results(_real_remote(nodeid, method, True, args, kwargs))
 
 
 def remote_exec_all(method, *args, **kwargs):
     # [ _real_remote(i, method, False, args, kwargs) for i in range(num_workers) ]
-    _real_remote(ALL_NODES, method, False, args, kwargs)
+    if USE_NON_DIST:
+        getattr(remote_states[0], method)(*args, **kwargs)
+    else:
+        _real_remote(ALL_NODES, method, False, args, kwargs)
     # get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
 
 def remote_async_call_all(method, *args, **kwargs):
     # return [ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ]
-    return _real_remote(ALL_NODES, method, True, args, kwargs)
+    if USE_NON_DIST:
+        return [getattr(remote_states[0], method)(*args, **kwargs)]
+    else:
+        return _real_remote(ALL_NODES, method, True, args, kwargs)
 
 
 def remote_call_all(method, *args, **kwargs):
     # return get_results([ _real_remote(i, method, True, args, kwargs) for i in range(num_workers) ])
-    return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
+    if USE_NON_DIST:
+        return [getattr(remote_states[0], method)(*args, **kwargs)]
+    else:
+        return get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
 
 if USE_RAY_CALLS:
@@ -3808,7 +3838,12 @@ else:
 # *******************************
 import atexit
 
-if USE_MPI:
+if USE_NON_DIST:
+    remote_states = [
+        RemoteState(x, get_common_state())
+        for x in range(num_workers)
+    ]
+elif USE_MPI:
     # MPI setup
     # Queue tags: 0 = general comm, 1 = control, 2 = reply
     from mpi4py import MPI
@@ -4765,6 +4800,8 @@ class ndarray:
                 shardview.to_slice(self.distribution[i]),
                 "bslice:",
                 shardview.to_base_slice(self.distribution[i]),
+                shards[i].shape,
+                ret[shardview.to_slice(self.distribution[i])].shape
             )
             # ret[rindex] = shards[i]
             ret[shardview.to_slice(self.distribution[i])] = shards[i]
