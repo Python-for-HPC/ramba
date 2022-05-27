@@ -33,6 +33,7 @@ import copy as libcopy
 import pickle as pickle
 import gc
 import inspect
+import atexit
 
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
@@ -2011,43 +2012,29 @@ class RemoteState:
         # uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
         # bcontainers = [self.numpy_map[x][0] for x in uuids]
 
-        if True:
-            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-            #fargs = tuple([self.numpy_map[x].get_view() if isinstance(x, uuid.UUID) else x for x in args])
-            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-            do_fill(new_bcontainer, first.dim_lens, *fargs)
-        else:
-            for index in np.ndindex(first.dim_lens):
-                fargs = [
-                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                    for x in args
-                ]
-                new_bcontainer[index] = func(*fargs)
+        ramba_array_args = [isinstance(x, gid_dist) for x in args]
+        #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+        do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+        fargs = tuple([self.numpy_map[x.gid].get_view(x.dist[self.worker_num]) if isinstance(x, gid_dist) else x for x in args])
+        #fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+        do_fill(new_bcontainer, first.dim_lens, *fargs)
 
-    # TODO: should use get_view
+    # TODO: should use get_view for output array?
     def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
+        #new_bcontainer = self.numpy_map[out_gid].get_view()
         new_bcontainer = self.numpy_map[out_gid].bcontainer
         starts = tuple(shardview.get_start(first.subspace))
         unpickle_args(args)
 
-        if True:
-            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
-            do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-            fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-            do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
-        else:
-            for index in np.ndindex(first.dim_lens):
-                index_arg = tuple(map(operator.add, index, starts))
-                # index_arg = tuple(shardview.base_to_index(first.subspace,index))
-                fargs = [
-                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                    for x in args
-                ]
-                new_bcontainer[index] = func(index_arg, *fargs)
+        ramba_array_args = [isinstance(x, gid_dist) for x in args]
+        #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+        do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+        fargs = tuple([self.numpy_map[x.gid].get_view(x.dist[self.worker_num]) if isinstance(x, gid_dist) else x for x in args])
+        #fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
+        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
@@ -2060,11 +2047,14 @@ class RemoteState:
         unpickle_args(args)
         #assert len(args) == 1
         if True:
-            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            ramba_array_args = [isinstance(x, gid_dist) for x in args]
+            #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
             do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
-                if isinstance(x, uuid.UUID):
-                    return self.numpy_map[x].bcontainer
+                if isinstance(x, gid_dist):
+                #if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+                    #return self.numpy_map[x].bcontainer
                 elif callable(x):
                     res = x()
                     return res
@@ -2143,11 +2133,14 @@ class RemoteState:
             identity = identity()
         #assert len(args) == 1
         if True:
-            ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
+            ramba_array_args = [isinstance(x, gid_dist) for x in args]
+            #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
             do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
-                if isinstance(x, uuid.UUID):
-                    return self.numpy_map[x].bcontainer
+                if isinstance(x, gid_dist):
+                #if isinstance(x, uuid.UUID):
+                    return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+                    #return self.numpy_map[x].bcontainer
                 elif callable(x):
                     res = x()
                     return res
@@ -3827,78 +3820,9 @@ if USE_RAY_CALLS:
     def func_loads(f):
         return f
 
-
 else:
     func_dumps = cloudpickle.dumps
     func_loads = cloudpickle.loads
-
-
-# *******************************
-# ** Initialize Remote Workers **
-# *******************************
-import atexit
-
-if USE_NON_DIST:
-    remote_states = [
-        RemoteState(x, get_common_state())
-        for x in range(num_workers)
-    ]
-elif USE_MPI:
-    # MPI setup
-    # Queue tags: 0 = general comm, 1 = control, 2 = reply
-    from mpi4py import MPI
-
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    if rank == num_workers:  # driver
-        # do this stuff only once
-        def do_init(done=[]):
-            if len(done) > 0:
-                print("HERE -- already done")
-                return None
-            done += [1]
-            rv_q = ramba_queue.Queue(tag=2)
-            comm_q = comm.allgather(0)[:-1]  # ignore our own invalid one
-            con_q = comm.allgather(rv_q)
-            aggr = get_aggregators(comm_q)
-            return rv_q, comm_q, con_q, aggr
-
-        x = do_init()
-        if x is not None:
-            retval_queue, comm_queues, control_queues, aggregators = x
-            atexit.register(remote_exec_all, "END")
-
-    else:  # workers -- should never leave this section!
-        RS = RemoteState(rank, get_common_state())
-        con_q = RS.get_control_queue()
-        comm_q = RS.get_comm_queue()
-        comm_queues = comm.allgather(comm_q)[:-1]  # ignore invalid one for controller
-        control_queues = comm.allgather(con_q)
-        rv_q = control_queues[num_workers]
-        RS.set_comm_queues(comm_queues, control_queues)
-        RS.rpc_serve(rv_q)
-        sys.exit()
-
-else:  # Ray setup
-    # Start remote Actors, but only if this was the process that initialized Ray;
-    # This avoids starting the remote workers every time ramba.py is imported
-    if ray_first_init:
-        dprint(1, "Constructing RemoteState actors")
-        from ray.util.placement_group import placement_group
-
-        res = [{"CPU": num_threads}] * num_workers
-        pg = placement_group(res, strategy="SPREAD")
-        remote_states = [
-            RemoteState.options(placement_group=pg).remote(x, get_common_state())
-            for x in range(num_workers)
-        ]
-        control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
-        comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
-        aggregators = get_aggregators(comm_queues)
-        [x.set_comm_queues.remote(comm_queues, control_queues) for x in remote_states]
-        if not USE_RAY_CALLS:
-            retval_queue = ramba_queue.Queue()
-            [x.rpc_serve.remote(retval_queue) for x in remote_states]
 
 
 def print_comm_stats():
@@ -4390,7 +4314,7 @@ class DAG:
                                     if all([getitem_bases[0] is x for x in getitem_bases]):
                                         dprint(2, "All reshape bases are the same")
                                         rhs = getitem_bases[0].output()
-                                        dprint(2, "rhs", id(rhs))
+                                        dprint(2, "rhs", id(rhs), rhs.shape)
                                         slot_indices = [x.args[1][getitem_axis] for x in lhs_getitem_ops]
                                         dprint(3, "slot_indices:", slot_indices)
                                         group_array = np.full(orig_array_lhs.shape[getitem_axis], -1, dtype=np.int)
@@ -4401,11 +4325,13 @@ class DAG:
                                             dprint(3, "group_array:", group_array)
 
                                         def run_and_post(temp_array, orig_array_lhs, rhs, getitem_axis, group_array, slot_indices):
-                                            print("run_and_post concat", id(temp_array))
+                                            dprint(2, "run_and_post concat", id(temp_array), orig_array_lhs.shape, rhs.shape, getitem_axis)
                                             if hasattr(rhs, "internal_numpy"):
+                                                dprint(2, "run_and_post rhs has internal_numpy")
                                                 rhsasarray = rhs.internal_numpy
                                             else:
-                                                rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
+                                                rhsasarray = rhs.asarray()
+                                                #rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
                                             gb = orig_array_lhs.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
                                             res = eval("gb" + binoptext + "rhsasarray")
                                             return res
@@ -4563,6 +4489,12 @@ def instantiate_all(*args, **kwargs):
     for a in args:
         if isinstance(a, ndarray):
             a.instantiate(**kwargs)
+
+
+class gid_dist:
+    def __init__(self, gid, dist):
+        self.gid = gid
+        self.dist = dist
 
 
 def apply_index(shape, index):
@@ -7560,10 +7492,10 @@ def stack_executor(temp_array, arrays, axis=0, out=None):
 @implements("stack", False)
 @DAGapi
 def stack(arrays, axis=0, out=None):
-    dprint(1, "stack", len(arrays), type(arrays))
+    dprint(1, "stack", len(arrays), type(arrays), axis)
     first_array = arrays[0]
     assert(all([x.shape == first_array.shape for x in arrays]))
-    res_size = (len(arrays),) + first_array.shape
+    res_size = first_array.shape[:axis] + (len(arrays),) + first_array.shape[axis:]
     return DAGshape(res_size, first_array.dtype, False)
 
 """
@@ -7932,7 +7864,8 @@ def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=T
     new_ndarray = create_array_with_divisions(
         shape, dist, partitioned[0].local_border, dtype=dtype
     )
-    args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    #args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
         attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
@@ -7970,7 +7903,8 @@ def smap_internal(func, attr, *args, dtype=None, parallel=True):
     new_ndarray = create_array_with_divisions(
         shape, dist, partitioned[0].local_border, dtype=dtype
     )
-    args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
+
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
         attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
@@ -8008,7 +7942,8 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
         reducer = SreduceReducer(reducer, reducer)
 
     a_send_recv = uuid.uuid4()
-    args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    #args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
+    args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
     worker_results = remote_call_all(
         attr,
         partitioned[0].gid,
@@ -8551,11 +8486,13 @@ class RambaGroupby:
 
 def groupby_attr(item, itxt, imports, dtype):
     func_txt =  f"def gba{item}(self, rhs):\n"
+    #func_txt +=  "    print(\"gba:\", self.array_to_group.shape, rhs.shape)\n"
     if ntiming:
         func_txt +=  "    start_time = timer()\n"
     func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
     func_txt +=  "    beforedim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim)])\n"
     func_txt +=  "    afterdim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim+1, self.array_to_group.ndim)])\n"
+    #func_txt +=  "    gtext += f\"    print(\\\"in_group_sub:\\\", idx, value, rhs.shape, groupid.shape, dim)\\n\"\n"
     func_txt +=  "    gtext += f\"    drop_groupdim = ({beforedim}, groupid[idx[dim]],{afterdim})\\n\"\n"
 #    func_txt +=  "    gtext +=  \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
 #    func_txt +=  "    gtext += \"    print('group:', idx, value, drop_groupdim, rhs[drop_groupdim], dim)\\n\"\n"
@@ -8579,3 +8516,71 @@ def groupby_attr(item, itxt, imports, dtype):
 for (abf, code) in array_binop_funcs.items():
     new_func = groupby_attr(abf, code.code, imports=code.imports, dtype=code.dtype)
     setattr(RambaGroupby, abf, new_func)
+
+
+# *******************************
+# ** Initialize Remote Workers **
+# *******************************
+
+if USE_NON_DIST:
+    remote_states = [
+        RemoteState(x, get_common_state())
+        for x in range(num_workers)
+    ]
+elif USE_MPI:
+    # MPI setup
+    # Queue tags: 0 = general comm, 1 = control, 2 = reply
+    from mpi4py import MPI
+
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    if rank == num_workers:  # driver
+        # do this stuff only once
+        def do_init(done=[]):
+            if len(done) > 0:
+                print("HERE -- already done")
+                return None
+            done += [1]
+            rv_q = ramba_queue.Queue(tag=2)
+            comm_q = comm.allgather(0)[:-1]  # ignore our own invalid one
+            con_q = comm.allgather(rv_q)
+            aggr = get_aggregators(comm_q)
+            return rv_q, comm_q, con_q, aggr
+
+        x = do_init()
+        if x is not None:
+            retval_queue, comm_queues, control_queues, aggregators = x
+            atexit.register(remote_exec_all, "END")
+
+    else:  # workers -- should never leave this section!
+        RS = RemoteState(rank, get_common_state())
+        con_q = RS.get_control_queue()
+        comm_q = RS.get_comm_queue()
+        comm_queues = comm.allgather(comm_q)[:-1]  # ignore invalid one for controller
+        control_queues = comm.allgather(con_q)
+        rv_q = control_queues[num_workers]
+        RS.set_comm_queues(comm_queues, control_queues)
+        RS.rpc_serve(rv_q)
+        sys.exit()
+
+else:  # Ray setup
+    # Start remote Actors, but only if this was the process that initialized Ray;
+    # This avoids starting the remote workers every time ramba.py is imported
+    if ray_first_init:
+        dprint(1, "Constructing RemoteState actors")
+        from ray.util.placement_group import placement_group
+
+        res = [{"CPU": num_threads}] * num_workers
+        pg = placement_group(res, strategy="SPREAD")
+        remote_states = [
+            RemoteState.options(placement_group=pg).remote(x, get_common_state())
+            for x in range(num_workers)
+        ]
+        control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
+        comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
+        aggregators = get_aggregators(comm_queues)
+        [x.set_comm_queues.remote(comm_queues, control_queues) for x in remote_states]
+        if not USE_RAY_CALLS:
+            retval_queue = ramba_queue.Queue()
+            [x.rpc_serve.remote(retval_queue) for x in remote_states]
+
