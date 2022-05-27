@@ -3972,7 +3972,7 @@ def get_unified_constraints(arr):
 
 def constraints_to_kwargs(arr, kwargs):
     start_time = timer()
-    if len(arr.constraints) == 0:
+    if arr is None or len(arr.constraints) == 0:
         return
 
     if len(arr.constraints) > 1:
@@ -5530,11 +5530,13 @@ def dot(a, b, out=None):
 
 
 
+"""
 def matmul(a, b, reduction=False, out=None):
     #DAG.in_evaluate += 1
     res = matmul_internal(a, b, reduction=reduction, out=out)
     #DAG.in_evaluate -= 1
     return res
+"""
 
 
 @DAGapi
@@ -5549,9 +5551,15 @@ def matmul(a, b, reduction=False, out=None):
         # shortcut
         return (a * b).sum()
 
+    aextend = False
+    bextend = False
     if len(ashape) == 1:
+        aextend = True
         a = reshape(a, (1, ashape[0]))
         ashape = (1, ashape[0])
+
+    if len(bshape) == 1:
+        bextend = True
 
     if len(ashape) > 2 or len(bshape) > 2:
         print("matmul for matrices higher than 2 dimensions not currently supported.")
@@ -5559,10 +5567,13 @@ def matmul(a, b, reduction=False, out=None):
 
     assert ashape[1] == bshape[0]
 
-    if len(bshape) == 1:
+    if bextend:
         out_shape = (ashape[0],)
     else:
         out_shape = (ashape[0], bshape[1])
+
+    if aextend:
+        out_shape = (out_shape[1],)
 
     if out is not None:
         assert out.shape == out_shape
