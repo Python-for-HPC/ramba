@@ -25,7 +25,6 @@ import tokenize
 from io import BytesIO
 import sys
 import parser
-import uuid
 import weakref
 import operator
 import copy as libcopy
@@ -35,6 +34,11 @@ if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
 import cloudpickle
 import threading
+
+if USE_MPI and not USE_MPI_CW:
+    import ramba.ramba_uuid as uuid
+else:
+    import uuid
 
 if USE_ZMQ:
     import ramba.ramba_queue_zmq as ramba_queue
@@ -3663,6 +3667,13 @@ ALL_NODES = -1
 
 
 def _real_remote(nodeid, method, has_retval, args, kwargs):
+    if USE_MPI and not USE_MPI_CW:
+        if nodeid==ALL_NODES or nodeid==rank:
+            op = getattr(RS, method)
+            retval = op(*args, **kwargs)
+        if not has_retval: return None
+        if nodeid==ALL_NODES: return comm.allgather(retval)
+        return comm.bcast(retval, root=nodeid)
     if nodeid == ALL_NODES:
         if USE_RAY_CALLS:
             rargs = [ray.put(v) for v in args]
@@ -3706,6 +3717,8 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
 
 
 def get_results(refs):
+    if USE_MPI and not USE_MPI_CW:
+        return refs
     if USE_RAY_CALLS:
         return ray.get(refs)
     if isinstance(refs, list):
@@ -3772,7 +3785,7 @@ if USE_MPI:
 
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
-    if rank == num_workers:  # driver
+    if rank == num_workers:  # driver -- can't get here if USE_MPI_CW is False
         # do this stuff only once
         def do_init(done=[]):
             if len(done) > 0:
@@ -3790,16 +3803,19 @@ if USE_MPI:
             retval_queue, comm_queues, control_queues, aggregators = x
             atexit.register(remote_exec_all, "END")
 
-    else:  # workers -- should never leave this section!
+    else:  # workers -- should never leave this section if USE_MPI_CW
         RS = RemoteState(rank, get_common_state())
         con_q = RS.get_control_queue()
         comm_q = RS.get_comm_queue()
-        comm_queues = comm.allgather(comm_q)[:-1]  # ignore invalid one for controller
+        comm_queues = comm.allgather(comm_q)
         control_queues = comm.allgather(con_q)
-        rv_q = control_queues[num_workers]
+        if USE_MPI_CW:
+            comm_queues = comm_queues[:-1]  # ignore invalid one for controller
         RS.set_comm_queues(comm_queues, control_queues)
-        RS.rpc_serve(rv_q)
-        sys.exit()
+        if USE_MPI_CW:
+            rv_q = control_queues[num_workers]
+            RS.rpc_serve(rv_q)
+            sys.exit()
 
 else:  # Ray setup
     # Start remote Actors, but only if this was the process that initialized Ray;

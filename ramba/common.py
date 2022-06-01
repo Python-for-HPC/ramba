@@ -16,7 +16,7 @@ import numpy as np
 import functools
 import math
 import operator
-import uuid
+#import uuid
 
 distribute_min_size = 100
 NUM_WORKERS_FOR_BCAST = 100
@@ -29,12 +29,21 @@ try:
     rank = comm.Get_rank()
     assert nranks > 1
     USE_MPI = True
-    if rank == nranks - 1:
-        print("Using MPI with", nranks - 1, "workers, 1 driver")
-    num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
-    if num_workers != -1 and rank == 0:
-        print("RAMBA_WORKERS setting ignored.")
-    num_workers = nranks - 1
+    USE_MPI_CW = int(os.environ.get("RAMBA_USE_CW", "0")) != 0
+    if USE_MPI_CW:
+        if rank == nranks - 1:
+            print("Using MPI with", nranks - 1, "workers, 1 driver")
+        num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+        if num_workers != -1 and rank == 0:
+            print("RAMBA_WORKERS setting ignored.")
+        num_workers = nranks - 1
+    else:
+        if rank == 0:
+            print("Using MPI with", nranks, "workers")
+        num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+        if num_workers != -1 and rank == 0:
+            print("RAMBA_WORKERS setting ignored.")
+        num_workers = nranks
     numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
     # print ("MPI rank", rank, os.uname()[1])
     USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
@@ -49,17 +58,23 @@ try:
     #print(nodename, rank)
     #allnodes = set(comm.allgather(nodename))
     allnodes = comm.allgather(nodename)
-    allnodes = set(allnodes[:-1])     # Don't include driver process node (in case it is different)
+    if USE_MPI_CW:
+        allnodes = set(allnodes[:-1])     # Don't include driver process node (in case it is different)
+        def in_driver():
+            comm = MPI.COMM_WORLD
+            rank = comm.Get_rank()
+            return rank==num_workers
+    else:
+        allnodes = set(allnodes)
+        def in_driver():
+            return False
     #if rank==0: print(allnodes)
     num_nodes = len(allnodes)
 
-    def in_driver():
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        return rank==num_workers
 
 except:
     USE_MPI = False
+    USE_MPI_CW = False
     USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
     default_bcast = None
 
@@ -505,6 +520,7 @@ if not USE_MPI:
             ray.init(address=ray_address, _redis_password=ray_redis_pass)
         except:
             print("Failed to connect to existing cluster; starting local Ray")
+            import uuid
             ray.init(_redis_password=str(uuid.uuid4()))
         assert ray.is_initialized() == True
         import time
