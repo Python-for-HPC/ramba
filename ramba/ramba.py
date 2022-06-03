@@ -4097,6 +4097,7 @@ class DAG:
             #dag_node.forward_deps.append(weakref.ref(self))
         self.executed = executed
         self.output = output
+        DAG.dag_nodes.add(self)
 
     def get_dot_name(self):
         exec_str = "T" if self.executed else "F"
@@ -4115,9 +4116,25 @@ class DAG:
                 nodename = dag_node.get_dot_name()
                 f.write(str(id(dag_node)) + " [label=\"" + nodename + "\"]\n")
                 for fdep in dag_node.forward_deps:
+                    if fdep not in cls.dag_nodes:
+                        f.write(str(id(fdep)) + " [label=\"" + fdep.get_dot_name() + "\", color=green]\n")
                     #fname = fdep.get_dot_name()
-                    f.write(str(id(dag_node)) + " -> " + str(id(fdep)) + "\n")
+                    f.write(str(id(dag_node)) + " -> " + str(id(fdep)) + " [style=dashed]\n")
                     #f.write(nodename + " -> " + fname + "\n")
+            bdset = set()
+            for arr in ndarray.all_arrays:
+                f.write(str(id(arr)) + " [label=\"array" + str(id(arr)) + "\", color=blue]\n")
+                f.write(str(id(arr)) + " -> " + str(id(arr.bdarray)) + "\n")
+                f.write(str(id(arr)) + " -> " + str(id(arr.idag)) + "\n")
+                if arr.idag not in cls.dag_nodes:
+                    f.write(str(id(arr.idag)) + " [label=\"" + arr.idag.get_dot_name() + "\", color=green]\n")
+
+                if id(arr.bdarray) not in bdset:
+                    bdset.add(id(arr.bdarray))
+                    f.write(str(id(arr.bdarray)) + " [label=\"bdarray" + str(id(arr.bdarray)) + "\", color=red]\n")
+                    f.write(str(id(arr.bdarray)) + " -> " + str(id(arr.bdarray.idag)) + "\n")
+                    if arr.bdarray.idag not in cls.dag_nodes:
+                        f.write(str(id(arr.bdarray.idag)) + " [label=\"" + arr.bdarray.idag.get_dot_name() + "\", color=green]\n")
             f.write("}\n")
         cls.dot_number += 1
 
@@ -4144,7 +4161,6 @@ class DAG:
             nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.aliases.gid if delayed.aliases is not None else None)
 
         dag.output = weakref.ref(nres)
-        cls.dag_nodes.add(dag)
         dprint(2, "DAG.add", name, len(dag_deps), id(nres), caller, delayed)
         if ndebug >= 3:
             cls.output_dot()
@@ -4185,10 +4201,15 @@ class DAG:
             assert len(stack_arrays) == stack_res.shape[stack_dag.kwargs["axis"]]
             assert len(stack_arrays) == len(stack_preds)
             # If all the arrays part of stack have not been constructed yet and they are all for nanmean calls.
-            dprint(2, "stack", all([x.name in ["nanmean", "ndarray.nanmean"] for x in stack_preds]), [x.name for x in stack_preds])
-            if all([x.name in ["nanmean", "ndarray.nanmean"] for x in stack_preds]):
+            stack_parts = ["nanmean", "ndarray.nanmean", "mean", "ndarray.mean"]
+            dprint(2, "stack", all([x.name in stack_parts for x in stack_preds]), [x.name for x in stack_preds])
+            if all([x.name in stack_parts for x in stack_preds]) and all([x.name == stack_preds[0].name for x in stack_preds]):
                 nanmeans = stack_preds
                 assert isinstance(nanmeans[0], DAG)
+                stack_op_name = nanmeans[0].name
+                if stack_op_name.startswith("ndarray."):
+                    stack_op_name = stack_op_name[len("ndarray."):]
+
                 # Get the first array's join axis
                 join_axis = nanmeans[0].kwargs["axis"]
                 dprint(3, "join_axis:", join_axis, nanmeans, all([x.kwargs["axis"] == join_axis for x in nanmeans]), all([DAG.one_creator(x) for x in nanmeans]))
@@ -4225,21 +4246,24 @@ class DAG:
                             with np.printoptions(threshold=np.inf):
                                 dprint(3, "group_array:", group_array)
 
-                            def run_and_post(temp_array, orig_array, getitem_axis, group_array, slot_indices):
-                                dprint(2, "run_and_post stack", id(temp_array))
+                            def run_and_post(temp_array, orig_array, getitem_axis, group_array, slot_indices, opname):
+                                dprint(2, "run_and_post stack", id(temp_array), opname, getitem_axis)
                                 gb = orig_array.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
                                 dprint(2, "run_and_post stack after groupby")
-                                res = gb.nanmean()
-                                dprint(2, "run_and_post stack after nanmean")
-                                fa = fromarray(np.moveaxis(res, -1, 0))
+                                res = getattr(gb, opname)()
+                                #res = gb.nanmean()
+                                dprint(2, "run_and_post stack after nanmean", res.shape)
+                                ma = np.moveaxis(res, getitem_axis, 0)
+                                #ma = res
+                                dprint(2, "run_and_post stack after moveaxis", ma.shape)
+                                fa = fromarray(ma)
                                 dprint(2, "run_and_post stack after fromarray")
                                 return fa
                                 #temp_array.internal_numpy = res
                                 #return temp_array
 
-                            dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array.dag], (orig_array, getitem_axis, group_array, slot_indices), ("DAG conversion nanmean", 0), {})
-                            dag_node.output = weakref.ref(stack_res)
-                            stack_dag.replaced()
+                            dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array.dag], (orig_array, getitem_axis, group_array, slot_indices, stack_op_name), ("DAG conversion nanmean", 0), {})
+                            stack_dag.replaced(dag_node)
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
         elif dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
             # Check dag_node indices!  FIX ME
@@ -4257,7 +4281,7 @@ class DAG:
 
                 # If all the arrays to concat are uninstantiated from one array and the result of an array_binop.
                 if all([x.name in ["array_binop", "ndarray.array_binop"] for x in binops]):
-                    dprint(2, "Add concat operations are array_binop")
+                    dprint(2, "All concat operations are array_binop")
                     # Get the array_binop operators for each array to concat.
                     # Get the internal operator (e.g., sub) for the first binop.
                     binop = binops[0].args[2]
@@ -4269,77 +4293,86 @@ class DAG:
                     ):
                         lhs_getitem_ops = [x.backward_deps[0] for x in binops]
                         remapped_ops = [x.backward_deps[2] for x in binops]
-                        dprint(2, "Add binops use the same operation", binop, lhs_getitem_ops, all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]), remapped_ops, all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]), [len(x.backward_deps) for x in lhs_getitem_ops], [len(x.backward_deps) for x in remapped_ops])
+                        dprint(2, "All binops use the same operation", binop, lhs_getitem_ops, all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]), remapped_ops, all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]), [len(x.backward_deps) for x in lhs_getitem_ops], [len(x.backward_deps) for x in remapped_ops])
                         # If all the lhs arrays are uninstantiated and derived from getitem_array and all
                         # the rhs arrays are uninstantiated and derived from remapped_axis.
                         if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]) and
-                            all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and
-                            all([DAG.one_creator(x) for x in lhs_getitem_ops]) and
-                            all([len(x.backward_deps) == 2 for x in remapped_ops])
+                            all([DAG.one_creator(x) for x in lhs_getitem_ops])
+                            #all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and
+                            #all([len(x.backward_deps) == 2 for x in remapped_ops])
                             #all([DAG.one_creator(x) for x in remapped_ops])
                         ):
                             # Get the axis that the first getitem operates on
                             getitem_axis = get_advindex_dim(lhs_getitem_ops[0].args[1])
                             lhs_getitem_sources = [DAG.creator(x) for x in lhs_getitem_ops]
-                            reshape_ops = [x.backward_deps[0] for x in remapped_ops]
-                            dprint(2, "All lhs are getitem_array and all rhs are remapped_axis", [remapped_ops[0].args[1] == x.args[1] for x in remapped_ops], [getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops], [x is lhs_getitem_sources[0] for x in lhs_getitem_sources], [x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops], [len(x.backward_deps) for x in reshape_ops], [reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
-                            #dprint(2, "All lhs are getitem_array and all rhs are remapped_axis", [remapped_ops[0].args[1] == x.args[1] for x in remapped_ops], [getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops], [x is lhs_getitem_sources[0] for x in lhs_getitem_sources], [x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]), [DAG.one_creator(x) for x in reshape_ops], [reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
-                            #reshape_ops = [DAG.creator(x) for x in remapped_ops]
-                            # If all the remapped_axis calls use the same newmap.
-                            # If all the getitems operate on the same base array and
-                            # all the remapped_axis are sourced from reshape calls.
-                            # If all the reshape have the same newshape.
-                            if (all([remapped_ops[0].args[1] == x.args[1] for x in remapped_ops]) and
-                                all([getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops]) and
-                                all([x is lhs_getitem_sources[0] for x in lhs_getitem_sources]) and
-                                all([x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]) and
-                                all([len(x.backward_deps) == 2 for x in reshape_ops]) and
-                                #all([DAG.one_creator(x) for x in reshape_ops]) and
-                                all([reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
+                            dprint(2, "All lhs are getitem_array")
+                            if (((all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and all([remapped_ops[0].args[1] == x.args[1] for x in remapped_ops])) or
+                                 all([x.name in ["reshape", "ndarray.reshape"] for x in remapped_ops])) and
+                                all([len(x.backward_deps) == 2 for x in remapped_ops])
                             ):
-                                dprint(2, "All remapped_ops have the same newmap, all remapped derive from reshape")
-                                rhs_getitem_ops = [x.backward_deps[0] for x in reshape_ops]
-                                #rhs_getitem_ops = [DAG.creator(x) for x in reshape_ops]
-                                orig_array_lhs = lhs_getitem_sources[0].output()
-                                dprint(2, "All reshapes have the same newshape", [x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops], [len(x.backward_deps) for x in rhs_getitem_ops])
+                                if all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]):
+                                    reshape_ops = [x.backward_deps[0] for x in remapped_ops]
+                                    dprint(2, "All rhs are remapped_axis", [remapped_ops[0].args[1] == x.args[1] for x in remapped_ops], [getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops], [x is lhs_getitem_sources[0] for x in lhs_getitem_sources], [x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops], [len(x.backward_deps) for x in reshape_ops], [reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
+                                    gio_bd = 2
+                                else:
+                                    reshape_ops = remapped_ops
+                                    gio_bd = 1
 
-                                if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops]) and
-                                    all([len(x.backward_deps) == 2 for x in rhs_getitem_ops])
-                                    #all([DAG.one_creator(x) for x in rhs_getitem_ops])
+                                #dprint(2, "All lhs are getitem_array and all rhs are remapped_axis", [remapped_ops[0].args[1] == x.args[1] for x in remapped_ops], [getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops], [x is lhs_getitem_sources[0] for x in lhs_getitem_sources], [x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]), [DAG.one_creator(x) for x in reshape_ops], [reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
+                                #reshape_ops = [DAG.creator(x) for x in remapped_ops]
+                                # If all the remapped_axis calls use the same newmap.
+                                # If all the getitems operate on the same base array and
+                                # all the remapped_axis are sourced from reshape calls.
+                                # If all the reshape have the same newshape.
+                                if (all([getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops]) and
+                                    all([x is lhs_getitem_sources[0] for x in lhs_getitem_sources]) and
+                                    all([x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]) and
+                                    all([len(x.backward_deps) == 2 for x in reshape_ops]) and
+                                    #all([DAG.one_creator(x) for x in reshape_ops]) and
+                                    all([reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
                                 ):
-                                    dprint(2, "All reshape bases are derived from getitem_array")
-                                    # A check for index of getitem_ops?
-                                    getitem_bases = [x.backward_deps[0] for x in rhs_getitem_ops]
-                                    #getitem_bases = [DAG.creator(x) for x in rhs_getitem_ops]
-                                    if all([getitem_bases[0] is x for x in getitem_bases]):
-                                        dprint(2, "All reshape bases are the same")
-                                        rhs = getitem_bases[0].output()
-                                        dprint(2, "rhs", id(rhs), rhs.shape)
-                                        slot_indices = [x.args[1][getitem_axis] for x in lhs_getitem_ops]
-                                        dprint(3, "slot_indices:", slot_indices)
-                                        group_array = np.full(orig_array_lhs.shape[getitem_axis], -1, dtype=np.int)
-                                        for i in range(len(slot_indices)):
-                                            for vi in slot_indices[i]:
-                                                group_array[vi] = i
-                                        with np.printoptions(threshold=np.inf):
-                                            dprint(3, "group_array:", group_array)
+                                    dprint(2, "All remapped_ops have the same newmap, all remapped derive from reshape")
+                                    rhs_getitem_ops = [x.backward_deps[0] for x in reshape_ops]
+                                    #rhs_getitem_ops = [DAG.creator(x) for x in reshape_ops]
+                                    orig_array_lhs = lhs_getitem_sources[0].output()
+                                    dprint(2, "All reshapes have the same newshape", [x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops], [len(x.backward_deps) for x in rhs_getitem_ops])
 
-                                        def run_and_post(temp_array, orig_array_lhs, rhs, getitem_axis, group_array, slot_indices):
-                                            dprint(2, "run_and_post concat", id(temp_array), orig_array_lhs.shape, rhs.shape, getitem_axis)
-                                            if hasattr(rhs, "internal_numpy"):
-                                                dprint(2, "run_and_post rhs has internal_numpy")
-                                                rhsasarray = rhs.internal_numpy
-                                            else:
-                                                rhsasarray = rhs.asarray()
-                                                #rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
-                                            gb = orig_array_lhs.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
-                                            res = eval("gb" + binoptext + "rhsasarray")
-                                            return res
+                                    if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops]) and
+                                        all([len(x.backward_deps) == gio_bd for x in rhs_getitem_ops])
+                                        #all([DAG.one_creator(x) for x in rhs_getitem_ops])
+                                    ):
+                                        dprint(2, "All reshape bases are derived from getitem_array")
+                                        # A check for index of getitem_ops?
+                                        getitem_bases = [x.backward_deps[0] for x in rhs_getitem_ops]
+                                        #getitem_bases = [DAG.creator(x) for x in rhs_getitem_ops]
+                                        if all([getitem_bases[0] is x for x in getitem_bases]):
+                                            dprint(2, "All reshape bases are the same")
+                                            rhs = getitem_bases[0].output()
+                                            dprint(2, "rhs", id(rhs), rhs.shape)
+                                            slot_indices = [x.args[1][getitem_axis] for x in lhs_getitem_ops]
+                                            dprint(3, "slot_indices:", slot_indices)
+                                            group_array = np.full(orig_array_lhs.shape[getitem_axis], -1, dtype=np.int)
+                                            for i in range(len(slot_indices)):
+                                                for vi in slot_indices[i]:
+                                                    group_array[vi] = i
+                                            with np.printoptions(threshold=np.inf):
+                                                dprint(3, "group_array:", group_array)
 
-                                        dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
-                                        dag_node.output = weakref.ref(concat_res)
-                                        # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
-                                        gia_node.replaced()
+                                            def run_and_post(temp_array, orig_array_lhs, rhs, getitem_axis, group_array, slot_indices):
+                                                dprint(2, "run_and_post concat", id(temp_array), orig_array_lhs.shape, rhs.shape, getitem_axis)
+                                                if hasattr(rhs, "internal_numpy"):
+                                                    dprint(2, "run_and_post rhs has internal_numpy")
+                                                    rhsasarray = rhs.internal_numpy
+                                                else:
+                                                    rhsasarray = rhs.asarray()
+                                                    #rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
+                                                gb = orig_array_lhs.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
+                                                res = eval("gb" + binoptext + "rhsasarray")
+                                                return res
+
+                                            dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
+                                            # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
+                                            gia_node.replaced(dag_node)
 
         for backward_dep in dag_node.backward_deps:
             cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed)
@@ -4363,7 +4396,7 @@ class DAG:
             assert self.inplace or isinstance(exec_array_out, ndarray)
             if not self.inplace and exec_array_out is not soutput:
                 soutput.assign(exec_array_out)
-        self.name = "Executed"
+        self.name += " Executed"
         self.executed = True
         for dag_node in self.backward_deps:
             dag_node.forward_deps.remove(self)
@@ -4371,14 +4404,32 @@ class DAG:
         self.kwargs = None
         self.backward_deps = []
 
-    def replaced(self):
-        self.name = "Replaced"
+    def replaced(self, replacement):
+        self.name += " Replaced"
         self.executed = True
         for dag_node in self.backward_deps:
             dag_node.forward_deps.remove(self)
         self.args = None
         self.kwargs = None
         self.backward_deps = []
+
+        for fwd_dep in self.forward_deps:
+            print("replaced:", self, fwd_dep, type(fwd_dep), replacement)
+            if fwd_dep is None:
+                continue
+            fwd_dep.backward_deps.remove(self)
+            fwd_dep.backward_deps.append(replacement)
+            replacement.forward_deps.add(fwd_dep)
+
+        self.forward_deps = weakref.WeakSet()
+        routput = self.output()
+        if routput is not None:
+            #print("idag fixup", id(routput.idag), id(routput.bdarray.idag))
+#            assert(routput.idag is routput.bdarray.idag)
+            routput.idag = replacement
+            routput.bdarray.idag = replacement
+        # What about routput.bdarray.idag?  FIX ME?
+        replacement.output = weakref.ref(routput)
 
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True, **kwargs):
@@ -4404,7 +4455,7 @@ class DAG:
         gc.collect()
         for dag_node in cls.dag_nodes:
             print("====", dag_node.name, dag_node.executed, id(dag_node.output()), sys.getrefcount(dag_node))
-            if dag_node.name in ["ndarray.getitem_array", "ndarray.nanmean"]: #sys.getrefcount(dag_node) == 4:
+            if dag_node.name in ["ndarray.getitem_array", "ndarray.nanmean", "concatenate", "ndarray.array_binop", "stack Replaced"]: #sys.getrefcount(dag_node) == 4:
                 referrers = gc.get_referrers(dag_node)
                 for referrer in referrers:
                     print("++++++++", type(referrer))
@@ -4413,6 +4464,7 @@ class DAG:
                         lreferrers = gc.get_referrers(referrer)
                         for lreferrer in lreferrers:
                             print("------------", lreferrer, type(lreferrer))
+                            #if isinstance(lreferrer, bdarray)
 
     @classmethod
     def execute_all(cls):
@@ -4513,6 +4565,8 @@ def apply_index(shape, index):
 
 # Deferred Ops stuff
 class ndarray:
+    all_arrays = weakref.WeakSet()
+
     def __init__(
         self,
         shape,
@@ -4569,6 +4623,8 @@ class ndarray:
             self.once = True
         else:
             self.once = False
+        if ndebug >= 3:
+            ndarray.all_arrays.add(self)
 
     @property
     def dag(self):
@@ -4587,6 +4643,8 @@ class ndarray:
 
     def assign(self, other):
         assert(isinstance(other, ndarray))
+        if self.shape != other.shape:
+            print("assign failure shape difference", self.shape, other.shape)
         assert(self.shape == other.shape)
         # maybe assign_bdarray?
         self.distribution = other.distribution
@@ -5382,6 +5440,25 @@ class ndarray:
     def reshape_copy(self, newshape):
         return reshape_copy(self, newshape)
 
+    @classmethod
+    def mean_executor(cls, temp_array, self, axis=None, dtype=None):
+        dprint(1, "mean_executor", id(self))
+        assert axis is not None
+        assert 0 # Actually do the computation if it isn't optimized away.
+
+    @DAGapi
+    def mean(self, axis=None, dtype=None):
+        dprint(1, "mean", id(self))
+        if axis is None:
+            DAG.instantiate(self)  # here or in sreduce?
+            sres = sreduce(lambda x: (x,1), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
+            print("mean sres:", sres)
+            return sres[0] / sres[1]
+        else:
+            res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
+            return DAGshape(res_size, dtype, False)
+
+    """
     def mean(self, axis=None, dtype=None):
         dprint(1, "mean", id(self))
         n = np.prod(self.shape) if axis is None else self.shape[axis]
@@ -5393,6 +5470,7 @@ class ndarray:
             else:
                 rv = np.mean([rv], dtype=dtype)
         return rv
+    """
 
     @classmethod
     def nanmean_executor(cls, temp_array, self, axis=None, dtype=None):
@@ -5405,7 +5483,6 @@ class ndarray:
         dprint(1, "nanmean", id(self))
         if axis is None:
             DAG.instantiate(self)  # here or in sreduce?
-            #return 0
             sres = sreduce(lambda x: (x,1) if x != np.nan else (0,0), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
             print("nanmean sres:", sres)
             return sres[0] / sres[1]
@@ -6545,7 +6622,7 @@ class deferred_op:
     def del_remote_array(cls, gid):
         if cls.ramba_deferred_ops is None:
             # if ray.is_initialized(): [remote_states[i].destroy_array.remote(gid) for i in range(num_workers)]
-            if USE_MPI or ray.is_initialized():
+            if USE_NON_DIST or USE_MPI or ray.is_initialized():
                 remote_exec_all("destroy_array", gid)
         else:
             cls.ramba_deferred_ops.delete_gids.append(gid)
@@ -8229,8 +8306,10 @@ class RambaGroupby:
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        mean_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        mean_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         mean_func_txt +=  "    sumout[groupid] += value\n"
         mean_func_txt +=  "    countout[groupid] += 1\n"
         mean_func_txt +=  "    return (sumout, countout)\n"
@@ -8266,9 +8345,11 @@ class RambaGroupby:
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
         mean_func_txt +=  "    if value != np.nan:\n"
-        mean_func_txt += f"        groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        mean_func_txt += f"        groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         mean_func_txt +=  "        sumout[groupid] += value\n"
         mean_func_txt +=  "        countout[groupid] += 1\n"
         mean_func_txt +=  "    return (sumout, countout)\n"
@@ -8305,8 +8386,10 @@ class RambaGroupby:
 
         sum_func_txt  =  "def sum_func(idx, value, group_array, sumout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        sum_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        sum_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         sum_func_txt +=  "    sumout[groupid] += value\n"
         sum_func_txt +=  "    return sumout\n"
         ldict = {}
@@ -8337,8 +8420,10 @@ class RambaGroupby:
 
         count_func_txt  =  "def count_func(idx, value, group_array, countout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        count_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        count_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         count_func_txt +=  "    countout[groupid] += 1\n"
         count_func_txt +=  "    return countout\n"
         ldict = {}
@@ -8369,8 +8454,10 @@ class RambaGroupby:
 
         prod_func_txt  =  "def prod_func(idx, value, group_array, prodout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        prod_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        prod_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         prod_func_txt +=  "    prodout[groupid] *= value\n"
         prod_func_txt +=  "    return prodout\n"
         ldict = {}
@@ -8401,8 +8488,10 @@ class RambaGroupby:
 
         min_func_txt  =  "def min_func(idx, value, group_array, minout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        min_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        min_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         min_func_txt +=  "    minout[groupid] = min(value, minout[groupid])\n"
         min_func_txt +=  "    return minout\n"
         ldict = {}
@@ -8433,8 +8522,10 @@ class RambaGroupby:
 
         max_func_txt  =  "def max_func(idx, value, group_array, maxout):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        max_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        max_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         max_func_txt +=  "    maxout[groupid] = max(value, maxout[groupid])\n"
         max_func_txt +=  "    return maxout\n"
         ldict = {}
@@ -8468,8 +8559,10 @@ class RambaGroupby:
 
         sqr_mean_diff_func_txt  =  "def sqr_mean_diff_func(idx, value, group_array, sumout, mean_groupby):\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
+        if len(beforedim) > 0:
+            beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
-        sqr_mean_diff_func_txt += f"    groupid = ({beforedim}, group_array[idx[{self.dim}]],{afterdim})\n"
+        sqr_mean_diff_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
         sqr_mean_diff_func_txt +=  "    sumout[groupid] += (value - mean_groupby[groupid])**2\n"
 #        sqr_mean_diff_func_txt +=  "    print(idx, value, mean_groupby[groupid], sumout[groupid])\n"
         sqr_mean_diff_func_txt +=  "    return sumout\n"
@@ -8502,9 +8595,11 @@ def groupby_attr(item, itxt, imports, dtype):
         func_txt +=  "    start_time = timer()\n"
     func_txt += f"    gtext =  \"def group{item}(idx, value, rhs, groupid, dim):\\n\"\n"
     func_txt +=  "    beforedim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim)])\n"
+    func_txt +=  "    if len(beforedim) > 0:\n"
+    func_txt +=  "        beforedim += \",\"\n"
     func_txt +=  "    afterdim = \",\".join([f\"idx[{nd}]\" for nd in range(self.dim+1, self.array_to_group.ndim)])\n"
     #func_txt +=  "    gtext += f\"    print(\\\"in_group_sub:\\\", idx, value, rhs.shape, groupid.shape, dim)\\n\"\n"
-    func_txt +=  "    gtext += f\"    drop_groupdim = ({beforedim}, groupid[idx[dim]],{afterdim})\\n\"\n"
+    func_txt +=  "    gtext += f\"    drop_groupdim = ({beforedim} groupid[idx[dim]],{afterdim})\\n\"\n"
 #    func_txt +=  "    gtext +=  \"    drop_groupdim = (groupid[idx[dim]],\" + \",\".join([f\"idx[{nd}]\" for nd in range(self.array_to_group.ndim) if nd != self.dim]) + \")\\n\"\n"
 #    func_txt +=  "    gtext += \"    print('group:', idx, value, drop_groupdim, rhs[drop_groupdim], dim)\\n\"\n"
     func_txt += f"    gtext += \"    return value{itxt}rhs[drop_groupdim]\\n\"\n"
