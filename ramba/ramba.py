@@ -4090,11 +4090,12 @@ class DAG:
         self.kwargs = kwargs
         self.aliases = aliases
         self.forward_deps = weakref.WeakSet()
-        #self.forward_deps = []
         self.backward_deps = dag_deps
         for dag_node in self.backward_deps:
-            dag_node.forward_deps.add(self)
-            #dag_node.forward_deps.append(weakref.ref(self))
+            if dag_node is self:
+                dprint(1, "self is in DAG:__init__ backward_deps")
+            else:
+                dag_node.forward_deps.add(self)
         self.executed = executed
         self.output = output
         DAG.dag_nodes.add(self)
@@ -4150,8 +4151,12 @@ class DAG:
         if delayed.inplace:
             nres = delayed.inplace
 
+            dprint(2, "DAG.add delayed.inplace", nres.bdarray.idag.forward_deps, dag.backward_deps, [id(x) for x in dag.backward_deps], id(dag))
             for forward_dep in nres.bdarray.idag.forward_deps:
-                if forward_dep not in dag.backward_deps:
+                dprint(2, "DAG.add forward_dep", forward_dep, id(forward_dep))
+                if forward_dep is dag:
+                    dprint(1, "forward_dep is dag in DAG::add delayed.inplace")
+                if forward_dep is not dag and forward_dep not in dag.backward_deps:
                     dag.backward_deps.append(forward_dep)
                     forward_dep.forward_deps.add(dag)
 
@@ -4414,7 +4419,7 @@ class DAG:
         self.backward_deps = []
 
         for fwd_dep in self.forward_deps:
-            print("replaced:", self, fwd_dep, type(fwd_dep), replacement)
+            dprint(2, "replaced:", self, fwd_dep, type(fwd_dep), replacement)
             if fwd_dep is None:
                 continue
             fwd_dep.backward_deps.remove(self)
