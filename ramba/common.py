@@ -17,66 +17,84 @@ import functools
 import math
 import operator
 #import uuid
+import copy as libcopy
 
 distribute_min_size = 100
 NUM_WORKERS_FOR_BCAST = 100
 
-try:
-    from mpi4py import MPI
+non_dist_mode = int(os.environ.get("RAMBA_NON_DIST", "0"))
 
-    comm = MPI.COMM_WORLD
-    nranks = comm.Get_size()
-    rank = comm.Get_rank()
-    assert nranks > 1
-    USE_MPI = True
-    USE_MPI_CW = int(os.environ.get("RAMBA_USE_CW", "0")) != 0
-    if USE_MPI_CW:
-        if rank == nranks - 1:
-            print("Using MPI with", nranks - 1, "workers, 1 driver")
-        num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
-        if num_workers != -1 and rank == 0:
-            print("RAMBA_WORKERS setting ignored.")
-        num_workers = nranks - 1
-    else:
-        if rank == 0:
-            print("Using MPI with", nranks, "workers")
-        num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
-        if num_workers != -1 and rank == 0:
-            print("RAMBA_WORKERS setting ignored.")
-        num_workers = nranks
-    numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
-    # print ("MPI rank", rank, os.uname()[1])
-    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
-    default_bcast = None if USE_ZMQ else "1"
-
-    # number of threads per worker
-    num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
-
-    # number of nodes
-    import socket
-    nodename = socket.gethostname()
-    #print(nodename, rank)
-    #allnodes = set(comm.allgather(nodename))
-    allnodes = comm.allgather(nodename)
-    if USE_MPI_CW:
-        allnodes = set(allnodes[:-1])     # Don't include driver process node (in case it is different)
-        def in_driver():
-            comm = MPI.COMM_WORLD
-            rank = comm.Get_rank()
-            return rank==num_workers
-    else:
-        allnodes = set(allnodes)
-        def in_driver():
-            return False
-    #if rank==0: print(allnodes)
-    num_nodes = len(allnodes)
-
-
-except:
+if non_dist_mode != 0:
+    USE_NON_DIST = True
+    num_workers = 1
     USE_MPI = False
-    USE_MPI_CW = False
-    USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
-    default_bcast = None
+    default_bcast = "1"
+    USE_ZMQ = False
+    numa_zones = os.environ.get("RAMBA_NUMA_ZONES", None)  # override detected numa zones
+    num_nodes = 1
+
+    def in_driver():
+        return True
+else:
+    USE_NON_DIST = False
+
+if not USE_NON_DIST:
+    try:
+        from mpi4py import MPI
+    
+        comm = MPI.COMM_WORLD
+        nranks = comm.Get_size()
+        rank = comm.Get_rank()
+        assert nranks > 1
+        USE_MPI = True
+        USE_MPI_CW = int(os.environ.get("RAMBA_USE_CW", "0")) != 0
+        if USE_MPI_CW:
+            if rank == nranks - 1:
+                print("Using MPI with", nranks - 1, "workers, 1 driver")
+            num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+            if num_workers != -1 and rank == 0:
+                print("RAMBA_WORKERS setting ignored.")
+            num_workers = nranks - 1
+        else:
+            if rank == 0:
+                print("Using MPI with", nranks, "workers")
+            num_workers = int(os.environ.get("RAMBA_WORKERS", "-1"))
+            if num_workers != -1 and rank == 0:
+                print("RAMBA_WORKERS setting ignored.")
+            num_workers = nranks
+        numa_zones = "DISABLE"  # let MPI handle numa stuff before process starts
+        # print ("MPI rank", rank, os.uname()[1])
+        USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "0")) != 0
+        default_bcast = None if USE_ZMQ else "1"
+    
+        # number of threads per worker
+        num_threads = int(os.environ.get('RAMBA_NUM_THREADS', '1'))
+    
+        # number of nodes
+        import socket
+        nodename = socket.gethostname()
+        #print(nodename, rank)
+        #allnodes = set(comm.allgather(nodename))
+        allnodes = comm.allgather(nodename)
+        if USE_MPI_CW:
+            allnodes = set(allnodes[:-1])     # Don't include driver process node (in case it is different)
+            def in_driver():
+                comm = MPI.COMM_WORLD
+                rank = comm.Get_rank()
+                return rank==num_workers
+        else:
+            allnodes = set(allnodes)
+            def in_driver():
+                return False
+        #if rank==0: print(allnodes)
+        num_nodes = len(allnodes)
+    
+    
+    except:
+        USE_MPI = False
+        USE_MPI_CW = False
+        USE_ZMQ = int(os.environ.get("RAMBA_USE_ZMQ", "1")) != 0
+        default_bcast = None
 
 
 # USE_RAY_CALLS=True
@@ -131,7 +149,7 @@ def dprint(level, *args):
         sys.stdout.flush()
 
 
-if not USE_MPI:
+if not USE_MPI and not USE_NON_DIST:
     num_workers = int(os.environ.get("RAMBA_WORKERS", "4"))  # number of machines
     numa_zones = os.environ.get("RAMBA_NUMA_ZONES", None)  # override detected numa zones
 
@@ -228,7 +246,6 @@ def compute_regular_schedule(size, divisions, dims_do_not_distribute=[]):
     )
 
 
-
 def get_div_sizes(dim_len, num_div):
     low = dim_len // num_div
     if dim_len % num_div == 0:
@@ -280,23 +297,133 @@ def create_divisions(divisions, size, best):
     crsi_div(divisions, best, main_divs, 0, 0, divshape[0] - 1, np.array(size) - 1, index_map)
 
 
+def compute_multi_partition(
+    num_workers, constraint_dict, flex_array_set, nonflexdist_info, mode="nodesurface"
+):
+    # flexdist_info is map of array id to (array, divisions, dim_factors)
+    flexdist_info = {k:(x, np.empty((num_workers, 2, x.ndim), dtype=np.int64), get_dim_factors(num_workers, x.ndim)) for k,x in flex_array_set.items()}
+
+    non_flex_symbols = {}
+    # Get the set of symbols that come from already constructed arrays.
+    # Make sure if more than one constructured array has a certain factor
+    # associated with a symbol that they all match.
+    for aconst in constraint_dict.values():
+    #for aconst in constraint.constraint_dict:
+        arr = aconst[0]()
+        if arr is None:
+            continue
+        if not arr.bdarray.flex_dist:
+            const_array = aconst[1]
+            for i, symbol in enumerate(const_array):
+                if symbol <= 0:
+                    continue
+                if symbol in non_flex_symbols:
+                    other_div_across_symbol = nonflexdist_info[id(arr)][1][i]
+                    if other_div_across_symbol != non_flex_symbols[symbol]:
+                        # Two nonflex dist arrays with same symbol but their
+                        # dimensions not split the same way.
+                        return None
+                else:
+                    # mapping from symbol to divisions across that dimension
+                    non_flex_symbols[symbol] = nonflexdist_info[id(arr)][1][i]
+
+    # Filter out factorizations that split a dimension that some constraint
+    # says should not be split.
+    # Using the above, filter out partitionings that don't use the same split
+    # as an already created array.
+    for aconst in constraint_dict.values():
+        arr = aconst[0]()
+        if arr is None:
+            continue
+        const_array = aconst[1]
+        if id(arr) not in flexdist_info:
+            continue
+        for i, symbol in enumerate(const_array):
+            flexdist_info_for_arr = flexdist_info[id(arr)]
+            dprint(3, "prefilter:", id(arr), const_array, flexdist_info_for_arr)
+            if symbol == -1:
+                flexdist_info[id(arr)] = (arr, aconst[1], list(filter(lambda x: x[i] == 1, flexdist_info_for_arr[2])))
+                dprint(3, "postfilter:", id(arr), const_array, flexdist_info[id(arr)])
+            elif symbol > 0:
+                if symbol in non_flex_symbols:
+                    dprint(3, "symbol in non_flex_symbols")
+                    flexdist_info[id(arr)] = (arr, aconst[1], list(filter(lambda x: x[i] == non_flex_symbols[symbol], flexdist_info_for_arr[2])))
+                    dprint(3, "postfilter:", id(arr), const_array, flexdist_info[id(arr)])
+
+    dprint(3, "values:", flexdist_info.values())
+    for v in flexdist_info.values():
+        dprint(3, "v:", id(v[0]), v, type(v))
+    # If any of array dim_factors are now empty then no solution possible.
+    if any([len(v[2]) == 0 for v in flexdist_info.values()]):
+        return None
+
+    solutions = set()
+    arr_factor_current = []
+    arr_factor_solutions = []
+    def recursive_eliminator(flexdist_items, current_index, solutions, current_solution, constraint_set, arr_factor_current, arr_factor_solutions):
+        if current_index >= len(flexdist_items):
+            dprint(3, "adding solution", frozenset(current_solution.items()))
+            solutions.add(frozenset(current_solution.items()))
+            cur_sum = 0
+            result = []
+            for test in arr_factor_current:
+                best, best_value = compute_regular_schedule_core(num_workers, ((test[1]),), test[0].shape, ())
+                cur_sum += best_value
+                result.append((test[0], best))
+                dprint(3, "test:", test[1], test[0].shape, best_value)
+            result.append(cur_sum)
+            arr_factor_solutions.append(result)
+            return
+
+        arr, _, arr_dim_factors = flexdist_items[current_index]
+        dprint(3, "recursive:", current_index, arr, id(arr), arr_dim_factors, constraint_set, current_solution, flexdist_items)
+        arr_constraint = constraint_set[id(arr)]
+        carr, arr_constraint = arr_constraint
+        carr = carr()
+        assert carr is arr
+        for one_dim_factor in arr_dim_factors:
+            new_solution = libcopy.copy(current_solution)
+            factors_good = True
+            for i, factor in enumerate(one_dim_factor):
+                isymbol = arr_constraint[i]
+                if isymbol > 0:
+                    if isymbol in new_solution:
+                        if new_solution[isymbol] != factor:
+                            factors_good = False
+                            break
+                    else:
+                        new_solution[isymbol] = factor
+            dprint(3, "in arr_dim_factors loop:", one_dim_factor, factors_good)
+            if factors_good:
+                arr_factor_current.append((arr, one_dim_factor))
+                recursive_eliminator(flexdist_items, current_index + 1, solutions, new_solution, constraint_set, arr_factor_current, arr_factor_solutions)
+                arr_factor_current.pop()
+
+    recursive_eliminator(list(flexdist_info.values()), 0, solutions, {}, constraint_dict, arr_factor_current, arr_factor_solutions)
+    dprint(3, "solutions:", solutions)
+    for i in arr_factor_solutions:
+        dprint(3, i, i[0], id(i[0]))
+    best_solution = min(arr_factor_solutions, key = lambda x: x[-1])
+    return best_solution[:-1]
+
+
 @functools.lru_cache(maxsize=None)
-def compute_regular_schedule_internal(
-    num_workers, size, dims_do_not_distribute, mode="nodesurface"
+def compute_regular_schedule_core(
+    num_workers, the_factors, size, dims_do_not_distribute, mode="nodesurface"
 ):
     num_dim = len(size)
     divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
-    # Get the combinations of the prime factorization of the number of workers.
-    the_factors = get_dim_factors(num_workers, num_dim)
     best = None
     best_value = math.inf
 
     largest = [0] * num_dim
     smallest = [0] * num_dim
+    dprint(4, "core:", the_factors, type(the_factors))
 
     for factored in the_factors:
         not_possible = False
         for i in range(num_dim):
+            dprint(4, "factored:", factored, type(factored))
             if factored[i] != 1 and i in dims_do_not_distribute:
                 not_possible = True
                 break
@@ -392,6 +519,18 @@ def compute_regular_schedule_internal(
         dprint(3, "Best:", best, "Smallest surface area:", best_value)
 
     assert(best is not None)
+    return best, best_value
+
+
+@functools.lru_cache(maxsize=None)
+def compute_regular_schedule_internal(
+    num_workers, size, dims_do_not_distribute, mode="nodesurface"
+):
+    num_dim = len(size)
+    divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
+    # Get the combinations of the prime factorization of the number of workers.
+    the_factors = get_dim_factors(num_workers, num_dim)
+    best, _ = compute_regular_schedule_core(num_workers, frozenset(the_factors), size, dims_do_not_distribute, mode=mode)
     create_divisions(divisions, size, best)
     return divisions
 
@@ -497,7 +636,7 @@ def gen_prime_factors(n):
     return factors, exps
 
 
-if not USE_MPI:
+if not USE_MPI and not USE_NON_DIST:
     import ray
 
     #num_workers = int(os.environ.get('RAMBA_WORKERS', "4")) # number of machines
