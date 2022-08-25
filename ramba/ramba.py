@@ -937,6 +937,7 @@ class bdarray:
         self.pad = pad
         self.distribution = distribution
         self.nd_set = weakref.WeakSet()
+        self.nrefs=0
         self.remote_constructed = False
         self.flex_dist = fdist
         assert gid not in self.gid_map
@@ -955,8 +956,16 @@ class bdarray:
 
     def __del__(self):
         dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self))
-        if self.remote_constructed:  # check remote constructed flag
+        #if self.remote_constructed:  # check remote constructed flag
+        #    deferred_op.del_remote_array(self.gid)
+
+    # this function is called by ndarray as it is deleted (from __del__)
+    def ndarray_del_callback(self):
+        self.nrefs -= 1  # how many references to this bdarray
+        dprint(2, "bdarray has", self.nrefs, "references remaining; nd_set size was ", len(self.nd_set))
+        if self.nrefs<1:
             deferred_op.del_remote_array(self.gid)
+
 
     @staticmethod
     def atexit():
@@ -968,8 +977,8 @@ class bdarray:
 
 
     def add_nd(self, nd):
-        pass
         #self.nd_set.add(nd)
+        self.nrefs+=1
 
     @classmethod
     def assign_bdarray(
@@ -1748,8 +1757,8 @@ class RemoteState:
         self.up_rvq = rvq
 
     def destroy_array(self, gid):
-        #if gid in self.numpy_map:
-        self.numpy_map.pop(gid)
+        if gid in self.numpy_map:
+           self.numpy_map.pop(gid)
 
     def create_array(
         self,
@@ -4660,7 +4669,7 @@ class ndarray:
         self.to_border = other.to_border
         self.maskarray = other.maskarray
         orig_idag = self.bdarray.idag
-        self.bdarray = other.bdarray
+        (self.bdarray,other.bdarray) = (other.bdarray,self.bdarray)
         #self.bdarray = bdarray.assign_bdarray(self, self.shape, gid=other.gid, distribution=self.distribution, pad=other.bdarray.pad, flex_dist=other.bdarray.flex_dist, dtype=other.bdarray.dtype)
         #self.bdarray.remote_constructed = other.bdarray.remote_constructed
         self.bdarray.idag = orig_idag
@@ -4726,16 +4735,26 @@ class ndarray:
     #    rev_base_offsets = [np.flip(x.base_offset) for x in self.distribution]
     #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
-    """
     def __del__(self):
         print("ndarray::__del__", self, id(self))
         #ndarray_gids[self.gid][0]-=1
         dprint(2, "Deleting ndarray",self.gid, self)
+        self.bdarray.ndarray_del_callback()
+    """
         #if ndarray_gids[self.gid][0] <=0:
         #    if ndarray_gids[self.gid][1]:  # check remote constructed flag
         #        deferred_op.del_remote_array(self.gid)
         #    del ndarray_gids[self.gid]
     """
+
+    @staticmethod
+    def atexit():
+        def alternate_del(self):
+            dprint(2, "Deleting (at exit) ndarray", self.gid, self)
+
+        dprint(2,"at exit -- disabling ndarray del handing")
+        ndarray.__del__ = alternate_del
+
 
     def __str__(self):
         return str(self.gid) + " " + str(self.shape) + " " + str(self.local_border)
@@ -5588,6 +5607,7 @@ class ndarray:
             num_groups = value_to_group.max()
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
+atexit.register(ndarray.atexit)
 
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
@@ -6509,6 +6529,7 @@ class deferred_op:
         self.codelines = []
         self.imports = []
         self.varcount = 0
+        self.keepalives = set()
         self.uuid = "ramba_def_ops_%05d" % (deferred_op.count)
         deferred_op.count += 1
 
@@ -6521,6 +6542,7 @@ class deferred_op:
         if gid not in self.use_gids:
             # self.use_gids[gid] = tuple([self.get_var_name(), arr_info, bd_info, pad])
             self.use_gids[gid] = ([], bd_info, pad, flex_dist)
+            self.keepalives.add(bdarray.get_by_gid(gid))  # keep bdarrays alive
         for (v, ai) in self.use_gids[gid][0]:
             if shardview.dist_is_eq(arr_info[1], ai[1]):
                 return v
@@ -6536,6 +6558,7 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
+        #gc.collect()
         times = [timer()]
         # Do stuff, then clear out list
         # print("Doing deferred ops", self.codelines)
@@ -6545,7 +6568,7 @@ class deferred_op:
         live_gids = {
             k: v
             for (k, v) in self.use_gids.items()
-            if bdarray.valid_gid(k) or k in self.preconstructed_gids
+            if (bdarray.valid_gid(k) and k not in self.delete_gids) or k in self.preconstructed_gids
         }
         dprint(3, "use_gids:", self.use_gids.keys(), "\nlive_gids", live_gids.keys(), "\npreconstructed gids", self.preconstructed_gids, "\ndistribution", self.distribution)
         # Change distributions for any flexible arrays -- we should not have slices here
@@ -6630,6 +6653,7 @@ class deferred_op:
             if USE_NON_DIST or USE_MPI or ray.is_initialized():
                 remote_exec_all("destroy_array", gid)
         else:
+            dprint(2, "added", gid, "to deleted set")
             cls.ramba_deferred_ops.delete_gids.append(gid)
 
     # static method to ensure deferred ops are done;  should be called before any immediate remote ops
