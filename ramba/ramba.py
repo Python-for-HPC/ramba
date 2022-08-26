@@ -4740,9 +4740,8 @@ class ndarray:
     #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
     def __del__(self):
-        print("ndarray::__del__", self, id(self), id(self.bdarray))
+        dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
         #ndarray_gids[self.gid][0]-=1
-        dprint(2, "Deleting ndarray",self.gid, self)
         self.bdarray.ndarray_del_callback()
     """
         #if ndarray_gids[self.gid][0] <=0:
@@ -6562,7 +6561,7 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
-        #gc.collect()  # Need to experiment if this is good or not.
+        gc.collect()  # Need to experiment if this is good or not.
         times = [timer()]
         # Do stuff, then clear out list
         # print("Doing deferred ops", self.codelines)
