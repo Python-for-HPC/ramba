@@ -959,7 +959,7 @@ class bdarray:
         return self.idag
 
     def __del__(self):
-        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self))
+        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self), flush=False)
         #if self.remote_constructed:  # check remote constructed flag
         #    deferred_op.del_remote_array(self.gid)
 
@@ -1017,7 +1017,7 @@ class bdarray:
         else:
             bd = cls.gid_map[gid]
         bd.add_nd(nd)
-        dprint(2, "Assigning ndarray to bdarray", gid, "refcount is", len(bd.nd_set))
+        dprint(2, f"Assigning ndarray {id(nd)} to bdarray {id(bd)} with gid {gid} and refcount {len(bd.nd_set)}")
         dprint(3, "Distribution:", bd.distribution, shape)
         if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
             dprint(
@@ -3814,7 +3814,6 @@ def remote_exec_all(method, *args, **kwargs):
         getattr(remote_states[0], method)(*args, **kwargs)
     else:
         _real_remote(ALL_NODES, method, False, args, kwargs)
-    # get_results(_real_remote(ALL_NODES, method, True, args, kwargs))
 
 
 def remote_async_call_all(method, *args, **kwargs):
@@ -4402,8 +4401,11 @@ class DAG:
                                             dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
                                             # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
                                             gia_node.replaced(dag_node)
-
-        for backward_dep in dag_node.backward_deps:
+        dag_output_shape = dag_node.output().shape
+        matching_shape = list(filter(lambda x: x.output() is not None and x.output().shape == dag_output_shape, dag_node.backward_deps))
+        non_matching_shape = list(filter(lambda x: x.output() is None or x.output().shape != dag_output_shape, dag_node.backward_deps))
+        for backward_dep in matching_shape + non_matching_shape:
+        #for backward_dep in dag_node.backward_deps:
             cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed)
 
         dprint(2, "Adding depth first node:", dag_node.get_dot_name(), dag_node.args)
@@ -4418,6 +4420,7 @@ class DAG:
         soutput = self.output()
         # This can happen if we register an operator whose result is immediately not stored.
         if soutput is not None:
+            dprint(1, "Executing DAG", self)
             exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
             if not self.inplace and not isinstance(exec_array_out, ndarray):
                 print("bad type", type(exec_array_out), self.name, self.args)
@@ -4526,19 +4529,23 @@ def get_non_ramba_callsite(the_stack):
         ind += 1
     return ("Unknown", 0)
 
+
 def DAGapi(func):
     name = func.__qualname__
     def wrapper(*args, **kwargs):
+        dprint(1, "----------------------------------------------------")
         dprint(1, "DAGapi", name)
         fres = func(*args, **kwargs)
         if isinstance(fres, DAGshape):
             executor = eval(name + "_executor")
             nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
             if DAG.in_evaluate > 0:
+                dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
                 dag.execute()
-                #deferred_op.do_ops()
+            dprint(1, "----------------------------------------------------")
             return nres
         else:
+            dprint(1, "----------------------------------------------------")
             return fres
     return wrapper
 
@@ -4648,7 +4655,7 @@ class ndarray:
         self.idag = dag
         self.maskarray = maskarray
         t1 = timer()
-        dprint(2, "Created ndarray", self.gid, "shape", shape, "time", (t1 - t0) * 1000)
+        dprint(2, "Created ndarray", id(self), self.gid, "shape", shape, "time", (t1 - t0) * 1000)
         self.constraints = []
         if dag is None:
             self.once = True
@@ -4687,13 +4694,10 @@ class ndarray:
         self.maskarray = other.maskarray
         orig_idag = self.bdarray.idag
         (self.bdarray,other.bdarray) = (other.bdarray,self.bdarray)
-        #self.bdarray = bdarray.assign_bdarray(self, self.shape, gid=other.gid, distribution=self.distribution, pad=other.bdarray.pad, flex_dist=other.bdarray.flex_dist, dtype=other.bdarray.dtype)
-        #self.bdarray.remote_constructed = other.bdarray.remote_constructed
         self.bdarray.idag = orig_idag
-        #self.bdarray = other.bdarray
         if hasattr(other, "internal_numpy"):
             self.internal_numpy = other.internal_numpy
-        dprint(2,"assign complete", id(self), id(other))
+        dprint(2,"assign complete", id(self), id(other), id(self.bdarray), id(other.bdarray))
         self.once = True
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
@@ -4753,9 +4757,8 @@ class ndarray:
     #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
     def __del__(self):
-        dprint(2,"ndarray::__del__", self, id(self))
+        dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
         #ndarray_gids[self.gid][0]-=1
-        dprint(2, "Deleting ndarray",self.gid, self)
         self.bdarray.ndarray_del_callback()
     """
         #if ndarray_gids[self.gid][0] <=0:
@@ -6577,7 +6580,7 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
-        #gc.collect()
+        gc.collect()  # Need to experiment if this is good or not.
         times = [timer()]
         # Do stuff, then clear out list
         # print("Doing deferred ops", self.codelines)

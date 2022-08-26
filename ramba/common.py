@@ -143,10 +143,11 @@ def tprint(level, *args):
         sys.stdout.flush()
 
 
-def dprint(level, *args):
+def dprint(level, *args, flush=True):
     if ndebug >= level:
         print(*args)
-        sys.stdout.flush()
+        if flush:
+            sys.stdout.flush()
 
 
 if not USE_MPI and not USE_NON_DIST:
