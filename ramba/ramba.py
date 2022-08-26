@@ -8677,6 +8677,7 @@ for (abf, code) in array_binop_funcs.items():
 # ** Initialize Remote Workers **
 # *******************************
 
+is_main_thread = True
 if USE_NON_DIST:
     remote_states = [
         RemoteState(x, get_common_state())
@@ -8689,6 +8690,7 @@ elif USE_MPI:
 
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
+    is_main_thread = USE_MPI_CW or (rank==0)
     if rank == num_workers:  # driver -- can't get here if USE_MPI_CW is False
         # do this stuff only once
         def do_init(done=[]):
