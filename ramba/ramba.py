@@ -4088,9 +4088,12 @@ class DAG:
     in_evaluate = 0
     constraints = []
     dot_number = 0
+    dag_count = 0
 
     def __init__(self, name, executor, inplace, dag_deps, args, caller, kwargs, aliases=None, executed=False, *, output=None):
         self.name = name
+        self.seq_no = DAG.dag_count
+        DAG.dag_count +=1
         self.executor = executor
         self.inplace = inplace
         self.args = args
@@ -4486,7 +4489,9 @@ class DAG:
     @classmethod
     def execute_all(cls):
         nodeps = list(filter(lambda x: len(x.forward_deps) == 0 and not x.executed, cls.dag_nodes))
+        nodeps.sort(key=lambda x: x.seq_no)
         dprint(2, "execute_all:", len(nodeps))
+        #print("In dag-execute-all:  leaf dag nodes:", nodeps)
         for dag_node in nodeps:
             cls.instantiate_dag_node(dag_node, do_ops=False)
         deferred_op.do_ops()
