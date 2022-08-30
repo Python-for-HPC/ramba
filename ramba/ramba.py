@@ -6580,7 +6580,7 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
-        #gc.collect()
+        gc.collect()
         times = [timer()]
         # Do stuff, then clear out list
         # print("Doing deferred ops", self.codelines)

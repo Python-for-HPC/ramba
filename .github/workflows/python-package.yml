@@ -5,9 +5,9 @@ name: Python package
 
 on:
   push:
-    branches: [ main, dag, dag_shared_bdarray ]
+    branches: [ main, SPMD2, dag, dag_shared_bdarray ]
   pull_request:
-    branches: [ main, dag, dag_shared_bdarray ]
+    branches: [ main, SPMD2, dag, dag_shared_bdarray ]
 
 jobs:
   build:
