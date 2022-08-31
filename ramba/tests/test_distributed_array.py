@@ -10,10 +10,35 @@ def stencil1(a):
 
 
 class TestStencil:
-    def test1(self):
+    def test1(self):                # Stencil skeleton
         a = ramba.ones((20, 20), local_border=3)
         b = ramba.sstencil(stencil1, a)
         c = ramba.copy(b)
+
+    def test2(self):                # Stencil using weighted subarrays
+        def impl(app):
+            A = app.ones(100)
+            B = app.zeros(100)
+            for _ in range(10):
+                B[2:-2] += 0.2*A[:-4] - 0.5*A[1:-3] + 0.4*A[2:-2] - 0.5*A[3:-1] + 0.2*A[4:]
+                A *= 1.1
+            return int(abs(B).sum() * 1e8)  # Test sum to 1e-8 precision
+
+        run_both(impl)
+
+    def test3(self):                # Stencil using weighted subarrays
+                                    # Here, stencil and update of source are same size, so depends 
+                                    # critically on read after write detection and not fusing loops
+        def impl(app):
+            A = app.ones(100)
+            B = app.zeros(100)
+            for _ in range(10):
+                B[2:-2] += 0.2*A[:-4] - 0.5*A[1:-3] + 0.4*A[2:-2] - 0.5*A[3:-1] + 0.2*A[4:]
+                A[2:-2] *= 1.1
+            return int(abs(B).sum() * 1e8)  # Test sum to 1e-8 precision
+
+        run_both(impl)
+
 
 
 class TestBroadcast:
