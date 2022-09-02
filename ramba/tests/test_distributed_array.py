@@ -356,6 +356,7 @@ class TestBasic:
 
         try:
             a = ramba.init_array(120, impl)
+            ramba.sync()
         except:
             assert 0
 
@@ -368,12 +369,14 @@ class TestBasic:
             a = ramba.init_array(120, impl)
         except:
             assert 0
+        ramba.sync()
 
     def test9(self):
         def impl(index):
             return (index[0] + index[1]) * 5
 
         a = ramba.init_array((120, 100), impl)
+        ramba.sync()
 
     def test10(self):
         @numba.njit
@@ -381,16 +384,19 @@ class TestBasic:
             return (index[0] * index[1]) + 7
 
         a = ramba.init_array((120, 100), impl)
+        ramba.sync()
 
     def test11(self):
         try:
             a = ramba.init_array(120, lambda x: x[0] * 100)
+            ramba.sync()
         except:
             assert 0
 
     def test12(self):
         try:
             a = ramba.init_array((120, 100), lambda x: (x[0] * x[1]) + 5)
+            ramba.sync()
         except:
             assert 0
 
