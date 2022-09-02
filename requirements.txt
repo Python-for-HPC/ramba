@@ -3,5 +3,5 @@ ray
 pyzmq
 pickle5
 cloudpickle
-numpy
+numpy<1.23
 psutil
