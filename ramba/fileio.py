@@ -126,7 +126,35 @@ try:
         data = nc_lazy_whole(fname, var_select)
 
         if dst_index is None:
-            arr[:] = data[src_index]
+            d1 = src_index[0]
+            if d1.step != 1:
+                arr[:] = data[src_index]
+            else:
+                d1start = d1.start
+                d1stop = d1.stop
+                d1len = d1stop - d1start
+                d1len100 = d1len / 100
+                for i in range(100):
+                    istart = int(i * d1len100)
+                    iend = int((i+1) * d1len100)
+                    arr[slice(istart, iend)] = data[(slice(d1start + istart, d1start + iend),) + src_index[1:]]
+
+            """
+            import time
+            print("before file load")
+            time.sleep(10)
+            dstart = timer()
+            tmp = data[src_index]
+            dend = timer()
+            print("after tmp")
+            time.sleep(10)
+            cstart = timer()
+            arr[:] = tmp
+            cend = timer()
+            print("dtime:", dend - dstart, "ctime:", cend - cstart)
+            time.sleep(10)
+            #arr[:] = data[src_index]
+            """
         else:
             arr[dst_index] = data[src_index]
 

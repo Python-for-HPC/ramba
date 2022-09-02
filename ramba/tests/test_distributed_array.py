@@ -2,6 +2,7 @@ import ramba
 import numpy as np
 import random
 import numba
+import time
 
 
 @ramba.stencil
@@ -10,10 +11,110 @@ def stencil1(a):
 
 
 class TestStencil:
-    def test1(self):
+    def test1(self):                # Stencil skeleton
         a = ramba.ones((20, 20), local_border=3)
         b = ramba.sstencil(stencil1, a)
         c = ramba.copy(b)
+
+    def test2(self):                # Stencil using weighted subarrays
+        def impl(app):
+            A = app.ones(100,dtype=float)
+            B = app.zeros(100,dtype=float)
+            for _ in range(10):
+                B[2:-2] += 0.2*A[:-4] - 0.5*A[1:-3] + 0.4*A[2:-2] - 0.5*A[3:-1] + 0.2*A[4:]
+                A *= 1.1
+            return int(abs(B).sum() * 1e8)  # Test sum to 1e-8 precision
+
+        run_both(impl)
+
+    def test3(self):                # Stencil using weighted subarrays
+                                    # Here, stencil and update of source are same size, so depends 
+                                    # critically on read after write detection and not fusing loops
+        def impl(app):
+            A = app.ones(100,dtype=float)
+            B = app.zeros(100,dtype=float)
+            for _ in range(10):
+                B[2:-2] += 0.2*A[:-4] - 0.5*A[1:-3] + 0.4*A[2:-2] - 0.5*A[3:-1] + 0.2*A[4:]
+                A[2:-2] *= 1.1
+            return int(abs(B).sum() * 1e8)  # Test sum to 1e-8 precision
+
+        run_both(impl)
+
+class TestFusion:
+    def test_fuse(self):
+        a = ramba.zeros(1000,dtype=float)
+        ramba.sync()
+        a += 1      # warmup
+        ramba.sync()
+        t0 = time.time()
+        a += 1      # run once
+        ramba.sync()
+        t1 = time.time()
+        for _ in range(10): # warmup for run 10
+            a+=1
+        ramba.sync()
+        t2 = time.time()
+        for _ in range(10): # run 10
+            a+=1
+        ramba.sync()
+        t3 = time.time()
+        overhead1 = t1-t0
+        overhead10 = t3-t2
+
+        a = ramba.zeros(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
+        ramba.sync()
+        t0 = time.time()
+        a += 1      # run once
+        ramba.sync()
+        t1 = time.time()
+        for _ in range(10): # run 10
+            a+=1
+        ramba.sync()
+        t2 = time.time()
+        runtime1 = t1-t0
+        runtime10 = t2-t1
+        exec1 = runtime1-overhead1
+        exec10 = runtime10-overhead10
+        print (runtime1, runtime10, overhead1, overhead10, exec1, exec10, exec10/exec1)
+        assert(exec10<2*exec1)
+
+    def test_nofuse(self):
+        a = ramba.zeros(1000,dtype=float)
+        ramba.sync()
+        a += 1      # warmup
+        ramba.sync()
+        t0 = time.time()
+        a += 1      # run once
+        ramba.sync()
+        t1 = time.time()
+        for i in range(10): # warmup for run 10
+            a[i:]+=1
+        ramba.sync()
+        t2 = time.time()
+        for i in range(10): # run 10
+            a[i:]+=1
+        ramba.sync()
+        t3 = time.time()
+        overhead1 = t1-t0
+        overhead10 = t3-t2
+
+        a = ramba.zeros(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
+        ramba.sync()
+        t0 = time.time()
+        a += 1      # run once
+        ramba.sync()
+        t1 = time.time()
+        for i in range(10): # run 10
+            a[i:]+=1
+        ramba.sync()
+        t2 = time.time()
+        runtime1 = t1-t0
+        runtime10 = t2-t1
+        exec1 = runtime1-overhead1
+        exec10 = runtime10-overhead10
+        print (runtime1, runtime10, overhead1, overhead10, exec1, exec10, exec10/exec1)
+        assert(exec10>5*exec1)
+
 
 
 class TestBroadcast:
@@ -356,6 +457,7 @@ class TestBasic:
 
         try:
             a = ramba.init_array(120, impl)
+            ramba.sync()
         except:
             assert 0
 
@@ -368,12 +470,14 @@ class TestBasic:
             a = ramba.init_array(120, impl)
         except:
             assert 0
+        ramba.sync()
 
     def test9(self):
         def impl(index):
             return (index[0] + index[1]) * 5
 
         a = ramba.init_array((120, 100), impl)
+        ramba.sync()
 
     def test10(self):
         @numba.njit
@@ -381,16 +485,19 @@ class TestBasic:
             return (index[0] * index[1]) + 7
 
         a = ramba.init_array((120, 100), impl)
+        ramba.sync()
 
     def test11(self):
         try:
             a = ramba.init_array(120, lambda x: x[0] * 100)
+            ramba.sync()
         except:
             assert 0
 
     def test12(self):
         try:
             a = ramba.init_array((120, 100), lambda x: (x[0] * x[1]) + 5)
+            ramba.sync()
         except:
             assert 0
 
