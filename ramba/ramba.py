@@ -4389,7 +4389,10 @@ class DAG:
                                             dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
                                             # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
                                             gia_node.replaced(dag_node)
-        dag_output_shape = dag_node.output().shape
+        if dag_node.output() is None:
+            dag_output_shape=None
+        else:
+            dag_output_shape = dag_node.output().shape
         matching_shape = list(filter(lambda x: x.output() is not None and x.output().shape == dag_output_shape, dag_node.backward_deps))
         non_matching_shape = list(filter(lambda x: x.output() is None or x.output().shape != dag_output_shape, dag_node.backward_deps))
         for backward_dep in matching_shape + non_matching_shape:
