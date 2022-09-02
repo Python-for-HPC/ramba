@@ -39,5 +39,5 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest
+        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest -k "not Dgemm"
       shell: bash
