@@ -3469,7 +3469,10 @@ class RemoteState:
         for _, pl in arr_parts.items():
             for vpart, _ in pl:
                 vparts.append(vpart)
-        ranges = shardview.get_range_splits_list(vparts)
+        if len(vparts)==0:
+            ranges = []
+        else:
+            ranges = shardview.get_range_splits_list(vparts)
         times.append(timer())
         rangedvars = [{} for _ in ranges]
         # varlist={}
@@ -6626,13 +6629,18 @@ class deferred_op:
             args.append(v)
         # precode.append("  import numpy as np")
         # precode.append("\n".join(self.imports))
-        if len(self.codelines)>0:
+        if len(live_gids)==0:
+            dprint(0,"ramba deferred_op execute: Warning: nothing to do / everything out of scope")
+
+        if len(self.codelines)>0 and len(live_gids)>0:
             precode.append(
                 "  for index in numba.pndindex("
                 + list(live_gids.items())[0][1][0][0][0]
                 + ".shape):"
             )
-        code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
+            code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
+        else:
+            code = ""
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
         code = "def " + fname + "(" + ",".join(args) + "):\n" + code + "\n  pass"
         # code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
