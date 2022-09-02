@@ -3773,7 +3773,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
 
 def get_results(refs):
     if (USE_MPI and not USE_MPI_CW) or USE_NON_DIST:
-        assert isinstance(refs, list)
+        if USE_NON_DIST: assert isinstance(refs, list)
         return refs
     if USE_RAY_CALLS:
         return ray.get(refs)
