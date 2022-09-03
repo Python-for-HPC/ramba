@@ -115,6 +115,7 @@ class TestGroupby:
             return final.data
 
         size = (2, 1827)
+        np.random.seed(12345)
         rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin)
         rres = ramba_impl(rlin)
