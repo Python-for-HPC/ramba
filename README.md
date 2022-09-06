@@ -156,11 +156,33 @@ Here, NUM PROCS indicates the total number of processes to use, and must be grea
 
 When running with MPI, the RAMBA_WORKERS environment variable is ignored.  RAMBA_NUM_THREADS can be used to indicate the number of threads to use per worker (defaults to 1).  
 
-NOTE:  Early versions of Rambe MPI support did not implement a SPMD model.  Instead, they used a controller-worker model, where one of the processes is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers which do not directly run the source program.  To reproduce the prior Ramba MPI behavior, set environment variables RAMBA_USE_CW=1 and RAMBA_USE_ZMQ=1.  
+NOTE:  Early versions of Ramba MPI support did not implement a SPMD model.  Instead, they used a controller-worker model, where one of the processes is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers which do not directly run the source program.  To reproduce the prior Ramba MPI behavior, set environment variables RAMBA_USE_CW=1 and RAMBA_USE_ZMQ=1.  
 
 
 ## Environment Variables Summary
-Coming Soon!
+
+|Category | Variable            |Default value| Description 
+|:---     |:------              |:-----       |:------      
+|General  | RAMBA_WORKERS       | *           | Set number of worker processes (ignored under MPI)
+|         | RAMBA_NUM_THREADS   | *           | Set number of threads per worker
+|         | RAMBA_BIG_DATA      | 0           | Set to 1 to use 64-bit array indices, else 32-bit
+|         | RAMBA_RESHAPE_COPY  | 0           | Set to 1 to allow calls to reshape to call reshape_copy as needed
+|Debugging| RAMBA_DEBUG         | 0           | Set level of debugging output
+|         | RAMBA_TIMING        | 0           | Set to 1 to enable detailed timing
+|         | RAMBA_TIMING_WORKER | 0           | Select worker for detailed timing
+|         | RAMBA_NON_DIST      | 0           | Set to 1 to run a single, nondistributed process for debugging
+|Framework| RAMBA_USE_RAY_CALLS | 0           | Use Ray calls instead of message-based task invocation (for Ray)
+|Options  | RAMBA_USE_ZMQ       | Ray:1, MPI:0| Set to 1 to use ZMQ for inter-worker messaging
+|         | RAMBA_IP_HINT       | 172.113.1.1 | Hint to select network interface that routes given address (for ZMQ)
+|         | RAMBA_USE_CW        | 0           | Set to 1 to use Controller-Worker model instead of SPMD (for MPI)
+|         | RAMBA_USE_BCAST     | **          | See below
+|         | RAMBA_NUMA_ZONES    | ***         | See below
+
+\* Note: Under MPI, RAMBA_WORKERS is ignored, and RAMBA_NUM_THREADS defaults to 1;  With Ray, the defaults are based on ncpus, the total number of "CPUs" reported by Ray (typically, the total number of hypercores in the cluster).  If neither is set, then RAMBA_WORKERS defaults to ncpus, and RAMBA_NUM_THREADS defaults to 1.  If only one of the two is set (to a value k), then the other defaults to floor(ncpus/k).
+
+** Note: Under MPI, when using the controller-worker model, RAMBA_USE_BCAST=1 indicates that MPI broadcasts should be used to start operations on workers.  This option is not used under MPI with the SPMD model.  Under Ray, it indicates that a 2-level communication tree is to be used to send control commands to workers and to aggregate replies.  This is used to allow better scaling to large numbers of workers, and reduce the number of open sockets at the controller.  By default, it is enabled when there are 100 or more workers.  
+
+*** Note:  This is an experimental option to set CPU affinities of worker processes.  
 
 # NumPy Compatibility
 Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   &#x1f7e1; partial    &#x1f534; not implemented
