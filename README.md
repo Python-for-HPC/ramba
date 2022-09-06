@@ -152,9 +152,12 @@ Ramba can also use MPI as the backend for distribution instead of Ray.  To use M
 ```
 mpirun -n <NUM PROCS> python my_ramba_program.py
 ```
-Here, NUM PROCS indicates the total number of processes to use, and must be greater than 1.  One process is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers.  Thus, the number of processes is the desired number of workers plus one.  Other MPI options to specify hosts, indicate how to allocate processes to hosts, etc. are available as well.  
+Here, NUM PROCS indicates the total number of processes to use, and must be greater than 1.  Ramba in MPI mode uses a single-program, multiple-data (SPMD) model, where NUM PROCS instances of your Python program are executed.  All of the array operations will be converted into collective MPI operations and distributed across the instances.  Note that non-array operations will execute on all instances (e.g., any messages printed, etc.), unless your program is MPI-aware and limits such operations to a particular rank.   Other MPI options to specify hosts, indicate how to allocate processes to hosts, etc. are available as well. 
 
 When running with MPI, the RAMBA_WORKERS environment variable is ignored.  RAMBA_NUM_THREADS can be used to indicate the number of threads to use per worker (defaults to 1).  
+
+NOTE:  Early versions of Rambe MPI support did not implement a SPMD model.  Instead, they used a controller-worker model, where one of the processes is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers which do not directly run the source program.  To reproduce the prior Ramba MPI behavior, set environment variables RAMBA_USE_CW=1 and RAMBA_USE_ZMQ=1.  
+
 
 ## Environment Variables Summary
 Coming Soon!
