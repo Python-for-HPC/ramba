@@ -1593,7 +1593,7 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
 
 
 @functools.lru_cache()
-def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True):
+def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_array_args, parallel=True, compiled=True):
     filler = filler.func
     reducer = reducer.func
     dprint(2, "get_sreduce_fill_index", filler, reducer, num_dim, ramba_array_args)
@@ -1645,7 +1645,10 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
     gdict[fillername] = njfiller
     gdict[reducername] = njreducer
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    if compiled:
+        return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    else:
+        return ldict[fname]
 
 
 def rec_buf_summary(rec_buf):
@@ -2028,9 +2031,24 @@ class RemoteState:
         ramba_array_args = [isinstance(x, gid_dist) for x in args]
         #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
         do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-        fargs = tuple([self.numpy_map[x.gid].get_view(x.dist[self.worker_num]) if isinstance(x, gid_dist) else x for x in args])
-        #fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-        do_fill(new_bcontainer, first.dim_lens, *fargs)
+        def fix_args(x):
+            if isinstance(x, gid_dist):
+                return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+            elif callable(x):
+                res = x()
+                return res
+            else:
+                return x
+        fargs = tuple([fix_args(x) for x in args])
+        ffirst = None
+        for farg in fargs:
+            print("farg:", farg, type(farg))
+            if isinstance(farg, np.ndarray):
+                print("shape:", farg.shape)
+                if ffirst is None:
+                    ffirst = farg
+        do_fill(new_bcontainer, ffirst.shape, *fargs)
+        #do_fill(new_bcontainer, first.dim_lens, *fargs)
 
     # TODO: should use get_view for output array?
     def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
@@ -2043,11 +2061,25 @@ class RemoteState:
         unpickle_args(args)
 
         ramba_array_args = [isinstance(x, gid_dist) for x in args]
-        #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
         do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-        fargs = tuple([self.numpy_map[x.gid].get_view(x.dist[self.worker_num]) if isinstance(x, gid_dist) else x for x in args])
-        #fargs = tuple([self.numpy_map[x].bcontainer if isinstance(x, uuid.UUID) else x for x in args])
-        do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
+        def fix_args(x):
+            if isinstance(x, gid_dist):
+                return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+            elif callable(x):
+                res = x()
+                return res
+            else:
+                return x
+        fargs = tuple([fix_args(x) for x in args])
+        ffirst = None
+        for farg in fargs:
+            print("farg:", farg, type(farg))
+            if isinstance(farg, np.ndarray):
+                print("shape:", farg.shape)
+                if ffirst is None:
+                    ffirst = farg
+        do_fill(new_bcontainer, ffirst.shape, starts, *fargs)
+        #do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
@@ -2061,26 +2093,23 @@ class RemoteState:
         #assert len(args) == 1
         if True:
             ramba_array_args = [isinstance(x, gid_dist) for x in args]
-            #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
             do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
                 if isinstance(x, gid_dist):
-                #if isinstance(x, uuid.UUID):
                     return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
-                    #return self.numpy_map[x].bcontainer
                 elif callable(x):
                     res = x()
                     return res
                 else:
                     return x
             fargs = tuple([fix_args(x) for x in args])
-            """
+            ffirst = None
             for farg in fargs:
-                print("farg:", farg, type(farg))
                 if isinstance(farg, np.ndarray):
-                    print("shape:", farg.shape)
-            """
-            res = do_fill(first.dim_lens, identity, *fargs)
+                    if ffirst is None:
+                        ffirst = farg
+            res = do_fill(ffirst.shape, identity, *fargs)
+            #res = do_fill(first.dim_lens, identity, *fargs)
             #print("worker do_fill res:", res, res[0].shape, res[1].shape)
             #return res
             after_map_time = timer()
@@ -2144,29 +2173,25 @@ class RemoteState:
         unpickle_args(args)
         if callable(identity):
             identity = identity()
-        #assert len(args) == 1
         if True:
             ramba_array_args = [isinstance(x, gid_dist) for x in args]
-            #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
             do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
             def fix_args(x):
                 if isinstance(x, gid_dist):
-                #if isinstance(x, uuid.UUID):
                     return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
-                    #return self.numpy_map[x].bcontainer
                 elif callable(x):
                     res = x()
                     return res
                 else:
                     return x
             fargs = tuple([fix_args(x) for x in args])
-            """
+            ffirst = None
             for farg in fargs:
-                print("farg:", farg, type(farg))
                 if isinstance(farg, np.ndarray):
-                    print("shape:", farg.shape)
-            """
-            res = do_fill(first.dim_lens, starts, identity, *fargs)
+                    if ffirst is None:
+                        ffirst = farg
+            res = do_fill(ffirst.shape, starts, identity, *fargs)
+            #res = do_fill(first.dim_lens, starts, identity, *fargs)
             #print("worker do_fill res:", res, res.shape)
             after_map_time = timer()
 
@@ -2321,7 +2346,6 @@ class RemoteState:
     ):
         start_worker_matmul = timer()
         dprint(3, "remote matmul", self.worker_num, out_gid, a_gid, b_gid)
-        # print( "remote matmul", out_gid, a_gid, a_distribution, b_gid, b_distribution)
         def send_recv(
             thearray, array_distribution, from_range, to_range, send_recv_gid
         ):
@@ -2355,7 +2379,6 @@ class RemoteState:
                         (send_recv_gid, data, block_intersection, sview)
                     )
                     end_time = timer()
-                    # print("sending",local_slice,data.shape,block_intersection,array_distribution)
                     send_stats.append((end_time - start_time, data.size))
 
             for to_worker, from_worker, block_intersection, sview in from_range:
@@ -2415,7 +2438,6 @@ class RemoteState:
                     except Exception:
                         print("some exception!", sys.exc_info()[0])
                         assert 0
-            # print ("ret: ", ret)
             return ret, send_stats, recv_stats
 
         class FakeLocal:
@@ -2479,12 +2501,7 @@ class RemoteState:
             clocal = FakeLocal(out_gid, self.worker_num)
             cdiv = shardview.to_division(clocal.whole_space[self.worker_num])
             partial_numpy = clocal.bcontainer
-            # print("pre alocal:", self.worker_num, a_distribution[self.worker_num], type(a_distribution[self.worker_num]), a_distribution[self.worker_num].to_base_slice())
-            # alocal = a.get_partial_view(shardview.to_base_slice(a_distribution[self.worker_num]), a_distribution[self.worker_num], global_index=False)
             alocal = a.get_view(a_distribution[self.worker_num])
-            # print("pre blocal:", self.worker_num, b_distribution[self.worker_num], type(b_distribution[self.worker_num]), b_distribution[self.worker_num].to_base_slice())
-            # blocal = b.get_partial_view(shardview.to_base_slice(b_distribution[self.worker_num]), b_distribution[self.worker_num], global_index=False)
-            # blocal = b.get_view(b_distribution[self.worker_num])
             blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
             nothing_to_do = all(x == 0 for x in alocal.shape) or all(
                 x == 0 for x in blocal.shape
@@ -2516,7 +2533,6 @@ class RemoteState:
                     )
                 clocal.bcontainer[cslice_struct] = alocal @ blocal
                 # clocal.bcontainer[cslice_struct] = np.dot(alocal, blocal)
-            #                print("special dot:", alocal.shape, blocal.shape)
             exec_end_time = timer()
 
             start_reduction_time = timer()
@@ -2529,7 +2545,6 @@ class RemoteState:
                     # this worker will send
                     if self.worker_num >= midpoint:
                         send_to = self.worker_num - midpoint
-                        # print("parreduction", max_worker, self.worker_num, "sending to", send_to)
                         self.comm_queues[send_to].put((a_send_recv, partial_numpy))
                         break
                     else:
@@ -2539,7 +2554,6 @@ class RemoteState:
                         if not (
                             max_worker % 2 == 1 and self.worker_num == midpoint - 1
                         ):
-                            # print("parreduction", max_worker, self.worker_num, "receiving")
                             try:
                                 incoming_uuid, incoming_partial = self.comm_queues[
                                     self.worker_num
@@ -2790,7 +2804,6 @@ class RemoteState:
                             ]
                             d += ashifted @ bshifted
                             # d += np.dot(ashifted, bshifted)
-                        #                            print("general dot:", ashifted.shape, bshifted.shape)
                         else:
                             ashifted = adataarray[
                                 :,
@@ -2808,7 +2821,6 @@ class RemoteState:
                             ]
                             d += ashifted @ bshifted
                             # d += np.dot(ashifted, bshifted)
-                    #                            print("general dot:", ashifted.shape, bshifted.shape)
                     except Exception:
                         print(self.worker_num, sys.exc_info()[0])
                         print(
@@ -3155,7 +3167,6 @@ class RemoteState:
             if isinstance(x, uuid.UUID):
                 lnd_arg = self.numpy_map[x]
                 lnd_arg.getborder(str(stencil_op_uuid) + str(i))
-        #        print("sstencil:", first.remote.worker_num, func, type(func), first.subspace, first.bcontainer.shape, neighborhood)
         assert isinstance(func, StencilMetadata)
         # Convert from StencilMetadata to Numba StencilFunc
         fargs = [
@@ -3183,7 +3194,6 @@ class RemoteState:
         before_compile = timer()
 
         sfunc = func.compile({"neighborhood": tuple(worker_neighborhood)})
-        #        print("sstencil fargs:", first.remote.worker_num, sfunc, type(sfunc), worker_neighborhood, "\n", fargs)
         after_compile = timer()
 
         if create_flag:
@@ -3202,11 +3212,6 @@ class RemoteState:
             exec_time - after_compile,
             exec_time - sstencil_start
         )
-
-    #        print("sstencil sout:", first.remote.worker_num, sout)
-    #        new_bcontainer[first.core_slice] = sout[first.core_slice]
-    #        new_bcontainer[:] = sfunc(*fargs, out=new_bcontainer)
-    #        print("sstencil done", first.remote.worker_num, "\n", new_bcontainer)
 
     # TODO: should use get_view
     def scumulative_local(self, out_gid, in_gid, func):
@@ -3303,7 +3308,6 @@ class RemoteState:
             dprint(2, "function does not exist, creating it\n", code)
             exec(code, gdict, ldict)
             gdict[fname] = FunctionMetadata(ldict[fname], [], {})
-            # print (gdict.keys())
         func = gdict[fname]
         times.append(timer())
 
@@ -5504,7 +5508,7 @@ class ndarray:
         if axis is None:
             DAG.instantiate(self)  # here or in sreduce?
             sres = sreduce(lambda x: (x,1), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
-            print("mean sres:", sres)
+            #print("mean sres:", sres)
             return sres[0] / sres[1]
         else:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
@@ -5536,7 +5540,7 @@ class ndarray:
         if axis is None:
             DAG.instantiate(self)  # here or in sreduce?
             sres = sreduce(lambda x: (x,1) if x != np.nan else (0,0), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
-            print("nanmean sres:", sres)
+            #print("nanmean sres:", sres)
             return sres[0] / sres[1]
         else:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
@@ -8093,7 +8097,6 @@ def sreduce_internal(func, reducer, identity, attr, *args, parallel=True):
         reducer = SreduceReducer(reducer, reducer)
 
     a_send_recv = uuid.uuid4()
-    #args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
     worker_results = remote_call_all(
         attr,
@@ -8359,6 +8362,7 @@ class RambaGroupby:
 
     def mean(self, dim=None, ret_separate=False):
         assert(self.num_groups)  # we don't handle the case where they didn't specify the number of groups yet
+        dprint(2, "groupby::mean:", self.array_to_group.shape, self.dim, self.group_array, self.num_groups)
         tprint(2, "Starting groupby mean.")
         mean_start = timer()
         # original dimensions minus groupby dimension with num-groups added to front
@@ -8386,7 +8390,14 @@ class RambaGroupby:
         def mean_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
+        res = sreduce_index(ldict["mean_func"],
+                            SreduceReducer(mean_reducer_worker, mean_reducer_driver),
+                            mean_identity(drop_groupdim, self.array_to_group.dtype),
+                            self.array_to_group,
+                            self.np_group,
+                            mean_sum(drop_groupdim, self.array_to_group.dtype),
+                            mean_count(drop_groupdim),
+                            parallel=False)
         tprint(2, "groupby mean time:", timer() - mean_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res[0])
