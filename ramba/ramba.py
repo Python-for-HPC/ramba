@@ -4863,6 +4863,7 @@ class ndarray:
 
         if reduction:
             assert not (axis is None or (axis == 0 and self.ndim == 1))
+            deferred_op.do_ops()
             dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
             k = dsz[axis]
             red_arr = empty(
