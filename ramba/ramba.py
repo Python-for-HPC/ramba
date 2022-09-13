@@ -4934,7 +4934,7 @@ class ndarray:
                 uop = getattr(v, op)
                 ret = uop(dtype=dtype)
             else:
-                ret = DAGshape(tuple([self.shape[:axis]]+[self.shape[axis+1:]]), dtype, False)
+                ret = DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
             return ret
         else:
             return DAGshape(self.shape, dtype, False)
