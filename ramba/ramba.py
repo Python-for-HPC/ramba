@@ -4611,6 +4611,14 @@ def apply_index(shape, index):
     return dim_shapes, (cindex, axismap)
 
 
+def getminmax(dtype):
+    try:
+        i = np.iinfo(dtype)
+        return (i[min],i[max])
+    except:
+        # not integer, assume float
+        return (np.NINF,np.PINF)
+
 # Deferred Ops stuff
 class ndarray:
     all_arrays = weakref.WeakSet()
@@ -4876,12 +4884,12 @@ class ndarray:
         return new_ndarray
 
     @classmethod
-    def internal_reduction1_executor(cls, temp_array, self, op, optext, imports, dtype, axis, optext2, opsep):
+    def internal_reduction1_executor(cls, temp_array, self, red_arr, op, optext, imports, dtype, axis, optext2, opsep):
         assert not (axis is None or (axis == 0 and self.ndim == 1))
         #deferred_op.do_ops()
         dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
         k = dsz[axis]
-        red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
+        #red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
         red_arr_bcast = ndarray(
             self.shape,
             gid=red_arr.gid,
@@ -4917,9 +4925,9 @@ class ndarray:
         return ret
 
     @DAGapi
-    def internal_reduction1(self, op, optext, imports, dtype, axis, optext2, opsep):
-        dsz, _, _ = shardview.reduce_axis(self.shape, self.distribution, axis)
-        return DAGshape(dsz, dtype, False)
+    def internal_reduction1(self, red_arr, op, optext, imports, dtype, axis, optext2, opsep):
+        #dsz, _, _ = shardview.reduce_axis(self.shape, self.distribution, axis)
+        return DAGshape(red_arr.shape, dtype, False)
 
     @DAGapi
     def internal_reduction2(self, op, optext, imports, dtype, axis):
@@ -4927,7 +4935,7 @@ class ndarray:
 
     @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=","
+        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0
     ):
         if dtype is None:
             dtype = self.dtype
@@ -4951,8 +4959,12 @@ class ndarray:
                 uop = getattr(v, op)
                 ret = uop(dtype=dtype)
             else:
-                #ret = DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
-                red_arr = self.internal_reduction1(op, optext, imports=imports, dtype=dtype, axis=axis, optext2=optext2, opsep=opsep)
+                if initval<0: initval = getminmax(dtype)[0]
+                elif initval>1: initval = getminmax(dtype)[1]
+                dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
+                red_arr = empty( dsz, dtype=dtype, distribution=dist )
+                red_arr[:] = initval
+                red_arr = self.internal_reduction1(red_arr, op, optext, imports=imports, dtype=dtype, axis=axis, optext2=optext2, opsep=opsep)
                 ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
             return ret
         else:
@@ -6551,14 +6563,14 @@ for (abf, code) in array_unaryop_funcs.items():
     setattr(ndarray, abf, new_func)
 
 array_simple_reductions = {
-    "sum":("","+"), 
-    "prod":("","*"), 
-    "min":("min",","), 
-    "max":("max",",")
+    "sum":("","+",0), 
+    "prod":("","*",1), 
+    "min":("min",",",-1), 
+    "max":("max",",",-2)
 }
 for (abf, code) in array_simple_reductions.items():
     new_func = make_method(
-        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True, optext2=code[0], opsep=code[1]
+        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True, optext2=code[0], opsep=code[1], initval=code[2]
     )
     setattr(ndarray, abf, new_func)
 
