@@ -767,12 +767,14 @@ def reduce_axis(size, dist, axis):
         set([_start(dist[i])[axis] for i in range(len(dist)) if not is_empty(dist[i])])
     )
     rdist = clean_dist(dist)
+    bdist = clean_dist(dist)
     for i in range(len(rdist)):
         if rdist[i, 1, axis] in divs:
             rdist[i, 1, axis] = divs.index(rdist[i, 1, axis])
             rdist[i, 0, axis] = 1
+        bdist[i, 2, axis] = -1
     rsz = UT.tuple_setitem(size, axis, len(divs))
-    return rsz, rdist
+    return rsz, rdist, bdist
 
 
 def compute_from_border(size, distribution, border):

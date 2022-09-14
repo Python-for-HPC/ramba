@@ -4853,7 +4853,7 @@ class ndarray:
 
     @classmethod
     def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None
+        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=","
     ):
         dprint(1, "array_unaryop_executor", id(self), op, optext)
         if dtype is None:
@@ -4863,22 +4863,36 @@ class ndarray:
 
         if reduction:
             assert not (axis is None or (axis == 0 and self.ndim == 1))
-            deferred_op.do_ops()
-            dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
+            #deferred_op.do_ops()
+            dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
             k = dsz[axis]
-            red_arr = empty(
-                dsz, dtype=dtype, distribution=dist, no_defer=True
-            )  # should create immediately
-            remote_exec_all(
-                "array_unaryop",
-                self.gid,
-                red_arr.gid,
-                self.distribution,
-                dist,
-                op,
-                axis,
-                dtype,
+            red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
+            red_arr_bcast = ndarray(
+                self.shape,
+                gid=red_arr.gid,
+                distribution=bdist,
+                local_border=0,
+                readonly=False
             )
+            deferred_op.add_op(
+                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, self, ")"], 
+                red_arr_bcast, 
+                imports=imports
+            )
+            #red_arr = empty(
+            #    dsz, dtype=dtype, distribution=dist, no_defer=True
+            #)  # should create immediately
+            #remote_exec_all(
+            #    "array_unaryop",
+            #    self.gid,
+            #    red_arr.gid,
+            #    self.distribution,
+            #    dist,
+            #    op,
+            #    axis,
+            #    dtype,
+            #)
+            del(self)  # drop reference to original array before second phase
             sl = tuple(0 if i == axis else slice(None) for i in range(red_arr.ndim))
             if k == 1:  # done, just get the slice with axis removed
                 ret = red_arr[sl]
@@ -4911,7 +4925,7 @@ class ndarray:
 
     @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None
+        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=","
     ):
         if dtype is None:
             dtype = self.dtype
@@ -6427,6 +6441,7 @@ def make_method(
     reverse=False,
     imports=[],
     dtype=None,
+    **kwargs_m
 ):
     if unary:
 
@@ -6434,7 +6449,7 @@ def make_method(
             if "dtype" not in kwargs:
                 kwargs["dtype"] = dtype
             retval = self.array_unaryop(
-                name, optext, reduction, imports=imports, **kwargs
+                name, optext, reduction, imports=imports, **kwargs_m, **kwargs
             )
             return retval
 
@@ -6531,10 +6546,15 @@ for (abf, code) in array_unaryop_funcs.items():
     )
     setattr(ndarray, abf, new_func)
 
-array_simple_reductions = ["sum", "prod", "min", "max"]
-for abf in array_simple_reductions:
+array_simple_reductions = {
+    "sum":("","+"), 
+    "prod":("","*"), 
+    "min":("min",","), 
+    "max":("max",",")
+}
+for (abf, code) in array_simple_reductions.items():
     new_func = make_method(
-        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True
+        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True, optext2=code[0], opsep=code[1]
     )
     setattr(ndarray, abf, new_func)
 
