@@ -684,6 +684,12 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_linspace_5(self):
+        def impl(app):
+            return app.linspace(10, 30, dtype=int)
+
+        run_both(impl, array_comp=np.allclose)
+
     def test_mgrid_1(self):
         def impl(app):
             S = 20

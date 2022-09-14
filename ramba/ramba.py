@@ -7964,18 +7964,10 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
     else:
         step = length / num
 
-    def impl(bcontainer, dim_lens, starts):
-        local_start = start + (starts[0] * step)
-        local_stop = start + ((starts[0] + dim_lens[0]) * step)
-        bcontainer[:] = np.linspace(
-            local_start, local_stop, num=dim_lens[0], endpoint=False, dtype=dtype
-        )
-
-    res = init_array(
-        num,
-        Filler(impl, mode=Filler.WHOLE_ARRAY_INPLACE, do_compile=False),
-        dtype=dtype,
-    )
+    if dtype is None:
+        res = arange(num)*step+start
+    else:
+        res = (arange(num)*step+start).astype(dtype)
 
     if retstep:
         return (res, step)
