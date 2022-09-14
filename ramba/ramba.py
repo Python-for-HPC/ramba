@@ -3549,7 +3549,7 @@ class RemoteState:
                 for k, v in othervars.items():
                     dprint(4, "others:", k, v, type(v))
 
-                func(**arrvars, **othervars)
+                func(shardview._index_start(r), **arrvars, **othervars)
                 for k, v in arrvars.items():
                     dprint(4, "results:", k, v, type(v))
         times.append(timer())
@@ -6671,14 +6671,9 @@ class deferred_op:
         else:
             code = ""
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
-        code = "def " + fname + "(" + ",".join(args) + "):\n" + code + "\n  pass"
-        # code = "@numba.njit\ndef "+fname+"("+",".join(args)+"):\n"+code
+        code = "def " + fname + "(global_start," + ",".join(args) + "):\n" + code + "\n  pass"
         dprint(2, "Updated code:\n" + code)
         times.append(timer())
-        # execute on remote nodes
-        # [ remote_states[i].run_deferred_ops.remote(
-        #              self.uuid, live_gids, self.delete_gids, self.use_other.items(), self.distribution, fname, code, self.imports)
-        #          for i in range(num_workers) ]
         remote_exec_all(
             "run_deferred_ops",
             self.uuid,
@@ -7115,10 +7110,14 @@ def copy(arr, local_border=0):
     return new_ndarray
 
 
-# TODO: should make this deferred;  need a njit function to provide global index
-def arange(size, local_border=0):
-    return init_array(size, lambda x: x[0], local_border=local_border, dtype=int64)
+def arange_executor(temp_ndarray, size, local_border=0):
+    res = empty(size, local_border=local_border, dtype=int64)
+    deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
+    return res
 
+@DAGapi
+def arange(size, local_border=0):
+    return DAGshape((size,), int64, False)
 
 def asarray(x):
     dprint(1, "asarray global")
