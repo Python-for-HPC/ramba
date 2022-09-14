@@ -4861,67 +4861,69 @@ class ndarray:
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if reduction:
-            assert not (axis is None or (axis == 0 and self.ndim == 1))
-            #deferred_op.do_ops()
-            dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
-            k = dsz[axis]
-            red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr_bcast = ndarray(
-                self.shape,
-                gid=red_arr.gid,
-                distribution=bdist,
-                local_border=0,
-                readonly=False
-            )
-            deferred_op.add_op(
-                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, self, ")"], 
-                red_arr_bcast, 
-                imports=imports
-            )
-            #red_arr = empty(
-            #    dsz, dtype=dtype, distribution=dist, no_defer=True
-            #)  # should create immediately
-            #remote_exec_all(
-            #    "array_unaryop",
-            #    self.gid,
-            #    red_arr.gid,
-            #    self.distribution,
-            #    dist,
-            #    op,
-            #    axis,
-            #    dtype,
-            #)
-            del(self)  # drop reference to original array before second phase
-            sl = tuple(0 if i == axis else slice(None) for i in range(red_arr.ndim))
-            if k == 1:  # done, just get the slice with axis removed
-                ret = red_arr[sl]
-            else:
-                # need global reduction
-                arr = empty_like(red_arr[sl])
-                code = ["", arr, " = " + optext + "( np.array([", red_arr[sl]]
-                for j in range(1, k):
-                    sl = tuple(
-                        j if i == axis else slice(None) for i in range(red_arr.ndim)
-                    )
-                    code += [", ", red_arr[sl]]
-                code.append("]) )")
-                deferred_op.add_op(code, arr, imports=imports)
-                ret = arr
-            return ret
+        assert not reduction
+        new_ndarray = create_array_with_divisions(
+            self.shape,
+            self.distribution,
+            local_border=self.local_border,
+            dtype=dtype,
+        )
+        deferred_op.add_op(
+            ["", new_ndarray, " = " + optext + "(", self, ")"],
+            new_ndarray,
+            imports=imports,
+        )
+        return new_ndarray
+
+    @classmethod
+    def internal_reduction1_executor(cls, temp_array, self, op, optext, imports, dtype, axis, optext2, opsep):
+        assert not (axis is None or (axis == 0 and self.ndim == 1))
+        #deferred_op.do_ops()
+        dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
+        k = dsz[axis]
+        red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
+        red_arr_bcast = ndarray(
+            self.shape,
+            gid=red_arr.gid,
+            distribution=bdist,
+            local_border=0,
+            readonly=False
+        )
+        deferred_op.add_op(
+            ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, self, ")"], 
+            red_arr_bcast, 
+            imports=imports
+        )
+        return red_arr
+
+    @classmethod
+    def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
+        sl = tuple(0 if i == axis else slice(None) for i in range(self.ndim))
+        k = self.shape[axis]
+        if k == 1:  # done, just get the slice with axis removed
+            ret = self[sl]
         else:
-            new_ndarray = create_array_with_divisions(
-                self.shape,
-                self.distribution,
-                local_border=self.local_border,
-                dtype=dtype,
-            )
-            deferred_op.add_op(
-                ["", new_ndarray, " = " + optext + "(", self, ")"],
-                new_ndarray,
-                imports=imports,
-            )
-            return new_ndarray
+            # need global reduction
+            arr = empty_like(self[sl])
+            code = ["", arr, " = " + optext + "( np.array([", self[sl]]
+            for j in range(1, k):
+                sl = tuple(
+                    j if i == axis else slice(None) for i in range(self.ndim)
+                )
+                code += [", ", self[sl]]
+            code.append("]) )")
+            deferred_op.add_op(code, arr, imports=imports)
+            ret = arr
+        return ret
+
+    @DAGapi
+    def internal_reduction1(self, op, optext, imports, dtype, axis, optext2, opsep):
+        dsz, _, _ = shardview.reduce_axis(self.shape, self.distribution, axis)
+        return DAGshape(dsz, dtype, False)
+
+    @DAGapi
+    def internal_reduction2(self, op, optext, imports, dtype, axis):
+        return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
 
     @DAGapi
     def array_unaryop(
@@ -4949,7 +4951,9 @@ class ndarray:
                 uop = getattr(v, op)
                 ret = uop(dtype=dtype)
             else:
-                ret = DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
+                #ret = DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
+                red_arr = self.internal_reduction1(op, optext, imports=imports, dtype=dtype, axis=axis, optext2=optext2, opsep=opsep)
+                ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
             return ret
         else:
             return DAGshape(self.shape, dtype, False)
