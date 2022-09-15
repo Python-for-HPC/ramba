@@ -5053,7 +5053,8 @@ class ndarray:
             return False
         return True
 
-    def broadcast_to(self, shape):
+    @classmethod
+    def broadcast_to_executor(cls, temp_array, self, shape):
         dprint(1, "broadcast_to:", self.shape, shape)
         new_dims = len(shape) - len(self.shape)
         dprint(4, "new_dims:", new_dims)
@@ -5080,6 +5081,14 @@ class ndarray:
             local_border=0,
             readonly=True
         )
+
+    @DAGapi
+    def broadcast_to(self, shape):
+        sslice = shape[-len(self.shape) :]
+        z1 = zip(sslice, self.shape)
+        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+            raise ValueError("Non-broadcastable.")
+        return DAGshape(shape, self.dtype, False)
 
     @classmethod
     def broadcast(cls, a, b):
@@ -7727,6 +7736,11 @@ def sync():
 class ReshapeError(Exception):
     pass
 
+def broadcast_to(a, shape):
+    if not isinstance(a, ndarray):
+        raise NotImplementedError("broadcast_to only supports ndarrays")
+
+    return a.broadcast_to(shape)
 
 def expand_dims(a, axis):
     dprint(1, "expand_dims global")
