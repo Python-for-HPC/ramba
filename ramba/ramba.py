@@ -4218,14 +4218,41 @@ class DAG:
         assert False
 
     @classmethod
-    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
-        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
-        if dag_node in dag_node_processed:
-            return
-        dag_node_processed.add(dag_node)
-        if dag_node.executed:
-            return
+    def rewrite_arange_reshape(cls, dag_node):
+        # arange-reshape_copy to from_function
+        if dag_node.name == "reshape_copy":
+            new_shape = dag_node.args[1]
+            if len(dag_node.backward_deps) == 1:
+                back = dag_node.backward_deps[0]
+                if back.name == "create_array":
+                    bshape = back.args[0]
+                    bfiller = back.args[1]
+                    if len(bshape) == 1:
+                        if isinstance(bfiller, str):
+                            bfillval = eval(bfiller)
+                            def dyn_filler(indices):
+                                return bfillval
 
+                            new_dag_node = DAG("create_array", create_array_executor, False, [], (new_shape, dyn_filler), ("rewrite_arange_reshape", 0), {}, output=dag_node.output)
+                            dag_node.replaced(new_dag_node)
+                            return new_dag_node
+                        else:
+                            def dyn_filler(indices):
+                                num_dim = len(indices)
+                                cur = indices[-1]
+                                cur_mul = new_shape[-1]
+                                for idx in range(num_dim - 2, -1, -1):
+                                    cur += cur_mul * indices[idx]
+                                    cur_mul *= new_shape[idx]
+                                return bfiller((cur,))
+
+                            new_dag_node = DAG("create_array", create_array_executor, False, [], (new_shape, dyn_filler), ("rewrite_arange_reshape", 0), {}, output=dag_node.output)
+                            dag_node.replaced(new_dag_node)
+                            return new_dag_node
+        return False
+
+    @classmethod
+    def rewrite_stack_mean_advindex(cls, dag_node):
         # stack-mean-advindex to groupby
         if dag_node.name == "stack":
             stack_dag = dag_node
@@ -4300,7 +4327,12 @@ class DAG:
                             dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array.dag], (orig_array, getitem_axis, group_array, slot_indices, stack_op_name), ("DAG conversion nanmean", 0), {})
                             stack_dag.replaced(dag_node)
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
-        elif dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
+                            return dag_node
+        return None
+
+    @classmethod
+    def rewrite_concatenate_binop_getitem(cls, dag_node):
+        if dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
             # Check dag_node indices!  FIX ME
             gia_node = dag_node
 
@@ -4408,6 +4440,27 @@ class DAG:
                                             dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
                                             # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
                                             gia_node.replaced(dag_node)
+                                            return dag_node
+        return None
+
+    @classmethod
+    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
+        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
+        if dag_node in dag_node_processed:
+            return
+        dag_node_processed.add(dag_node)
+        if dag_node.executed:
+            return
+
+        rewrite_rules = [DAG.rewrite_stack_mean_advindex,
+                         DAG.rewrite_concatenate_binop_getitem,
+                         DAG.rewrite_arange_reshape]
+        for rr in rewrite_rules:
+            rrres = rr(dag_node)
+            if rrres:
+                dag_node = rrres
+                break
+
         if dag_node.output() is None:
             dag_output_shape=None
         else:
