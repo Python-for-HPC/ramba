@@ -926,6 +926,7 @@ def distindex_internal(dist, dim, accum):
 def distindex(dist):
     yield from distindex_internal(dist, 0, [])
 
+
 # class that represents the base distributed array (set of bcontainers on remotes)
 # this has a unique GID, and a distribution to specify the actual partition
 # multiple ndarrays (arrays and slices) can refer to the same bdarray
@@ -948,6 +949,7 @@ class bdarray:
         self.gid_map[gid] = self
         self.dtype = dtype
         self.idag = None
+        weakref.finalize(self, lambda x: x._exp_del(), self)
 
     @property
     def dag(self):
@@ -958,10 +960,16 @@ class bdarray:
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
 
-    def __del__(self):
+    def _exp_del(self):
         dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self), flush=False)
         #if self.remote_constructed:  # check remote constructed flag
         #    deferred_op.del_remote_array(self.gid)
+
+    def _exp_del_atexit(self):
+        dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
+
+    #def __del__(self):
+    #    self.exp_del()
 
     # this function is called by ndarray as it is deleted (from __del__)
     def ndarray_del_callback(self):
@@ -973,11 +981,8 @@ class bdarray:
 
     @staticmethod
     def atexit():
-        def alternate_del(self):
-            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
-
         dprint(2,"at exit -- disabling del handing")
-        bdarray.__del__ = alternate_del
+        bdarray._exp_del = bdarray._exp_del_atexit
 
 
     def add_nd(self, nd):
@@ -2042,13 +2047,10 @@ class RemoteState:
         fargs = tuple([fix_args(x) for x in args])
         ffirst = None
         for farg in fargs:
-            print("farg:", farg, type(farg))
             if isinstance(farg, np.ndarray):
-                print("shape:", farg.shape)
                 if ffirst is None:
                     ffirst = farg
         do_fill(new_bcontainer, ffirst.shape, *fargs)
-        #do_fill(new_bcontainer, first.dim_lens, *fargs)
 
     # TODO: should use get_view for output array?
     def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
@@ -2073,13 +2075,10 @@ class RemoteState:
         fargs = tuple([fix_args(x) for x in args])
         ffirst = None
         for farg in fargs:
-            print("farg:", farg, type(farg))
             if isinstance(farg, np.ndarray):
-                print("shape:", farg.shape)
                 if ffirst is None:
                     ffirst = farg
         do_fill(new_bcontainer, ffirst.shape, starts, *fargs)
-        #do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
@@ -4218,14 +4217,41 @@ class DAG:
         assert False
 
     @classmethod
-    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
-        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
-        if dag_node in dag_node_processed:
-            return
-        dag_node_processed.add(dag_node)
-        if dag_node.executed:
-            return
+    def rewrite_arange_reshape(cls, dag_node):
+        # arange-reshape_copy to from_function
+        if dag_node.name == "reshape_copy":
+            new_shape = dag_node.args[1]
+            if len(dag_node.backward_deps) == 1:
+                back = dag_node.backward_deps[0]
+                if back.name == "create_array":
+                    bshape = back.args[0]
+                    bfiller = back.args[1]
+                    if len(bshape) == 1:
+                        if isinstance(bfiller, str):
+                            bfillval = eval(bfiller)
+                            def dyn_filler(indices):
+                                return bfillval
 
+                            new_dag_node = DAG("create_array", create_array_executor, False, [], (new_shape, dyn_filler), ("rewrite_arange_reshape", 0), {}, output=dag_node.output)
+                            dag_node.replaced(new_dag_node)
+                            return new_dag_node
+                        else:
+                            def dyn_filler(indices):
+                                num_dim = len(indices)
+                                cur = indices[-1]
+                                cur_mul = new_shape[-1]
+                                for idx in range(num_dim - 2, -1, -1):
+                                    cur += cur_mul * indices[idx]
+                                    cur_mul *= new_shape[idx]
+                                return bfiller((cur,))
+
+                            new_dag_node = DAG("create_array", create_array_executor, False, [], (new_shape, dyn_filler), ("rewrite_arange_reshape", 0), {}, output=dag_node.output)
+                            dag_node.replaced(new_dag_node)
+                            return new_dag_node
+        return False
+
+    @classmethod
+    def rewrite_stack_mean_advindex(cls, dag_node):
         # stack-mean-advindex to groupby
         if dag_node.name == "stack":
             stack_dag = dag_node
@@ -4300,7 +4326,12 @@ class DAG:
                             dag_node = DAG("groupby.nanmean", run_and_post, False, [orig_array.dag], (orig_array, getitem_axis, group_array, slot_indices, stack_op_name), ("DAG conversion nanmean", 0), {})
                             stack_dag.replaced(dag_node)
                             # FIX ME Need forward_dep here from orig_array DAG node to the new one created here?
-        elif dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
+                            return dag_node
+        return None
+
+    @classmethod
+    def rewrite_concatenate_binop_getitem(cls, dag_node):
+        if dag_node.name in ["getitem_array", "ndarray.getitem_array"]:
             # Check dag_node indices!  FIX ME
             gia_node = dag_node
 
@@ -4408,6 +4439,27 @@ class DAG:
                                             dag_node = DAG("groupby.binop", run_and_post, False, [orig_array_lhs.dag, rhs.dag], (orig_array_lhs, rhs, getitem_axis, group_array, slot_indices), ("DAG conversion binop", 0), {})
                                             # FIX ME Need forward_dep here from orig_array and rhs DAG node to the new one created here?
                                             gia_node.replaced(dag_node)
+                                            return dag_node
+        return None
+
+    @classmethod
+    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
+        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
+        if dag_node in dag_node_processed:
+            return
+        dag_node_processed.add(dag_node)
+        if dag_node.executed:
+            return
+
+        rewrite_rules = [DAG.rewrite_stack_mean_advindex,
+                         DAG.rewrite_concatenate_binop_getitem,
+                         DAG.rewrite_arange_reshape]
+        for rr in rewrite_rules:
+            rrres = rr(dag_node)
+            if rrres:
+                dag_node = rrres
+                break
+
         if dag_node.output() is None:
             dag_output_shape=None
         else:
@@ -4620,6 +4672,7 @@ def getminmax(dtype):
         # not integer, assume float
         return (np.NINF,np.PINF)
 
+
 # Deferred Ops stuff
 class ndarray:
     all_arrays = weakref.WeakSet()
@@ -4682,6 +4735,7 @@ class ndarray:
             self.once = False
         if ndebug >= 3:
             ndarray.all_arrays.add(self)
+        weakref.finalize(self, lambda x: x._exp_del(), self)
 
     @property
     def dag(self):
@@ -4775,8 +4829,8 @@ class ndarray:
     #    rev_base_offsets = [np.flip(x.base_offset) for x in self.distribution]
     #    return ndarray((self.shape[1], self.shape[0]), gid=self.gid, distribution=shardview.divisions_to_distribution(outdiv, base_offset=rev_base_offsets), order=("C" if self.order == "F" else "F"), broadcasted_dims=(None if self.broadcasted_dims is None else self.broadcasted_dims[::-1]))
 
-    def __del__(self):
-        dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
+    def _exp_del(self):
+        dprint(2, "ndarray::exp_del", self, self.gid, id(self), id(self.bdarray), flush=False)
         #ndarray_gids[self.gid][0]-=1
         self.bdarray.ndarray_del_callback()
     """
@@ -4786,13 +4840,27 @@ class ndarray:
         #    del ndarray_gids[self.gid]
     """
 
+    def _exp_del_atexit(self):
+        dprint(2, "Deleting (at exit) ndarray", self.gid, self)
+
+    #def __del__(self):
+    #    dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
+    #    #ndarray_gids[self.gid][0]-=1
+    #    self.bdarray.ndarray_del_callback()
+    #"""
+    #    #if ndarray_gids[self.gid][0] <=0:
+    #    #    if ndarray_gids[self.gid][1]:  # check remote constructed flag
+    #    #        deferred_op.del_remote_array(self.gid)
+    #    #    del ndarray_gids[self.gid]
+    #"""
+
     @staticmethod
     def atexit():
-        def alternate_del(self):
-            dprint(2, "Deleting (at exit) ndarray", self.gid, self)
+#        def alternate_del(self):
+#            dprint(2, "Deleting (at exit) ndarray", self.gid, self)
 
         dprint(2,"at exit -- disabling ndarray del handing")
-        ndarray.__del__ = alternate_del
+        ndarray._exp_del = ndarray._exp_del_atexit
 
 
     def __str__(self):

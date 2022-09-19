@@ -388,3 +388,211 @@ class TestGroupby:
         #    print("rres:", rres.dtype, rres.shape, rres)
         assert np.allclose(xnres, rres)
 
+
+class TestGroupbyVariations:
+    def test_mean_groupby_slice1(self):
+        offset = 25
+        def ramba_impl(x, slice_size):
+            rlin = ramba.fromarray(x)
+            rlin = rlin[:, offset:offset+slice_size]
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=365)
+            #breakpoint()
+            gbmean = gb.mean()
+            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final ramba:", final.dtype)
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin, slice_size):
+            rlin = rlin[:, offset:offset+slice_size]
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbmean = gb.mean("time")
+            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final xarray:", final.dtype)
+            return final.data
+
+        #size = (1, 366)
+        #size = (1, 731)
+        total_size = (1, 400)
+        slice_size = 365
+        rlin = np.arange(total_size[0] * total_size[1]).reshape(total_size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin, slice_size)
+        rres = ramba_impl(rlin, slice_size)
+        with np.printoptions(threshold=np.inf):
+            #print("xnres:", xnres.dtype)
+            #print("rres:", rres.dtype)
+            print("xnres:", xnres.dtype, xnres)
+            print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_mean_groupby_transpose1(self):
+        def ramba_impl(x):
+            rlin = ramba.fromarray(x)
+            rlin = rlin.T
+            rshape = rlin.shape
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=rshape[1], freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=365)
+            #breakpoint()
+            gbmean = gb.mean()
+            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final ramba:", final.dtype)
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin):
+            rlin = rlin.T
+            rshape = rlin.shape
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=rshape[1], freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbmean = gb.mean("time")
+            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final xarray:", final.dtype)
+            return final.data
+
+        total_size = (365, 1)
+        rlin = np.arange(total_size[0] * total_size[1]).reshape(total_size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin)
+        rres = ramba_impl(rlin)
+        with np.printoptions(threshold=np.inf):
+            #print("xnres:", xnres.dtype)
+            #print("rres:", rres.dtype)
+            print("xnres:", xnres.dtype, xnres)
+            print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_mean_groupby_slice_transpose1(self):
+        offset = 25
+        def ramba_impl(x, slice_size):
+            rlin = ramba.fromarray(x)
+            rlin = rlin.T
+            rlin = rlin[:, offset:offset+slice_size]
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=365)
+            #breakpoint()
+            gbmean = gb.mean()
+            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final ramba:", final.dtype)
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin, slice_size):
+            rlin = rlin.T
+            rlin = rlin[:, offset:offset+slice_size]
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbmean = gb.mean("time")
+            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final xarray:", final.dtype)
+            return final.data
+
+        #size = (1, 366)
+        #size = (1, 731)
+        total_size = (400, 1)
+        slice_size = 365
+        rlin = np.arange(total_size[0] * total_size[1]).reshape(total_size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin, slice_size)
+        rres = ramba_impl(rlin, slice_size)
+        with np.printoptions(threshold=np.inf):
+            #print("xnres:", xnres.dtype)
+            #print("rres:", rres.dtype)
+            print("xnres:", xnres.dtype, xnres)
+            print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
+    def test_mean_groupby_slice_transpose2(self):
+        offset = 25
+        def ramba_impl(x, slice_size):
+            rlin = ramba.fromarray(x)
+            rlin = rlin[offset:offset+slice_size, :]
+            rlin = rlin.T
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            coords = da.coords["time"].values
+            coord_days = ramba.array([pd.Timestamp(x).dayofyear - 1 for x in coords])
+            gb = da.data.groupby(1, coord_days, num_groups=365)
+            #breakpoint()
+            gbmean = gb.mean()
+            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final ramba:", final.dtype)
+            return final.asarray()
+
+        def xarray_numpy_impl(rlin, slice_size):
+            rlin = rlin[offset:offset+slice_size, :]
+            rlin = rlin.T
+            da = xarray.DataArray(
+                rlin,
+                coords={"time":pd.date_range(start="1/1/2001", periods=slice_size, freq="D")},
+                dims=("x", "time"),
+            )
+            gb = da.groupby("time.dayofyear")
+            gbmean = gb.mean("time")
+            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #return gbmean
+            final = gb - gbmean
+            print("final xarray:", final.dtype)
+            return final.data
+
+        #size = (1, 366)
+        #size = (1, 731)
+        total_size = (400, 1)
+        slice_size = 365
+        rlin = np.arange(total_size[0] * total_size[1]).reshape(total_size)
+        #rlin = np.random.random(size)
+        xnres = xarray_numpy_impl(rlin, slice_size)
+        rres = ramba_impl(rlin, slice_size)
+        with np.printoptions(threshold=np.inf):
+            #print("xnres:", xnres.dtype)
+            #print("rres:", rres.dtype)
+            print("xnres:", xnres.dtype, xnres)
+            print("rres:", rres.dtype, rres)
+        assert np.allclose(xnres, rres)
+
