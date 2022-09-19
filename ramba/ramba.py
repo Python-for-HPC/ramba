@@ -4477,6 +4477,7 @@ class DAG:
     def instantiate_dag_node(cls, dag_node, do_ops=True, **kwargs):
         if dag_node.executed:
             assert len(dag_node.backward_deps) == 0
+            deferred_op.do_ops()
             return
 
         cls.in_evaluate += 1
