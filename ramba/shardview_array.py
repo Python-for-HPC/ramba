@@ -389,7 +389,10 @@ def array_to_view(sv, arr):
     # add additonal axes as needed (numpy broadcast)
     newdims = [_size(sv)[i] for i, v in enumerate(_axis_map(sv)) if v < 0]
     if len(newdims) > 0:
-        newdims = tuple(newdims) + arr2.shape
+        if len_size(sv)>len(newdims):
+            newdims = tuple(newdims) + arr2.shape
+        else:
+            newdims = tuple(newdims)
         arr2 = np.broadcast_to(arr2, newdims)
     # get new mapping from arr2 axes to output axesa
     sortmap = sorted(list(_axis_map(sv)))
