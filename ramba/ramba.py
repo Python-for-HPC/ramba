@@ -4900,14 +4900,15 @@ class ndarray:
                 red_arr_bcast,
                 imports=imports,
                 precode = ["", tmp, " = ", initval],
-                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = ", tmp]
+                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(", 
+                    red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"]"+opsep, tmp, ")"]
             )
         else:
             deferred_op.add_op(
                 ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
                 red_arr_bcast, 
                 imports=imports,
-                axis_reduce=(axis, red_arr_bcast, initval)
+                axis_reduce=(axis, red_arr_bcast)
             )
         return red_arr
 
@@ -4971,6 +4972,7 @@ class ndarray:
                 if (asarray):
                     dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
                     red_arr = empty( dsz, dtype=dtype, distribution=dist )
+                    red_arr[:] = initval
                     red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                     return red_arr.internal_reduction2b(op, dtype)
 
@@ -4991,6 +4993,7 @@ class ndarray:
             else:
                 dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
                 red_arr = empty( dsz, dtype=dtype, distribution=dist )
+                red_arr[:] = initval
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
             return ret
@@ -6739,8 +6742,6 @@ class deferred_op:
                 precode.append( "  itershape2 = itershape[:" + str(axis) + "] + (1,) + itershape[" + str(axis+1) +":]" )
                 precode.append( "  for pindex in numba.pndindex(itershape2):" )
                 precode.append( "    index = pindex[:" + str(axis) + "] + (slice(None),) + pindex[" + str(axis+1) +":]" )
-                for (_,v,i) in self.axis_reductions:
-                    precode.append( "    "+v+"[pindex] = "+i )
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
@@ -6956,7 +6957,7 @@ class deferred_op:
 
         # save axis reduction info as needed
         if (axis_reduce is not None):
-            a,v,i = axis_reduce
+            a,v = axis_reduce
             bd = bdarray.get_by_gid(v.gid)
             v= cls.ramba_deferred_ops.add_gid(
                 v.gid,
@@ -6965,8 +6966,7 @@ class deferred_op:
                 bd.pad,
                 bd.flex_dist and not bd.remote_constructed,
             )
-            i = cls.ramba_deferred_ops.add_var(i)
-            cls.ramba_deferred_ops.axis_reductions.append( (a, v, i) )
+            cls.ramba_deferred_ops.axis_reductions.append( (a, v) )
 
         # add codeline to list
         codeline = "".join(oplist)
