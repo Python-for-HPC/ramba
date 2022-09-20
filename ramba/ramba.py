@@ -6598,6 +6598,7 @@ class deferred_op:
             {}
         )  # subset of use_gids that already are remote_constructed
         self.use_other = {}  # map tmp var name to pickled data
+        self.temp_vars = {}
         self.codelines = []
         self.precode = []
         self.postcode = []
@@ -6626,10 +6627,25 @@ class deferred_op:
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
+    class temp_var:
+        def __init__(self):
+            pass
+
     def add_var(self, v):
-        nm = self.get_var_name()
-        self.use_other[nm] = pickle.dumps(v)
+        if isinstance(v, self.temp_var):
+            if v in self.temp_vars:
+                nm = self.temp_vars[v]
+            else:
+                nm = self.get_var_name()
+                self.temp_vars[v] = nm
+        else:
+            nm = self.get_var_name()
+            self.use_other[nm] = pickle.dumps(v)
         return nm
+
+    @classmethod
+    def get_temp_var(cls):
+        return cls.temp_var()
 
     # Execute what we have now
     def execute(self):
