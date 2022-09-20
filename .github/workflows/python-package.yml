@@ -5,9 +5,9 @@ name: Python package
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, reductions ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, reductions ]
 
 jobs:
   build:
@@ -27,7 +27,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        python -m pip install flake8 pytest
+        python -m pip install flake8 pytest-timeout
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
         python -m pip install xarray pandas mpi4py-mpich
         python setup.py install
@@ -39,8 +39,8 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest -k "not Dgemm"
+        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest -k "not Dgemm" --timeout 60
     - name: Test with pytest under MPI
       run: |
-        RAMBA_NUM_THREADS=1 mpiexec -n 2 pytest -k "not Dgemm"
+        RAMBA_NUM_THREADS=1 mpiexec -n 2 pytest -k "not Dgemm" --timeout 60
       shell: bash
