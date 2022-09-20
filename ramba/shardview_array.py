@@ -782,6 +782,22 @@ def reduce_axis(size, dist, axis):
     rsz = UT.tuple_setitem(size, axis, len(divs))
     return rsz, rdist, bdist
 
+# creates distribution reduced along all axes;  keeps 1 element for each division along each axis for local reductions
+@numba.njit(cache=True)
+def reduce_all_axes(size, dist):
+    rdist = clean_dist(dist)
+    bdist = clean_dist(dist)
+    rsz = size
+    for j in range(len(size)):
+        divs = list( set([_start(dist[i])[j] for i in range(len(dist)) if not is_empty(dist[i])]) )
+        for i in range(len(rdist)):
+            if rdist[i, 1, j] in divs:
+                rdist[i, 1, j] = divs.index(rdist[i, 1, j])
+            rdist[i, 0, j] = 1
+            bdist[i, 2, j] = -1
+        rsz = UT.tuple_setitem(rsz, j, len(divs))
+    return rsz, rdist, bdist
+
 
 def compute_from_border(size, distribution, border):
     # convert distribution to old format

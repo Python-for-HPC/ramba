@@ -4862,7 +4862,7 @@ class ndarray:
 
     @classmethod
     def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=","
+        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", asarray=False
     ):
         dprint(1, "array_unaryop_executor", id(self), op, optext)
         if dtype is None:
@@ -4893,12 +4893,22 @@ class ndarray:
             local_border=0,
             readonly=False
         )
-        deferred_op.add_op(
-            ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
-            red_arr_bcast, 
-            imports=imports,
-            axis_reduce=(axis, red_arr_bcast, initval)
-        )
+        if axis is None:
+            tmp = deferred_op.get_temp_var()
+            deferred_op.add_op(
+                ["", tmp, " = " + optext2 + "(", tmp, opsep, src_arr, ")"],
+                red_arr_bcast,
+                imports=imports,
+                precode = ["", tmp, " = ", initval],
+                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = ", tmp]
+            )
+        else:
+            deferred_op.add_op(
+                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
+                red_arr_bcast, 
+                imports=imports,
+                axis_reduce=(axis, red_arr_bcast, initval)
+            )
         return red_arr
 
     @classmethod
@@ -4920,6 +4930,19 @@ class ndarray:
         deferred_op.add_op(code, arr, imports=imports)
         return arr[sl1]
 
+    @classmethod
+    def internal_reduction2b_executor(cls, temp_array, self, op, dtype):
+        sl = (slice(0,1),)+(0,)*(self.ndim-1)
+        if all([i==1 for i in self.shape]):  # done, just return the array with all but one axis removed
+            return self[sl]
+        # need global reduction -- should be small (1 elem per worker)a
+        local = self.asarray()
+        uop = getattr(local, op)
+        val = uop(dtype=dtype)
+        arr = empty_like(self[sl])
+        arr[:] = val
+        return arr
+
     @DAGapi
     def internal_reduction1(self, src_arr, bdist, axis, initval, imports, optext2, opsep):
         return DAGshape(self.shape, self.dtype, self)
@@ -4929,8 +4952,12 @@ class ndarray:
         return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
 
     @DAGapi
+    def internal_reduction2b(self, op, dtype):
+        return DAGshape((1,), dtype, False)
+
+    @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0
+        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
     ):
         if dtype is None:
             dtype = self.dtype
@@ -4941,6 +4968,12 @@ class ndarray:
         elif initval>1: initval = getminmax(dtype)[1]
         if reduction:
             if axis is None or (axis == 0 and self.ndim == 1):
+                if (asarray):
+                    dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
+                    red_arr = empty( dsz, dtype=dtype, distribution=dist )
+                    red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
+                    return red_arr.internal_reduction2b(op, dtype)
+
                 DAG.instantiate(self)
                 g1 = remote_call_all(
                     "array_unaryop",
