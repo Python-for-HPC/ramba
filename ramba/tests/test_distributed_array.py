@@ -40,6 +40,17 @@ class TestStencil:
 
         run_both(impl)
 
+    def test4(self):                # Stencil fused with reduction
+        A = ramba.ones((50,5))
+        v = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum(axis=0).sum()
+        h = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum(axis=1).sum()
+        s = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum(asarray=True)[0]
+        z = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum()
+        B = np.ones((50,5))
+        n = (0.2*B[:-2] + 0.5*B[1:-1] + 0.3*B[2:]).sum()
+        print(v,h,s,z,n)
+        assert v==h and s==z and h==s and s==n
+
 class TestFusion:
     def test_fuse(self):
         a = ramba.zeros(1000,dtype=float)
