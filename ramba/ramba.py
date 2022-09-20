@@ -6599,6 +6599,8 @@ class deferred_op:
         )  # subset of use_gids that already are remote_constructed
         self.use_other = {}  # map tmp var name to pickled data
         self.codelines = []
+        self.precode = []
+        self.postcode = []
         self.imports = []
         self.axis_reductions = []
         self.varcount = 0
@@ -6693,7 +6695,9 @@ class deferred_op:
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
-            code = "\n".join(precode) + "\n      " + "\n      ".join(self.codelines)
+            code = ("\n".join(self.precode) + "\n" + "\n".join(precode) + 
+                    "\n      " + "\n      ".join(self.codelines) + 
+                    "\n  " + "\n  ".join(self.postcode) )
         else:
             code = ""
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
@@ -6757,10 +6761,43 @@ class deferred_op:
             )
             cls.last_call_time = t0
 
+    @classmethod
+    def __add_prepost( cls, oplist, post=False ):
+        codes = oplist[::2]
+        operands = oplist[1::2]
+        for i, x in enumerate(operands):
+            if isinstance(x, ndarray):
+                cls.ramba_deferred_ops.read_arrs.append((x.gid, x.distribution))
+                if x.shape == ():  # 0d check
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
+                else:
+                    bd = bdarray.get_by_gid(x.gid)
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
+                        x.gid,
+                        x.get_details(),
+                        bd.distribution,
+                        bd.pad,
+                        bd.flex_dist and not bd.remote_constructed,
+                    )
+                    # check if already remote_constructed
+                    if bd.remote_constructed:
+                        cls.ramba_deferred_ops.preconstructed_gids[x.gid] = oplist[
+                            1 + 2 * i
+                        ]
+            else:
+                oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x)
+        # add codeline to list
+        codeline = "".join(oplist)
+        if oplist[0]!="#":   # avoid adding empty comment -- should really check if starts with #
+            if post:
+                cls.ramba_deferred_ops.postcode.append(codeline)
+            else:
+                cls.ramba_deferred_ops.precode.append(codeline)
+        
     # add operations to the deferred stack; if not compatible, execute what we have first
     @classmethod
     def add_op(
-        cls, oplist, write_array, imports=[], axis_reduce=None
+        cls, oplist, write_array, imports=[], axis_reduce=None, precode=[], postcode=[]
     ):  # oplist is a list of alternating code string, variable reference, code ...
         t0 = timer()
         dprint(1, "ADD_OP: time from last", (t0 - cls.last_add_time) * 1000)
@@ -6823,8 +6860,9 @@ class deferred_op:
             orig_op = codes[1]
             oplist[1] = tmp_array
             oplist[2] = ' = '
-            cls.add_op( oplist, tmp_array, imports )
+            cls.add_op( oplist, tmp_array, imports, precode=precode )
             cls.ramba_deferred_ops.do_ops()
+            precode=[]
             oplist = [ '', write_array, orig_op, tmp_array ]
             operands = [ write_array, tmp_array ]
             codes = [ '', orig_op ]
@@ -6886,6 +6924,8 @@ class deferred_op:
         if oplist[0]!="#":   # avoid adding empty comment -- should really check if starts with #
             cls.ramba_deferred_ops.codelines.append(codeline)
         cls.ramba_deferred_ops.imports.extend(imports)
+        if len(precode)>0: cls.__add_prepost( precode )
+        if len(postcode)>0: cls.__add_prepost( postcode, post=True )
         t1 = timer()
         cls.last_add_time = t0
         dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)
