@@ -4915,7 +4915,7 @@ class ndarray:
 
     @classmethod
     def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=","
+        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", asarray=False
     ):
         dprint(1, "array_unaryop_executor", id(self), op, optext)
         if dtype is None:
@@ -4938,66 +4938,97 @@ class ndarray:
         return new_ndarray
 
     @classmethod
-    def internal_reduction1_executor(cls, temp_array, self, red_arr, op, optext, imports, dtype, axis, optext2, opsep):
-        assert not (axis is None or (axis == 0 and self.ndim == 1))
-        #deferred_op.do_ops()
-        dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
-        k = dsz[axis]
-        #red_arr = empty( dsz, dtype=dtype, distribution=dist, no_defer=True )
+    def internal_reduction1_executor(cls, temp_array, red_arr, src_arr, bdist, axis, initval, imports, optext2, opsep):
         red_arr_bcast = ndarray(
-            self.shape,
+            src_arr.shape,
             gid=red_arr.gid,
             distribution=bdist,
             local_border=0,
             readonly=False
         )
-        deferred_op.add_op(
-            ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, self, ")"], 
-            red_arr_bcast, 
-            imports=imports
-        )
+        if axis is None:
+            tmp = deferred_op.get_temp_var()
+            deferred_op.add_op(
+                ["", tmp, " = " + optext2 + "(", tmp, opsep, src_arr, ")"],
+                red_arr_bcast,
+                imports=imports,
+                precode = ["", tmp, " = ", initval],
+                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(", 
+                    red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"]"+opsep, tmp, ")"]
+            )
+        else:
+            deferred_op.add_op(
+                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
+                red_arr_bcast, 
+                imports=imports,
+                axis_reduce=(axis, red_arr_bcast)
+            )
         return red_arr
 
     @classmethod
     def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
-        sl = tuple(0 if i == axis else slice(None) for i in range(self.ndim))
+        sl1 = tuple(0 if i == axis else slice(None) for i in range(self.ndim))
+        sl2 = tuple(slice(0,1) if i == axis else slice(None) for i in range(self.ndim))
         k = self.shape[axis]
         if k == 1:  # done, just get the slice with axis removed
-            ret = self[sl]
-        else:
-            # need global reduction
-            arr = empty_like(self[sl])
-            code = ["", arr, " = " + optext + "( np.array([", self[sl]]
-            for j in range(1, k):
-                sl = tuple(
-                    j if i == axis else slice(None) for i in range(self.ndim)
-                )
-                code += [", ", self[sl]]
-            code.append("]) )")
-            deferred_op.add_op(code, arr, imports=imports)
-            ret = arr
-        return ret
+            return self[sl1]
+        # need global reduction
+        arr = empty_like(self[sl2])
+        code = ["", arr, " = " + optext + "( np.array(["]
+        for j in range(k):
+            sl = tuple(
+                slice(j,j+1) if i == axis else slice(None) for i in range(self.ndim)
+            )
+            code += [self[sl],", "]
+        code[-1] = "]) )"
+        deferred_op.add_op(code, arr, imports=imports)
+        return arr[sl1]
+
+    @classmethod
+    def internal_reduction2b_executor(cls, temp_array, self, op, dtype):
+        sl = (slice(0,1),)+(0,)*(self.ndim-1)
+        if all([i==1 for i in self.shape]):  # done, just return the array with all but one axis removed
+            return self[sl]
+        # need global reduction -- should be small (1 elem per worker)a
+        local = self.asarray()
+        uop = getattr(local, op)
+        val = uop(dtype=dtype)
+        arr = empty_like(self[sl])
+        arr[:] = val
+        return arr
 
     @DAGapi
-    def internal_reduction1(self, red_arr, op, optext, imports, dtype, axis, optext2, opsep):
-        #dsz, _, _ = shardview.reduce_axis(self.shape, self.distribution, axis)
-        return DAGshape(red_arr.shape, dtype, False)
+    def internal_reduction1(self, src_arr, bdist, axis, initval, imports, optext2, opsep):
+        return DAGshape(self.shape, self.dtype, self)
 
     @DAGapi
     def internal_reduction2(self, op, optext, imports, dtype, axis):
         return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
 
     @DAGapi
+    def internal_reduction2b(self, op, dtype):
+        return DAGshape((1,), dtype, False)
+
+    @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0
+        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
     ):
         if dtype is None:
             dtype = self.dtype
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
+        if initval<0: initval = getminmax(dtype)[0]
+        elif initval>1: initval = getminmax(dtype)[1]
         if reduction:
             if axis is None or (axis == 0 and self.ndim == 1):
+                if (asarray):
+                    dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
+                    red_arr = empty( dsz, dtype=dtype, distribution=dist )
+                    red_arr[:] = initval
+                    red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
+                    return red_arr.internal_reduction2b(op, dtype)
+
                 DAG.instantiate(self)
                 g1 = remote_call_all(
                     "array_unaryop",
@@ -5013,12 +5044,10 @@ class ndarray:
                 uop = getattr(v, op)
                 ret = uop(dtype=dtype)
             else:
-                if initval<0: initval = getminmax(dtype)[0]
-                elif initval>1: initval = getminmax(dtype)[1]
                 dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
                 red_arr = empty( dsz, dtype=dtype, distribution=dist )
                 red_arr[:] = initval
-                red_arr = self.internal_reduction1(red_arr, op, optext, imports=imports, dtype=dtype, axis=axis, optext2=optext2, opsep=opsep)
+                red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
             return ret
         else:
@@ -6658,8 +6687,12 @@ class deferred_op:
             {}
         )  # subset of use_gids that already are remote_constructed
         self.use_other = {}  # map tmp var name to pickled data
+        self.temp_vars = {}
         self.codelines = []
+        self.precode = []
+        self.postcode = []
         self.imports = []
+        self.axis_reductions = []
         self.varcount = 0
         self.keepalives = set()
         self.uuid = "ramba_def_ops_%05d" % (deferred_op.count)
@@ -6683,10 +6716,25 @@ class deferred_op:
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
+    class temp_var:
+        def __init__(self):
+            pass
+
     def add_var(self, v):
-        nm = self.get_var_name()
-        self.use_other[nm] = pickle.dumps(v)
+        if isinstance(v, self.temp_var):
+            if v in self.temp_vars:
+                nm = self.temp_vars[v]
+            else:
+                nm = self.get_var_name()
+                self.temp_vars[v] = nm
+        else:
+            nm = self.get_var_name()
+            self.use_other[nm] = pickle.dumps(v)
         return nm
+
+    @classmethod
+    def get_temp_var(cls):
+        return cls.temp_var()
 
     # Execute what we have now
     def execute(self):
@@ -6716,10 +6764,13 @@ class deferred_op:
                     d[i] = v
         times.append(timer())
         # substitute var_name with var_name[index] for ndarrays
+        index_text = "[index]"
+        if len(self.axis_reductions)>0:
+            index_text += "[axisindex]"
         for (k, v) in live_gids.items():
             for (vn, ai) in v[0]:
                 for i in range(len(self.codelines)):
-                    self.codelines[i] = self.codelines[i].replace(vn, vn + "[index]")
+                    self.codelines[i] = self.codelines[i].replace(vn, vn + index_text)
         times.append(timer())
         # compile into function, using unpickled variables (non-ndarrays)
         precode = []
@@ -6737,12 +6788,19 @@ class deferred_op:
             dprint(0,"ramba deferred_op execute: Warning: nothing to do / everything out of scope")
 
         if len(self.codelines)>0 and len(live_gids)>0:
-            precode.append(
-                "  for index in numba.pndindex("
-                + list(live_gids.items())[0][1][0][0][0]
-                + ".shape):"
-            )
-            code = "\n".join(precode) + "\n" + "\n".join(self.codelines)
+            an_array = list(live_gids.items())[0][1][0][0][0]
+            precode.append( "  itershape = " + an_array + ".shape" )
+            if len(self.axis_reductions)>0:
+                axis = self.axis_reductions[0][0]
+                precode.append( "  itershape2 = itershape[:" + str(axis) + "] + (1,) + itershape[" + str(axis+1) +":]" )
+                precode.append( "  for pindex in numba.pndindex(itershape2):" )
+                precode.append( "    index = pindex[:" + str(axis) + "] + (slice(None),) + pindex[" + str(axis+1) +":]" )
+                precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
+            else:
+                precode.append( "  for index in numba.pndindex(itershape):" )
+            code = ("\n  " + "\n  ".join(self.precode) + "\n" + "\n".join(precode) + 
+                    "\n      " + "\n      ".join(self.codelines) + 
+                    "\n  " + "\n  ".join(self.postcode) )
         else:
             code = ""
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
@@ -6806,10 +6864,43 @@ class deferred_op:
             )
             cls.last_call_time = t0
 
+    @classmethod
+    def __add_prepost( cls, oplist, post=False ):
+        codes = oplist[::2]
+        operands = oplist[1::2]
+        for i, x in enumerate(operands):
+            if isinstance(x, ndarray):
+                cls.ramba_deferred_ops.read_arrs.append((x.gid, x.distribution))
+                if x.shape == ():  # 0d check
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x.distribution)
+                else:
+                    bd = bdarray.get_by_gid(x.gid)
+                    oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
+                        x.gid,
+                        x.get_details(),
+                        bd.distribution,
+                        bd.pad,
+                        bd.flex_dist and not bd.remote_constructed,
+                    )
+                    # check if already remote_constructed
+                    if bd.remote_constructed:
+                        cls.ramba_deferred_ops.preconstructed_gids[x.gid] = oplist[
+                            1 + 2 * i
+                        ]
+            else:
+                oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x)
+        # add codeline to list
+        codeline = "".join(oplist)
+        if oplist[0]!="#":   # avoid adding empty comment -- should really check if starts with #
+            if post:
+                cls.ramba_deferred_ops.postcode.append(codeline)
+            else:
+                cls.ramba_deferred_ops.precode.append(codeline)
+        
     # add operations to the deferred stack; if not compatible, execute what we have first
     @classmethod
     def add_op(
-        cls, oplist, write_array, imports=[]
+        cls, oplist, write_array, imports=[], axis_reduce=None, precode=[], postcode=[]
     ):  # oplist is a list of alternating code string, variable reference, code ...
         t0 = timer()
         dprint(1, "ADD_OP: time from last", (t0 - cls.last_add_time) * 1000)
@@ -6846,6 +6937,12 @@ class deferred_op:
             )
             cls.ramba_deferred_ops.do_ops()
 
+        # Check if reductions on an axis (if any) are consistent
+        if (cls.ramba_deferred_ops is not None and axis_reduce is not None and
+                len(cls.ramba_deferred_ops.axis_reductions)>0 and
+                cls.ramba_deferred_ops.axis_reductions[0][0] != axis_reduce[0]):
+            cls.ramba_deferred_ops.do_ops()
+
         # Alias check 1;  op reads/writes shifted version of an array that was written previously
         if ( cls.ramba_deferred_ops is not None and any([
                 isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
@@ -6866,8 +6963,9 @@ class deferred_op:
             orig_op = codes[1]
             oplist[1] = tmp_array
             oplist[2] = ' = '
-            cls.add_op( oplist, tmp_array, imports )
+            cls.add_op( oplist, tmp_array, imports, precode=precode )
             cls.ramba_deferred_ops.do_ops()
+            precode=[]
             oplist = [ '', write_array, orig_op, tmp_array ]
             operands = [ write_array, tmp_array ]
             codes = [ '', orig_op ]
@@ -6881,7 +6979,7 @@ class deferred_op:
             dprint(2, "fixing distribution")
 
         # Handle masked array write
-        if write_array.maskarray is not None:
+        if write_array is not None and write_array.maskarray is not None:
             oplist = [ "if ", write_array.maskarray, ": "+oplist[0] ] + oplist[1:]
             operands = [ write_array.maskarray ] + operands
 
@@ -6909,11 +7007,27 @@ class deferred_op:
                         ]
             else:
                 oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_var(x)
+
+        # save axis reduction info as needed
+        if (axis_reduce is not None):
+            a,v = axis_reduce
+            bd = bdarray.get_by_gid(v.gid)
+            v= cls.ramba_deferred_ops.add_gid(
+                v.gid,
+                v.get_details(),
+                bd.distribution,
+                bd.pad,
+                bd.flex_dist and not bd.remote_constructed,
+            )
+            cls.ramba_deferred_ops.axis_reductions.append( (a, v) )
+
         # add codeline to list
-        codeline = "    " + "".join(oplist)
+        codeline = "".join(oplist)
         if oplist[0]!="#":   # avoid adding empty comment -- should really check if starts with #
             cls.ramba_deferred_ops.codelines.append(codeline)
         cls.ramba_deferred_ops.imports.extend(imports)
+        if len(precode)>0: cls.__add_prepost( precode )
+        if len(postcode)>0: cls.__add_prepost( postcode, post=True )
         t1 = timer()
         cls.last_add_time = t0
         dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)

@@ -377,6 +377,8 @@ def array_to_view(sv, arr):
         if v >= 0:
             sl[v] = slice(None)
             shp[v] = min(_size(sv)[i], arr.shape[v])
+    if all([not isinstance(i, slice) for i in sl]):  # fully specified -- will result in a single element
+        sl[0] = slice(sl[0],sl[0]+1) # ensure at least one slice
     sl = tuple(sl)
     shp = tuple(shp)
     # print ("axis map, size arr, expected:",sv._axis_map,arr.shape,shp)
@@ -385,6 +387,7 @@ def array_to_view(sv, arr):
     assert shp == arr.shape
     arr2 = arr[sl]
     if not isinstance(arr2, (np.ndarray)):
+        print("ERR -- got single element, not array")
         arr2 = np.array([arr2])  # in case we get single element
     # add additonal axes as needed (numpy broadcast)
     newdims = [_size(sv)[i] for i, v in enumerate(_axis_map(sv)) if v < 0]
@@ -777,6 +780,22 @@ def reduce_axis(size, dist, axis):
             rdist[i, 0, axis] = 1
         bdist[i, 2, axis] = -1
     rsz = UT.tuple_setitem(size, axis, len(divs))
+    return rsz, rdist, bdist
+
+# creates distribution reduced along all axes;  keeps 1 element for each division along each axis for local reductions
+@numba.njit(cache=True)
+def reduce_all_axes(size, dist):
+    rdist = clean_dist(dist)
+    bdist = clean_dist(dist)
+    rsz = size
+    for j in range(len(size)):
+        divs = list( set([_start(dist[i])[j] for i in range(len(dist)) if not is_empty(dist[i])]) )
+        for i in range(len(rdist)):
+            if rdist[i, 1, j] in divs:
+                rdist[i, 1, j] = divs.index(rdist[i, 1, j])
+            rdist[i, 0, j] = 1
+            bdist[i, 2, j] = -1
+        rsz = UT.tuple_setitem(rsz, j, len(divs))
     return rsz, rdist, bdist
 
 
