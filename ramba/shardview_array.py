@@ -377,6 +377,8 @@ def array_to_view(sv, arr):
         if v >= 0:
             sl[v] = slice(None)
             shp[v] = min(_size(sv)[i], arr.shape[v])
+    if all([not isinstance(i, slice) for i in sl]):  # fully specified -- will result in a single element
+        sl[0] = slice(sl[0],sl[0]+1) # ensure at least one slice
     sl = tuple(sl)
     shp = tuple(shp)
     # print ("axis map, size arr, expected:",sv._axis_map,arr.shape,shp)
@@ -385,6 +387,7 @@ def array_to_view(sv, arr):
     assert shp == arr.shape
     arr2 = arr[sl]
     if not isinstance(arr2, (np.ndarray)):
+        print("ERR -- got single element, not array")
         arr2 = np.array([arr2])  # in case we get single element
     # add additonal axes as needed (numpy broadcast)
     newdims = [_size(sv)[i] for i, v in enumerate(_axis_map(sv)) if v < 0]
