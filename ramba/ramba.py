@@ -6711,7 +6711,7 @@ class deferred_op:
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
-            code = ("\n".join(self.precode) + "\n" + "\n".join(precode) + 
+            code = ("\n  " + "\n  ".join(self.precode) + "\n" + "\n".join(precode) + 
                     "\n      " + "\n      ".join(self.codelines) + 
                     "\n  " + "\n  ".join(self.postcode) )
         else:
@@ -6892,7 +6892,7 @@ class deferred_op:
             dprint(2, "fixing distribution")
 
         # Handle masked array write
-        if write_array.maskarray is not None:
+        if write_array is not None and write_array.maskarray is not None:
             oplist = [ "if ", write_array.maskarray, ": "+oplist[0] ] + oplist[1:]
             operands = [ write_array.maskarray ] + operands
 
