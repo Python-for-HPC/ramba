@@ -6798,14 +6798,23 @@ class deferred_op:
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
-            code = ("\n  " + "\n  ".join(self.precode) + "\n" + "\n".join(precode) + 
-                    "\n      " + "\n      ".join(self.codelines) + 
-                    "\n  " + "\n  ".join(self.postcode) )
+            code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) + 
+                    "\n" + "\n".join(precode) + 
+                    ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) + 
+                    ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
         else:
             code = ""
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
-        code = "def " + fname + "(global_start," + ",".join(args) + "):\n" + code + "\n  pass"
-        dprint(2, "Updated code:\n" + code)
+        code = "def " + fname + "(global_start," + ",".join(args) + "):" + code + "\n  pass"
+        if (debug_showcode or ndebug>=2) and is_main_thread:
+            print("Executing code:\n" + code)
+            print("with")
+            for g,l in live_gids.items():
+                for t in l[0]:
+                    print ("  ",t[0],t[1][0],g)
+            for n,s in self.use_other.items():
+                print ("  ",n,pickle.loads(s)) 
+            print()
         times.append(timer())
         remote_exec_all(
             "run_deferred_ops",

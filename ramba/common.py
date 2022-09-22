@@ -120,6 +120,10 @@ if ndebug != 0:
 else:
     debug = False
 
+# If RAMBA_SHOW_CODE environment variable is set to non-sero, then display remote code functions run
+debug_showcode = int(os.environ.get("RAMBA_SHOW_CODE", "0"))
+debug_showcode = debug_showcode!=0
+
 # If RAMBA_RESHAPE_COPY environment variable set to non-zero then reshape calls forward to reshape_copy.
 nreshape_forwarding = int(os.environ.get("RAMBA_RESHAPE_COPY", "0"))
 if nreshape_forwarding != 0:
