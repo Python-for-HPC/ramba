@@ -11,12 +11,12 @@ def stencil1(a):
 
 
 class TestStencil:
-    def test1(self):                # Stencil skeleton
+    def test_skeleton(self):                # Stencil skeleton
         a = ramba.ones((20, 20), local_border=3)
         b = ramba.sstencil(stencil1, a)
         c = ramba.copy(b)
 
-    def test2(self):                # Stencil using weighted subarrays
+    def test_weighted_subarrays(self):                # Stencil using weighted subarrays
         def impl(app):
             A = app.ones(100,dtype=float)
             B = app.zeros(100,dtype=float)
@@ -27,7 +27,7 @@ class TestStencil:
 
         run_both(impl)
 
-    def test3(self):                # Stencil using weighted subarrays
+    def test_read_after_write(self):                # Stencil using weighted subarrays
                                     # Here, stencil and update of source are same size, so depends 
                                     # critically on read after write detection and not fusing loops
         def impl(app):
@@ -40,7 +40,7 @@ class TestStencil:
 
         run_both(impl)
 
-    def test4(self):                # Stencil fused with reduction
+    def test_reduction_fusion(self):                # Stencil fused with reduction
         A = ramba.ones((50,5))
         v = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum(axis=0).sum()
         h = (0.2*A[:-2] + 0.5*A[1:-1] + 0.3*A[2:]).sum(axis=1).sum()
@@ -50,6 +50,45 @@ class TestStencil:
         n = (0.2*B[:-2] + 0.5*B[1:-1] + 0.3*B[2:]).sum()
         print(v,h,s,z,n)
         assert v==h and s==z and h==s and s==n
+
+class TestApps:
+    def test_matmul(self):      # manual matmul using broadcast and reduction
+        def impl(app):
+            A = app.fromfunction(lambda x, y: x + y, (20,30))
+            B = app.fromfunction(lambda x, y: x + y, (30,40))
+            return (app.broadcast_to(A.T, (40,30,20)).T * app.broadcast_to(B, (20,30,40))).sum(axis=1)
+
+        run_both(impl)
+
+    def test_matmul_big(self):  # big test -- should work on GitHub (7MB) assuming fusion works
+        A = ramba.fromfunction(lambda x, y: x + y, (300,400))
+        B = ramba.fromfunction(lambda x, y: x + y, (400,500))
+        C = (ramba.broadcast_to(A.T, (500,400,300)).T * ramba.broadcast_to(B, (300,400,500))).sum(axis=1)
+        c_7_3 = ((np.arange(400)+7)*(np.arange(400)+3)).sum()
+        assert C[7,3] == c_7_3
+
+    def test_pi_integration(self):  # integtrate 1/(1+x^2) from 0 to 1 --> arctan(1) --> pi/4
+        def impl(app):
+            nsteps = 1000
+            step = 1.0/nsteps
+            X = app.linspace(0.5*step, 1.0-0.5*step, num=nsteps)
+            Y = 1.0 / (1.0+X*X)
+            pi = 4.0 * step * app.sum(Y)
+            return int(pi*1e8)    # Test to 1e-8 precision
+
+        run_both(impl)
+
+    def test_pi_integration_fused(self):  # Should fit on GitHub VM (7MB) if fused and no arrays materialized
+        def calc_pi(nsteps):
+            step = 1.0/nsteps
+            X = ramba.linspace(0.5*step, 1.0-0.5*step, num=nsteps)
+            Y = 4.0 * step / (1.0+X*X)
+            return ramba.sum(Y, asarray=True)   # keep in array form to defer caclulation of sum until after function returns
+
+        pi_arr = calc_pi(10*1000*1000)
+        print (pi_arr[0])
+
+
 
 class TestFusion:
     def test_fuse(self):
@@ -126,7 +165,10 @@ class TestFusion:
         print (runtime1, runtime10, overhead1, overhead10, exec1, exec10, exec10/exec1)
         assert(exec10>5*exec1)
 
-
+    def test_fuse2(self):
+        a = ramba.ones(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
+        a += (7*a-3)+(4*a+5*a)      # Should continue to fit if fused, no temporaries materialized
+        assert a[0]==14
 
 class TestBroadcast:
     def test1(self):
