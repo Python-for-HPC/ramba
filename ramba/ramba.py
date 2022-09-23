@@ -1499,7 +1499,7 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
 
 
 @functools.lru_cache()
-def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
+def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=True, compiled=True):
     filler = filler.func
     dprint(2, "get_smap_fill_index", filler, type(filler), num_dim, ramba_array_args)
     njfiller = (
@@ -1541,7 +1541,10 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=
     gdict = globals()
     gdict[fillername] = njfiller
     exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    if compiled:
+        return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    else:
+        return ldict[fname]
 
 
 @functools.lru_cache()
@@ -1630,6 +1633,7 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
             if nd < num_dim - 1:
                 fill_txt += ","
         fill_txt +=  ")\n"
+        #fill_txt +=  "        print(\"in sreduce_fill_index\", i, si)\n"
     else:
         fill_txt +=  "    for i in numba.prange(sz[0]):\n"
         fill_txt +=  "        si = i + starts[0]\n"
@@ -2025,11 +2029,8 @@ class RemoteState:
         self.numpy_map[out_gid] = lnd
         new_bcontainer = lnd.bcontainer
         unpickle_args(args)
-        # uuids = list(filter(args, lambda x: isinstance(x, uuid.UUID)))
-        # bcontainers = [self.numpy_map[x][0] for x in uuids]
 
         ramba_array_args = [isinstance(x, gid_dist) for x in args]
-        #ramba_array_args = [isinstance(x, uuid.UUID) for x in args]
         do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
         def fix_args(x):
             if isinstance(x, gid_dist):
@@ -2042,26 +2043,30 @@ class RemoteState:
         fargs = tuple([fix_args(x) for x in args])
         ffirst = None
         for farg in fargs:
-            print("farg:", farg, type(farg))
             if isinstance(farg, np.ndarray):
-                print("shape:", farg.shape)
                 if ffirst is None:
                     ffirst = farg
+                    break
         do_fill(new_bcontainer, ffirst.shape, *fargs)
-        #do_fill(new_bcontainer, first.dim_lens, *fargs)
 
     # TODO: should use get_view for output array?
     def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
-        #new_bcontainer = self.numpy_map[out_gid].get_view()
         new_bcontainer = self.numpy_map[out_gid].bcontainer
-        starts = tuple(shardview.get_start(first.subspace))
+        gid_first = None
+        for farg in args:
+            if isinstance(farg, gid_dist):
+                if gid_first is None:
+                    gid_first = farg
+                    break
+        starts = tuple(shardview.get_start(gid_first.dist[self.worker_num]))
         unpickle_args(args)
 
         ramba_array_args = [isinstance(x, gid_dist) for x in args]
-        do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+        compiled=True
+        do_fill = get_smap_fill_index(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel, compiled=compiled)
         def fix_args(x):
             if isinstance(x, gid_dist):
                 return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
@@ -2073,13 +2078,11 @@ class RemoteState:
         fargs = tuple([fix_args(x) for x in args])
         ffirst = None
         for farg in fargs:
-            print("farg:", farg, type(farg))
             if isinstance(farg, np.ndarray):
-                print("shape:", farg.shape)
                 if ffirst is None:
                     ffirst = farg
+                    break
         do_fill(new_bcontainer, ffirst.shape, starts, *fargs)
-        #do_fill(new_bcontainer, first.dim_lens, starts, *fargs)
 
     # TODO: should use get_view
     def sreduce(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
@@ -2090,160 +2093,139 @@ class RemoteState:
         first = self.numpy_map[first_gid]
         result = None
         unpickle_args(args)
-        #assert len(args) == 1
-        if True:
-            ramba_array_args = [isinstance(x, gid_dist) for x in args]
-            do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-            def fix_args(x):
-                if isinstance(x, gid_dist):
-                    return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
-                elif callable(x):
-                    res = x()
-                    return res
-                else:
-                    return x
-            fargs = tuple([fix_args(x) for x in args])
-            ffirst = None
-            for farg in fargs:
-                if isinstance(farg, np.ndarray):
-                    if ffirst is None:
-                        ffirst = farg
-            res = do_fill(ffirst.shape, identity, *fargs)
-            #res = do_fill(first.dim_lens, identity, *fargs)
-            #print("worker do_fill res:", res, res[0].shape, res[1].shape)
-            #return res
-            after_map_time = timer()
 
-            # Distributed and Parallel Reduction
-            max_worker = num_workers
-            while max_worker > 1:
-                # midpoint is the index of the first worker that needs to send
-                midpoint = (max_worker + 1) // 2
-                # this worker will send
-                if self.worker_num >= midpoint:
-                    send_to = self.worker_num - midpoint
-                    self.comm_queues[send_to].put((a_send_recv, res))
-                    break
-                else:
-                    # If the remaining workers is odd and this worker is the last one then it won't receive
-                    # any communication or needs to do any compute but just goes to the next iteration where
-                    # it will send.
-                    if not (
-                        max_worker % 2 == 1 and self.worker_num == midpoint - 1
-                    ):
-                        try:
-                            incoming_uuid, incoming_res = self.comm_queues[
-                                    self.worker_num
-                            ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
-                        except Exception:
-                            print("some exception!", sys.exc_info()[0])
-                            assert 0
-                        res = reducer_driver(res, incoming_res)
-
-                max_worker = midpoint
-
-            after_reduce_time = timer()
-            tprint(2, "sreduce map time:", self.worker_num, after_map_time - start_time)
-            tprint(2, "sreduce distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
-
-            if self.worker_num == 0:
+        ramba_array_args = [isinstance(x, gid_dist) for x in args]
+        do_fill = get_sreduce_fill(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+        def fix_args(x):
+            if isinstance(x, gid_dist):
+                return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+            elif callable(x):
+                res = x()
                 return res
             else:
-                return None
+                return x
+        fargs = tuple([fix_args(x) for x in args])
+        ffirst = None
+        for farg in fargs:
+            if isinstance(farg, np.ndarray):
+                if ffirst is None:
+                    ffirst = farg
+                    break
+        res = do_fill(ffirst.shape, identity, *fargs)
+        after_map_time = timer()
+
+        # Distributed and Parallel Reduction
+        max_worker = num_workers
+        while max_worker > 1:
+            # midpoint is the index of the first worker that needs to send
+            midpoint = (max_worker + 1) // 2
+            # this worker will send
+            if self.worker_num >= midpoint:
+                send_to = self.worker_num - midpoint
+                self.comm_queues[send_to].put((a_send_recv, res))
+                break
+            else:
+                # If the remaining workers is odd and this worker is the last one then it won't receive
+                # any communication or needs to do any compute but just goes to the next iteration where
+                # it will send.
+                if not (
+                    max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                ):
+                    try:
+                        incoming_uuid, incoming_res = self.comm_queues[
+                                self.worker_num
+                        ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
+                    except Exception:
+                        print("some exception!", sys.exc_info()[0])
+                        assert 0
+                    res = reducer_driver(res, incoming_res)
+
+            max_worker = midpoint
+
+        after_reduce_time = timer()
+        tprint(2, "sreduce map time:", self.worker_num, after_map_time - start_time)
+        tprint(2, "sreduce distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+
+        if self.worker_num == 0:
+            return res
         else:
-            for index in np.ndindex(first.dim_lens):
-                fargs = [
-                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                    for x in args
-                ]
-                if result is None:
-                    result = func(*fargs)
-                else:
-                    result = reducer(result, func(*fargs))
-            return result
+            return None
 
     def sreduce_index(self, first_gid, args, func, reducer, reducer_driver, identity, a_send_recv, parallel):
         start_time = timer()
         func = func_loads(func)
         reducer = func_loads(reducer)
         reducer_driver = func_loads(reducer_driver)
-        first = self.numpy_map[first_gid]
         result = None
-        starts = tuple(shardview.get_start(first.subspace))
+        gid_first = None
+        for farg in args:
+            if isinstance(farg, gid_dist):
+                if gid_first is None:
+                    gid_first = farg
+                    break
+        starts = tuple(shardview.get_start(gid_first.dist[self.worker_num]))
+        first = self.numpy_map[gid_first.gid]
         unpickle_args(args)
         if callable(identity):
             identity = identity()
-        if True:
-            ramba_array_args = [isinstance(x, gid_dist) for x in args]
-            do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
-            def fix_args(x):
-                if isinstance(x, gid_dist):
-                    return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
-                elif callable(x):
-                    res = x()
-                    return res
-                else:
-                    return x
-            fargs = tuple([fix_args(x) for x in args])
-            ffirst = None
-            for farg in fargs:
-                if isinstance(farg, np.ndarray):
-                    if ffirst is None:
-                        ffirst = farg
-            res = do_fill(ffirst.shape, starts, identity, *fargs)
-            #res = do_fill(first.dim_lens, starts, identity, *fargs)
-            #print("worker do_fill res:", res, res.shape)
-            after_map_time = timer()
 
-            # Distributed and Parallel Reduction
-            max_worker = num_workers
-            while max_worker > 1:
-                # midpoint is the index of the first worker that needs to send
-                midpoint = (max_worker + 1) // 2
-                # this worker will send
-                if self.worker_num >= midpoint:
-                    send_to = self.worker_num - midpoint
-                    self.comm_queues[send_to].put((a_send_recv, res))
-                    break
-                else:
-                    # If the remaining workers is odd and this worker is the last one then it won't receive
-                    # any communication or needs to do any compute but just goes to the next iteration where
-                    # it will send.
-                    if not (
-                        max_worker % 2 == 1 and self.worker_num == midpoint - 1
-                    ):
-                        try:
-                            incoming_uuid, incoming_res = self.comm_queues[
-                                    self.worker_num
-                            ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
-                        except Exception:
-                            print("some exception!", sys.exc_info()[0])
-                            assert 0
-                        res = reducer_driver(res, incoming_res)
-
-                max_worker = midpoint
-
-            after_reduce_time = timer()
-            tprint(2, "sreduce_index map time:", self.worker_num, after_map_time - start_time)
-            tprint(2, "sreduce_index distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
-
-            if self.worker_num == 0:
+        ramba_array_args = [isinstance(x, gid_dist) for x in args]
+        compiled=True
+        do_fill = get_sreduce_fill_index(FillerFunc(func), FillerFunc(reducer), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel, compiled=compiled)
+        def fix_args(x):
+            if isinstance(x, gid_dist):
+                return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
+            elif callable(x):
+                res = x()
                 return res
             else:
-                return None
+                return x
+        fargs = tuple([fix_args(x) for x in args])
+        ffirst = None
+        for farg in fargs:
+            if isinstance(farg, np.ndarray):
+                if ffirst is None:
+                    ffirst = farg
+                    break
+        res = do_fill(ffirst.shape, starts, identity, *fargs)
+        after_map_time = timer()
+
+        # Distributed and Parallel Reduction
+        max_worker = num_workers
+        while max_worker > 1:
+            # midpoint is the index of the first worker that needs to send
+            midpoint = (max_worker + 1) // 2
+            # this worker will send
+            if self.worker_num >= midpoint:
+                send_to = self.worker_num - midpoint
+                self.comm_queues[send_to].put((a_send_recv, res))
+                break
+            else:
+                # If the remaining workers is odd and this worker is the last one then it won't receive
+                # any communication or needs to do any compute but just goes to the next iteration where
+                # it will send.
+                if not (
+                    max_worker % 2 == 1 and self.worker_num == midpoint - 1
+                ):
+                    try:
+                        incoming_uuid, incoming_res = self.comm_queues[
+                                self.worker_num
+                        ].get(gfilter=lambda x: x[0] == a_send_recv, timeout=5)
+                    except Exception:
+                        print("some exception!", sys.exc_info()[0])
+                        assert 0
+                    res = reducer_driver(res, incoming_res)
+
+            max_worker = midpoint
+
+        after_reduce_time = timer()
+        tprint(2, "sreduce_index map time:", self.worker_num, after_map_time - start_time)
+        tprint(2, "sreduce_index distributed reduction time:", self.worker_num, after_reduce_time - after_map_time)
+
+        if self.worker_num == 0:
+            return res
         else:
-            for index in np.ndindex(first.dim_lens):
-                # Make the global index.
-                index_arg = tuple(map(operator.add, index, starts))
-                fargs = [
-                    self.numpy_map[x].bcontainer[index] if isinstance(x, uuid.UUID) else x
-                    for x in args
-                ]
-                if result is None:
-                    result = func(index_arg, *fargs)
-                else:
-                    result = reducer(result, func(index_arg, *fargs))
-            return result
+            return None
 
     def reshape(
         self,
@@ -8588,6 +8570,7 @@ class RambaGroupby:
         drop_groupdim = tuple(drop_groupdim)
 
         mean_func_txt  =  "def mean_func(idx, value, group_array, sumout, countout):\n"
+        #mean_func_txt +=  "    print(\"inside meanfunc\", idx, len(idx), value, type(group_array), group_array.shape)\n"
         beforedim = ",".join([f"idx[{nd}]" for nd in range(self.dim)])
         if len(beforedim) > 0:
             beforedim += ","
@@ -8599,6 +8582,7 @@ class RambaGroupby:
         ldict = {}
         gdict = globals()
         exec(mean_func_txt, gdict, ldict)
+        dprint(2, "mean_func:", mean_func_txt)
 
         def mean_reducer_driver(result, fres):
             return (result[0] + fres[0], result[1] + fres[1])
