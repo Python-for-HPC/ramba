@@ -405,10 +405,9 @@ class TestGroupbyVariations:
             gb = da.data.groupby(1, coord_days, num_groups=365)
             #breakpoint()
             gbmean = gb.mean()
-            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
-            #return gbmean
+            #print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             final = gb - gbmean
-            print("final ramba:", final.dtype)
+            #print("final ramba:", final.dtype)
             return final.asarray()
 
         def xarray_numpy_impl(rlin, slice_size):
@@ -420,10 +419,10 @@ class TestGroupbyVariations:
             )
             gb = da.groupby("time.dayofyear")
             gbmean = gb.mean("time")
-            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final xarray:", final.dtype)
+            #print("final xarray:", final.dtype)
             return final.data
 
         #size = (1, 366)
@@ -434,11 +433,11 @@ class TestGroupbyVariations:
         #rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin, slice_size)
         rres = ramba_impl(rlin, slice_size)
-        with np.printoptions(threshold=np.inf):
-            #print("xnres:", xnres.dtype)
-            #print("rres:", rres.dtype)
-            print("xnres:", xnres.dtype, xnres)
-            print("rres:", rres.dtype, rres)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres)
+        #    print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
     def test_mean_groupby_transpose1(self):
@@ -456,10 +455,10 @@ class TestGroupbyVariations:
             gb = da.data.groupby(1, coord_days, num_groups=365)
             #breakpoint()
             gbmean = gb.mean()
-            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final ramba:", final.dtype)
+            #print("final ramba:", final.dtype)
             return final.asarray()
 
         def xarray_numpy_impl(rlin):
@@ -472,10 +471,10 @@ class TestGroupbyVariations:
             )
             gb = da.groupby("time.dayofyear")
             gbmean = gb.mean("time")
-            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final xarray:", final.dtype)
+            #print("final xarray:", final.dtype)
             return final.data
 
         total_size = (365, 1)
@@ -483,11 +482,11 @@ class TestGroupbyVariations:
         #rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin)
         rres = ramba_impl(rlin)
-        with np.printoptions(threshold=np.inf):
-            #print("xnres:", xnres.dtype)
-            #print("rres:", rres.dtype)
-            print("xnres:", xnres.dtype, xnres)
-            print("rres:", rres.dtype, rres)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres)
+        #    print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
     def test_mean_groupby_slice_transpose1(self):
@@ -506,10 +505,10 @@ class TestGroupbyVariations:
             gb = da.data.groupby(1, coord_days, num_groups=365)
             #breakpoint()
             gbmean = gb.mean()
-            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final ramba:", final.dtype)
+            #print("final ramba:", final.dtype)
             return final.asarray()
 
         def xarray_numpy_impl(rlin, slice_size):
@@ -522,10 +521,10 @@ class TestGroupbyVariations:
             )
             gb = da.groupby("time.dayofyear")
             gbmean = gb.mean("time")
-            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final xarray:", final.dtype)
+            #print("final xarray:", final.dtype)
             return final.data
 
         #size = (1, 366)
@@ -536,11 +535,11 @@ class TestGroupbyVariations:
         #rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin, slice_size)
         rres = ramba_impl(rlin, slice_size)
-        with np.printoptions(threshold=np.inf):
-            #print("xnres:", xnres.dtype)
-            #print("rres:", rres.dtype)
-            print("xnres:", xnres.dtype, xnres)
-            print("rres:", rres.dtype, rres)
+        #with np.printoptions(threshold=np.inf):
+        #    #print("xnres:", xnres.dtype)
+        #    #print("rres:", rres.dtype)
+        #    print("xnres:", xnres.dtype, xnres)
+        #    print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
     def test_mean_groupby_slice_transpose2(self):
@@ -559,10 +558,10 @@ class TestGroupbyVariations:
             gb = da.data.groupby(1, coord_days, num_groups=365)
             #breakpoint()
             gbmean = gb.mean()
-            print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("ramba gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final ramba:", final.dtype)
+            #print("final ramba:", final.dtype)
             return final.asarray()
 
         def xarray_numpy_impl(rlin, slice_size):
@@ -575,10 +574,10 @@ class TestGroupbyVariations:
             )
             gb = da.groupby("time.dayofyear")
             gbmean = gb.mean("time")
-            print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
+            #print("xarray gbmean:", type(gbmean), gbmean.dtype, gbmean.shape, gbmean)
             #return gbmean
             final = gb - gbmean
-            print("final xarray:", final.dtype)
+            #print("final xarray:", final.dtype)
             return final.data
 
         #size = (1, 366)
@@ -589,10 +588,10 @@ class TestGroupbyVariations:
         #rlin = np.random.random(size)
         xnres = xarray_numpy_impl(rlin, slice_size)
         rres = ramba_impl(rlin, slice_size)
-        with np.printoptions(threshold=np.inf):
-            #print("xnres:", xnres.dtype)
-            #print("rres:", rres.dtype)
-            print("xnres:", xnres.dtype, xnres)
-            print("rres:", rres.dtype, rres)
+        #with np.printoptions(threshold=np.inf):
+            ##print("xnres:", xnres.dtype)
+            ##print("rres:", rres.dtype)
+            #print("xnres:", xnres.dtype, xnres)
+            #print("rres:", rres.dtype, rres)
         assert np.allclose(xnres, rres)
 
