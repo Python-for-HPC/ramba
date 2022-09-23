@@ -4993,8 +4993,7 @@ class ndarray:
         local = self.asarray()
         uop = getattr(local, op)
         val = uop(dtype=dtype)
-        arr = empty_like(self[sl])
-        arr[:] = val
+        arr = full((1,), val, dtype=dtype)
         return arr
 
     @DAGapi
@@ -5024,8 +5023,7 @@ class ndarray:
             if axis is None or (axis == 0 and self.ndim == 1):
                 if (asarray):
                     dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                    red_arr = empty( dsz, dtype=dtype, distribution=dist )
-                    red_arr[:] = initval
+                    red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
                     red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                     return red_arr.internal_reduction2b(op, dtype)
 
@@ -5045,8 +5043,7 @@ class ndarray:
                 ret = uop(dtype=dtype)
             else:
                 dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
-                red_arr = empty( dsz, dtype=dtype, distribution=dist )
-                red_arr[:] = initval
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
             return ret
