@@ -600,6 +600,14 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_masked_reduction(self):
+        # Test boolean mask indexing
+        def impl(app):
+            a = app.fromfunction(lambda i, j: i + j, (50, 50), dtype=int)
+            return a[a<20].sum()
+
+        run_both(impl)
+
     def test_where1(self):
         # Test of "where" in which cond,a,b are all the same size
         def impl(app):

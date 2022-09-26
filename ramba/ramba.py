@@ -4897,16 +4897,13 @@ class ndarray:
         return ret
 
     @classmethod
-    def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", asarray=False
-    ):
+    def internal_array_unaryop_executor( cls, temp_array, self, op, optext, imports=[], dtype=None ):
         dprint(1, "array_unaryop_executor", id(self), op, optext)
         if dtype is None:
             dtype = self.dtype
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        assert not reduction
         new_ndarray = create_array_with_divisions(
             self.shape,
             self.distribution,
@@ -4927,6 +4924,7 @@ class ndarray:
             gid=red_arr.gid,
             distribution=bdist,
             local_border=0,
+            maskarray = src_arr.maskarray,
             readonly=False
         )
         if axis is None:
@@ -4968,14 +4966,16 @@ class ndarray:
         return arr[sl1]
 
     @classmethod
-    def internal_reduction2b_executor(cls, temp_array, self, op, dtype):
-        sl = (slice(0,1),)+(0,)*(self.ndim-1)
-        if all([i==1 for i in self.shape]):  # done, just return the array with all but one axis removed
+    def internal_reduction2b_executor(cls, temp_array, self, op, dtype, asarray):
+        if all([i==1 for i in self.shape]):  # done, just return the single element / array with all but one axis removed
+            sl = (0,)*self.ndim if not asarray else (slice(0,1),)+(0,)*(self.ndim-1)
             return self[sl]
         # need global reduction -- should be small (1 elem per worker)a
         local = self.asarray()
         uop = getattr(local, op)
         val = uop(dtype=dtype)
+        if not asarray:
+            return val
         arr = full((1,), val, dtype=dtype)
         return arr
 
@@ -4988,10 +4988,15 @@ class ndarray:
         return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
 
     @DAGapi
-    def internal_reduction2b(self, op, dtype):
-        return DAGshape((1,), dtype, False)
+    def internal_reduction2b(self, op, dtype, asarray):
+        if asarray:
+            return DAGshape((1,), dtype, False)
+        return self.internal_reduction2b_executor(None, self, op, dtype, asarray)
 
     @DAGapi
+    def internal_array_unaryop( self, op, optext, imports=[], dtype=None ):
+        return DAGshape(self.shape, dtype, False)
+
     def array_unaryop(
         self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -5003,35 +5008,22 @@ class ndarray:
         if initval<0: initval = getminmax(dtype)[0]
         elif initval>1: initval = getminmax(dtype)[1]
         if reduction:
+            if self.maskarray is not None:
+                if axis is not None and axis>0:
+                    raise np.AxisError("Error axis must be 0")
+                axis = None
             if axis is None or (axis == 0 and self.ndim == 1):
-                if (asarray):
-                    dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                    red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
-                    red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
-                    return red_arr.internal_reduction2b(op, dtype)
-
-                DAG.instantiate(self)
-                g1 = remote_call_all(
-                    "array_unaryop",
-                    self.gid,
-                    None,
-                    self.distribution,
-                    None,
-                    op,
-                    None,
-                    dtype,
-                )
-                v = np.array(g1)
-                uop = getattr(v, op)
-                ret = uop(dtype=dtype)
+                dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+                red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
+                return red_arr.internal_reduction2b(op, dtype, asarray)
             else:
                 dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
                 red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-                ret = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
-            return ret
+                return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
         else:
-            return DAGshape(self.shape, dtype, False)
+            return self.internal_array_unaryop(op, optext, imports, dtype)
 
     """
     def array_unaryop(
@@ -5523,7 +5515,7 @@ class ndarray:
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
         if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
-            return DAGshape(self.shape, self.dtype, False, aliases=self)
+            return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
 
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
