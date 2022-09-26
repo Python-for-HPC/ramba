@@ -4175,7 +4175,7 @@ class DAG:
             nres.bdarray.idag = dag
             nres.idag = dag
         else:
-            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.aliases.gid if delayed.aliases is not None else None)
+            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.aliases.gid if delayed.aliases is not None else None, **delayed.extra_ndarray_opts)
 
         dag.output = weakref.ref(nres)
         dprint(2, "DAG.add", name, len(dag_deps), id(nres), caller, delayed)
@@ -4556,11 +4556,12 @@ class DAG:
 
 
 class DAGshape:
-    def __init__(self, shape, dtype, inplace, aliases=None):
+    def __init__(self, shape, dtype, inplace, aliases=None, extra_ndarray_opts={}):
         self.shape = shape
         self.dtype = dtype
         self.inplace = inplace
         self.aliases = aliases
+        self.extra_ndarray_opts = extra_ndarray_opts
 
     def __repr__(self):
         return f"DAGshape({self.shape}, {self.dtype}, {self.inplace}, {self.aliases})"
