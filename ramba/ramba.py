@@ -7250,17 +7250,29 @@ def ones_like(other_ndarray):
 def full(shape, v, local_border=0, **kwargs):
     return init_array(shape, str(v), local_border=local_border, **kwargs)
 
+def full_like(other_ndarray):
+    return full(
+        other_ndarray.shape,
+        local_border=other_ndarray.local_border,
+        dtype=other_ndarray.dtype,
+    )
 
-def eye(N, M=None, dtype=float32, local_border=0, **kwargs):
+
+def eye_executor(temp_ndarray, N, M=None, k=0, dtype=float32, local_border=0, **kwargs):
     if M is None:
         M = N
-    return init_array(
-        (N, M),
-        lambda x: 1 if x[0] == x[1] else 0,
-        local_border=local_border,
-        dtype=dtype,
-        **kwargs
-    )
+    res = empty((N,M), local_border=local_border, dtype=dtype)
+    deferred_op.add_op( ["", res, " = 1 if index[0]+global_start[0]+",k," == index[1]+global_start[1] else 0"], res, imports=[] )
+    return res
+
+@DAGapi
+def eye(N, M=None, k=0, dtype=float32, local_border=0, **kwargs):
+    if M is None:
+        M = N
+    return DAGshape((N,M), dtype, False)
+
+def identity(n, dtype=float32, local_border=0):
+    return eye(n, n, 0, dtype, local_border)
 
 
 def copy(arr, local_border=0):
@@ -7269,14 +7281,6 @@ def copy(arr, local_border=0):
         arr.shape, arr.distribution, local_border=local_border
     )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
-    """
-    [remote_states[i].copy.remote(new_ndarray.gid,
-                                  arr.gid,
-                                  local_border,
-                                  new_ndarray.from_border[i] if new_ndarray.from_border is not None else None,
-                                  new_ndarray.to_border[i] if new_ndarray.to_border is not None else None)
-        for i in range(num_workers)]
-    """
     return new_ndarray
 
 

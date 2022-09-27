@@ -563,6 +563,27 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_identity(self):
+        def impl(app):
+            a = app.identity(100)
+            return a
+
+        run_both(impl)
+
+    def test_eye1(self):
+        def impl(app):
+            a = app.eye(20,k=-3)
+            return a
+
+        run_both(impl)
+
+    def test_eye2(self):
+        def impl(app):
+            a = app.eye(20,30,k=7)
+            return a
+
+        run_both(impl)
+
     """
     def test14(self):
         def impl(app):
