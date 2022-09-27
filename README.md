@@ -170,6 +170,7 @@ NOTE:  Early versions of Ramba MPI support did not implement a SPMD model.  Inst
 |Debugging| RAMBA_DEBUG         | 0           | Set level of debugging output
 |         | RAMBA_TIMING        | 0           | Set to 1 to enable detailed timing
 |         | RAMBA_TIMING_WORKER | 0           | Select worker for detailed timing
+|         | RAMBA_SHOW_CODE     | 0           | Set to 1 to display code that is constructed, compiled, run remotely (included in DEBUG level 2 and above)
 |         | RAMBA_NON_DIST      | 0           | Set to 1 to run a single, nondistributed process for debugging
 |Framework| RAMBA_USE_RAY_CALLS | 0           | Use Ray calls instead of message-based task invocation (for Ray)
 |Options  | RAMBA_USE_ZMQ       | Ray:1, MPI:0| Set to 1 to use ZMQ for inter-worker messaging
@@ -193,7 +194,7 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 |            | Boolean         | &#x1f7e2; works           |
 |            | String          | &#x1f534; not implemented |
 |            | Objects         | &#x1f7e1; partial         |
-|Creation    | from size/value | &#x1f7e1; partial         | empty, ones_like, etc.;  missing: full, identity
+|Creation    | from size/value | &#x1f7e2; works           | empty, ones_like, eye, etc.
 |            | from data       | &#x1f7e1; partial         | fromfunction, fromarray
 |            | ranges          | &#x1f7e1; partial         | arange, linspace, mgrid
 |Array Manipulation| reshape   | &#x1f7e1; partial         | reshape is very expensive in distributed context, so only very limited support;  use reshape_copy
