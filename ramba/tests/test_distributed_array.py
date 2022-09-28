@@ -52,7 +52,7 @@ class TestStencil:
         assert v==h and s==z and h==s and s==n
 
 class TestApps:
-    def test_matmul(self):      # manual matmul using broadcast and reduction
+    def test_matmul1(self):      # manual matmul using broadcast_to, transpose, and reduction
         def impl(app):
             A = app.fromfunction(lambda x, y: x + y, (20,30))
             B = app.fromfunction(lambda x, y: x + y, (30,40))
@@ -60,12 +60,27 @@ class TestApps:
 
         run_both(impl)
 
-    def test_matmul_big(self):  # big test -- should work on GitHub (7MB) assuming fusion works
+    def test_matmul2(self):      # manual matmul using expand_dims, implicit broadcast, and reduction
+        def impl(app):
+            A = app.fromfunction(lambda x, y: x + y, (20,30))
+            B = app.fromfunction(lambda x, y: x + y, (30,40))
+            return (app.expand_dims(A,2)*B).sum(axis=1)
+
+        run_both(impl)
+
+    def test_matmul_big1(self):  # big test -- should work on GitHub (7MB) assuming fusion works
         A = ramba.fromfunction(lambda x, y: x + y, (300,400))
         B = ramba.fromfunction(lambda x, y: x + y, (400,500))
         C = (ramba.broadcast_to(A.T, (500,400,300)).T * ramba.broadcast_to(B, (300,400,500))).sum(axis=1)
         c_7_3 = ((np.arange(400)+7)*(np.arange(400)+3)).sum()
         assert C[7,3] == c_7_3
+
+    def test_matmul_big2(self):  # big test -- should work on GitHub (7MB) assuming fusion works
+        A = ramba.fromfunction(lambda x, y: x + y, (300,400))
+        B = ramba.fromfunction(lambda x, y: x + y, (400,500))
+        C = (ramba.expand_dims(A,2)*B).sum(axis=1)
+        c_12_4 = ((np.arange(400)+12)*(np.arange(400)+4)).sum()
+        assert C[12,4] == c_12_4
 
     def test_pi_integration(self):  # integtrate 1/(1+x^2) from 0 to 1 --> arctan(1) --> pi/4
         def impl(app):
