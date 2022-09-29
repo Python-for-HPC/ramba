@@ -4636,7 +4636,7 @@ class gid_dist:
 
 def apply_index(shape, index):
     cindex = canonical_index(index, shape)
-    dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+    dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
     axismap = [
         i
         for i in range(len(dim_shapes))
@@ -5473,7 +5473,7 @@ class ndarray:
                 deferred_op.do_ops()
             num_dim = len(self.shape)
             cindex = canonical_index(index, self.shape)
-            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+            dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
             dprint(2, "getitem slice:", cindex, dim_shapes)
 
             sdistribution = shardview.slice_distribution(cindex, self.distribution)
@@ -6446,6 +6446,7 @@ def canonical_index(index, shape):
                 slice(
                     canonical_dim(ti.start, shape[i]),
                     canonical_dim(ti.stop, shape[i], end=True),
+                    ti.step
                 )
             )
         else:

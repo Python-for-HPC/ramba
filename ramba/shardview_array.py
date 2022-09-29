@@ -345,7 +345,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
                 si = s-sl_i.start
                 st = sv_st
             else:
-                s = min(max(sl_i.start, sv_s + (sv_s+sl_i.start)%sl_i.step), sv_e)
+                s = min(max(sl_i.start, sv_s + (sl_i.start-sv_s)%sl_i.step), sv_e)
                 e = min(max(sl_i.stop - (sl_i.stop-1-sl_i.start)%sl_i.step, sv_s), sv_e)
                 sz = int(np.ceil((e-s)/sl_i.step))
                 si = (s-sl_i.start)//sl_i.step
@@ -383,7 +383,7 @@ def mapsv(sv, sl):
     sl_s = _start(sl)
     sl_e = _stop(sl)
     sl_st = _steps(sl)
-    s = np.minimum(np.maximum(sl_s, sv_s + (sv_s+sl_s)%sl_st), sv_e)
+    s = np.minimum(np.maximum(sl_s, sv_s + (sl_s-sv_s)%sl_st), sv_e)
     e = np.minimum(np.maximum(sl_e - (sl_e-1-sl_s)%sl_st, sv_s), sv_e)
     sz = np.ceil((e-s)/sl_st).astype(ramba_dist_dtype)
     si = (s-sl_s)//sl_st
