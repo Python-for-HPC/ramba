@@ -324,33 +324,75 @@ def has_index(sv, index):
     return True
     # return (_index_start(sv)<=index).all() and (index<_stop(sv)).all()
 
-# Need to update for steps
+
+@numba.generated_jit(nopython=True,cache=True)
+def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
+    if isinstance(sl_i,numba.types.SliceType):
+        if (sl_i.members==2):
+            def impl(sl_i, sv_s, sv_e, sv_st):
+                s = min(max(sl_i.start, sv_s), sv_e)
+                e = min(max(sl_i.stop, sv_s), sv_e)
+                sz = e-s
+                si = s-sl_i.start
+                st = sv_st
+                return s, sz, si, st
+            return impl
+        def impl(sl_i, sv_s, sv_e, sv_st):
+            if sl_i.step is None:
+                s = min(max(sl_i.start, sv_s), sv_e)
+                e = min(max(sl_i.stop, sv_s), sv_e)
+                sz = e-s
+                si = s-sl_i.start
+                st = sv_st
+            else:
+                s = min(max(sl_i.start, sv_s + (sv_s+sl_i.start)%sl_i.step), sv_e)
+                e = min(max(sl_i.stop - (sl_i.stop-1-sl_i.start)%sl_i.step, sv_s), sv_e)
+                sz = int(np.ceil((e-s)/sl_i.step))
+                si = (s-sl_i.start)//sl_i.step
+                st = sv_st*sl_i.step
+            return s, sz, si, st
+        return impl
+    else:
+        raise numba.core.errors.TypingError("ERR: slice contains something unexpected!", type(sl_i))
+
 @numba.njit(cache=True)
 def mapslice(sv, sl):
     # print("HERE:",sl, sv, len(sl), len_size(sv))
     assert len(sl) == len_size(sv)
-    sv_s = _index_start(sv)
+    sv_s = _start(sv)
     sv_e = _stop(sv)
-    s = np.array([min(max(sl[i].start, sv_s[i]), sv_e[i]) for i in range(len_size(sv))])
-    e = np.array([min(max(sl[i].stop, sv_s[i]), sv_e[i]) for i in range(len_size(sv))])
-    si = s - np.array([sl[i].start for i in range(len_size(sv))])
-    return shardview(e - s, si, index_to_base_as_array(sv, s), _axis_map(sv))
+    sv_st = _steps(sv)
+    s = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    sz = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    si = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    st = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    i = 0
+    for sl_i in numba.literal_unroll(sl):
+        s[i], sz[i], si[i], st[i] = calc_map_internal(sl_i,sv_s[i], sv_e[i], sv_st[i])
+        i += 1
+    return shardview(sz, si, index_to_base_as_array(sv, s), _axis_map(sv), st)
 
 
-# Need to update for steps
 @numba.njit(cache=True)
 def mapsv(sv, sl):
     # print("HERE:",sl, sv, len(sl), len_size(sv))
     assert len_size(sl) == len_size(sv)
-    sv_s = _index_start(sv)
+    sv_s = _start(sv)
     sv_e = _stop(sv)
-    s = np.minimum(np.maximum(_index_start(sl), sv_s), sv_e)
-    e = np.minimum(np.maximum(_stop(sl), sv_s), sv_e)
-    si = s - _index_start(sl)
+    sv_st = _steps(sv)
+    sl_s = _start(sl)
+    sl_e = _stop(sl)
+    sl_st = _steps(sl)
+    s = np.minimum(np.maximum(sl_s, sv_s + (sv_s+sl_s)%sl_st), sv_e)
+    e = np.minimum(np.maximum(sl_e - (sl_e-1-sl_s)%sl_st, sv_s), sv_e)
+    sz = np.ceil((e-s)/sl_st).astype(ramba_dist_dtype)
+    si = (s-sl_s)//sl_st
+    st = sv_st*sl_st
     # return shardview(e-s, si, np.array(index_to_base(sv, s)), _axis_map(sv))
-    return shardview(e - s, si, index_to_base_as_array(sv, s), _axis_map(sv))
+    return shardview(sz, si, index_to_base_as_array(sv, s), _axis_map(sv), st)
 
 
+# Don't need to update for steps??
 @numba.njit(cache=True)
 def intersect(sv, sl):
     assert len_size(sv) == len_size(sl)
@@ -363,6 +405,7 @@ def intersect(sv, sl):
     return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
     # return shardview(e-s, s, axis_map=_axis_map(sv))
 
+# Don't need to update for steps??
 @numba.njit(cache=True)
 def union(sv, sl):
     assert len_size(sv) == len_size(sl)
