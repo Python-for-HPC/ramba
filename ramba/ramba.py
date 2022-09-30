@@ -3398,6 +3398,7 @@ class RemoteState:
                 v = v[2:]
                 sl = self.get_partial_view( g, shardview.to_slice(base_part), None, global_index=False, remap_view=False )
                 msg.append((sl.copy(), base_part, v))
+                dprint(2, "Partial message from", self.worker_num,"to",i,sl, base_part,v )
             self.comm_queues[i].put((uuid, self.worker_num, msg))
 
         expected_parts = len( from_set)  # since messages are coalesced, expect 1 from each node sending to us
@@ -4836,57 +4837,37 @@ class ndarray:
     def remapped_axis(self, newmap):
         return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False, aliases=self)
 
-    """
-    def remapped_axis(self, newmap):
-        # make sure array distribution can't change (ie, not flexible or is already constructed)
-        if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
-            deferred_op.do_ops()
-        newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
-    """
 
     def asarray(self):
         dprint(1, "asarray", id(self))
         if self.shape == ():
             return self.distribution
 
-        #deferred_op.do_ops()
         DAG.instantiate(self)
 
         ret = np.empty(self.shape, dtype=self.dtype)
-        # dist_shape = self.distribution.shape
-        # topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
         dprint(2, "asarray:", self.distribution, self.shape)
         dprint(2, "asarray:", shardview.distribution_to_divisions(self.distribution))
-        # shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
-        # shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
-        #                  tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])]) ) for i in range(dist_shape[0])])
-        # shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(num_workers)])
         shards = get_results(
             [
                 remote_async_call(i, "get_view", self.gid, self.distribution[i])
                 for i in range(num_workers)
             ]
         )
-        #print("shards:", shards)
-        #        for i in range(dist_shape[0]):
+        dist = shardview.clean_dist(self.distribution)
         for i in range(num_workers):
-            #            dprint(2, "for:", i, dist_shape[2])
-            # gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
-            # rindex = slice_minus_offset(gindex, topleft)
-            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].shape)
             dprint(
                 3,
                 "gslice:",
                 self.distribution[i],
-                shardview.to_slice(self.distribution[i]),
+                dist[i],
+                shardview.to_slice(dist[i]),
                 "bslice:",
                 shardview.to_base_slice(self.distribution[i]),
                 shards[i].shape,
-                ret[shardview.to_slice(self.distribution[i])].shape
+                ret[shardview.to_slice(dist[i])].shape
             )
-            # ret[rindex] = shards[i]
-            ret[shardview.to_slice(self.distribution[i])] = shards[i]
+            ret[shardview.to_slice(dist[i])] = shards[i]
         return ret
 
     @classmethod
