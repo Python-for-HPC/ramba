@@ -4459,7 +4459,16 @@ class DAG:
     @classmethod
     def instantiate(cls, arr, **kwargs):
         if isinstance(arr, ndarray):
-            cls.instantiate_dag_node(arr.dag, **kwargs)
+            # A DAG node may be dependent on the last DAG operation to
+            # create the given array or the last DAG operation that updates
+            # the base array of a shared bdarray (view).  We look at the sequence
+            # number and instantiate the latter of the bdarray's DAG node for
+            # the shared bdarray case and the ndarray's DAG node for the base
+            # array case.
+            if arr.bdarray.dag.seq_no > arr.dag.seq_no:
+                cls.instantiate_dag_node(arr.bdarray.dag, **kwargs)
+            else:
+                cls.instantiate_dag_node(arr.dag, **kwargs)
 
     def execute(self):
         soutput = self.output()
@@ -4927,13 +4936,13 @@ class ndarray:
                 red_arr_bcast,
                 imports=imports,
                 precode = ["", tmp, " = ", initval],
-                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(", 
+                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(",
                     red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"]"+opsep, tmp, ")"]
             )
         else:
             deferred_op.add_op(
-                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
-                red_arr_bcast, 
+                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"],
+                red_arr_bcast,
                 imports=imports,
                 axis_reduce=(axis, red_arr_bcast)
             )
@@ -6620,9 +6629,9 @@ for (abf, code) in array_unaryop_funcs.items():
     setattr(ndarray, abf, new_func)
 
 array_simple_reductions = {
-    "sum":("","+",0), 
-    "prod":("","*",1), 
-    "min":("min",",",-1), 
+    "sum":("","+",0),
+    "prod":("","*",1),
+    "min":("min",",",-1),
     "max":("max",",",-2)
 }
 for (abf, code) in array_simple_reductions.items():
@@ -6763,9 +6772,9 @@ class deferred_op:
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
-            code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) + 
-                    "\n" + "\n".join(precode) + 
-                    ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) + 
+            code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +
+                    "\n" + "\n".join(precode) +
+                    ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) +
                     ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
         else:
             code = ""
@@ -6778,7 +6787,7 @@ class deferred_op:
                 for t in l[0]:
                     print ("  ",t[0],t[1][0],g)
             for n,s in self.use_other.items():
-                print ("  ",n,pickle.loads(s)) 
+                print ("  ",n,pickle.loads(s))
             print()
         times.append(timer())
         remote_exec_all(
@@ -6870,7 +6879,7 @@ class deferred_op:
                 cls.ramba_deferred_ops.postcode.append(codeline)
             else:
                 cls.ramba_deferred_ops.precode.append(codeline)
-        
+
     # add operations to the deferred stack; if not compatible, execute what we have first
     @classmethod
     def add_op(
