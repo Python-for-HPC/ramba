@@ -3443,6 +3443,8 @@ class RemoteState:
                     arrview_time -= timer()
                     x = shardview.get_start(base_part)
                     x -= shardview.get_start(full_part)
+                    y = shardview.get_steps(base_part)
+                    y *= shardview.get_steps(full_part)
                     sl2 = sl[ shardview.to_slice(base_part) ]
                     arr_parts[v].append(
                         (shardview.clean_range(part), shardview.array_to_view(part, sl2))

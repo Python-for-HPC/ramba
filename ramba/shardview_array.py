@@ -245,12 +245,12 @@ def get_base_steps(sv, sl=None):
     return st
 
 
-# Need to update for steps??
+# Need to update for steps?? Yes!
 def as_base(sv, pv):
     assert len_size(sv) == len_size(pv)
     s = index_to_base_as_array(sv, _index_start(pv))
     e = index_to_base_as_array(sv, _stop(pv), end=True)
-    return shardview(e-s, s)
+    return shardview(e-s, s, steps=_steps(sv))
 
 def slice_to_local(sv, sl):
     assert len(sl) == len_size(sv)
