@@ -5643,6 +5643,23 @@ class ndarray:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
             return DAGshape(res_size, dtype, False)
 
+    @classmethod
+    def nansum_executor(cls, temp_array, self, axis=None, dtype=None):
+        dprint(1, "nansum_executor", id(self))
+        assert axis is not None
+        assert 0 # Actually do the computation if it isn't optimized away.
+
+    @DAGapi
+    def nansum(self, axis=None, dtype=None):
+        dprint(1, "nansum", id(self))
+        if axis is None:
+            DAG.instantiate(self)  # here or in sreduce?
+            sres = sreduce(lambda x: x if x != np.nan else 0, lambda x,y: x+y, 0, self)
+            return sres
+        else:
+            res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
+            return DAGshape(res_size, dtype, False)
+
     """
     def nanmean(self, axis=None, dtype=None):
         dprint(1, "nanmean", id(self))
@@ -7861,6 +7878,7 @@ mod_to_array = [
     "arccos",
     "arctan",
     "nanmean",
+    "nansum",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
