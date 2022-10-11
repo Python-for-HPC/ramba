@@ -3375,7 +3375,7 @@ class RemoteState:
                                 merge = True
                                 break
                         if not merge:
-                            to_send[i].append([g, base_part, (v, part, base_part)])
+                            to_send[i].append([g, shardview.clean_range(base_part), (v, part, base_part)])
                         copy_time += timer()
                         dprint(
                             2,
@@ -3413,13 +3413,6 @@ class RemoteState:
 
         times.append(timer())
         # Receive data from other workers
-        # for i in range(expected_parts):
-        #    try:
-        #        _, v, part, sl = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==uuid, timeout=5)
-        #        arr_parts[v].append( (part, sl) )
-        #    except Exception:
-        #        print("some exception", sys.exc_info()[0])
-        #        assert(0)
         msgs = []
         while expected_parts > 0:
             m = self.comm_queues[self.worker_num].multi_get(
@@ -3432,20 +3425,14 @@ class RemoteState:
             msgs += m
             expected_parts -= len(m)
             if expected_parts > 0:
-                print("Still waiting for", expected_parts, "items")
-        # for _,v,part,sl in msgs:
-        #    arr_parts[v].append( (part, sl) )
+                dprint(2, "Still waiting for", expected_parts, "items")
         for _, _, m in msgs:
             for sl, full_part, l in m:
                 for v, part, base_part in l:
-                    # arr_parts[v].append( (part, sl) )
-                    # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                     arrview_time -= timer()
                     x = shardview.get_start(base_part)
                     x -= shardview.get_start(full_part)
-                    y = shardview.get_steps(base_part)
-                    y *= shardview.get_steps(full_part)
-                    sl2 = sl[ shardview.to_slice(base_part) ]
+                    sl2 = sl[ shardview.as_slice(base_part) ]
                     arr_parts[v].append(
                         (shardview.clean_range(part), shardview.array_to_view(part, sl2))
                     )
@@ -3464,68 +3451,20 @@ class RemoteState:
             ranges = shardview.get_range_splits_list(vparts)
         times.append(timer())
         rangedvars = [{} for _ in ranges]
-        # varlist={}
         for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
-            # varlist.clear()
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
                     if not shardview.overlaps(rpart, vpart):  # skip
                         continue
-                    # times.append(timer())
-                    # slindex = shardview.to_base_slice(shardview.mapsv(vpart,rpart))
                     tmp = shardview.mapsv(vpart, rpart)
-                    # times.append(timer())
-                    # slindex = shardview.to_base_slice(tmp)
-                    # times.append(timer())
-                    # varlist[varname] = data[slindex]
                     varlist[varname] = shardview.get_base_slice(tmp, data)
-            # times.append(timer())
-            # if not shardview.is_empty(rpart):
-            #    func( **varlist, **othervars )
-            # times.append(timer())
-
-        #######
-        # ranges = [ (subspace, {}) ]
-        # for (varname, partlist) in arr_parts.items():
-        #    i=0;
-        #    while i<len(partlist):
-        #        vpart, data = partlist[i]
-        #        i+=1
-        #        j=0
-        #        while j<len(ranges):
-        #            rpart,varlist = ranges[j]
-        #            if not shardview.overlaps(rpart,vpart):   # skip
-        #                j+=1
-        #                continue
-        #            if shardview.is_compat(rpart,vpart):  # matches range
-        #                varlist[varname] = data
-        #                break
-        #            # does not match;  split the ranges into parts, add to lists
-        #            rparts, vparts = shardview.get_range_splits(rpart,vpart)
-        #            if len(rparts)>1:
-        #                #ranges[j] = ( rparts[0], { v: d[shardview.to_base_slice(shardview.mapslice(rpart,shardview.to_slice(rparts[0])))] for (v,d) in varlist.items() } )
-        #                #ranges[j] = ( rparts[0], { v: d[shardview.to_base_slice(shardview.mapsv(rpart,rparts[0]))] for (v,d) in varlist.items() } )
-        #                slindex = shardview.to_base_slice(shardview.mapsv(rpart,rparts[0]))
-        #                ranges[j] = ( rparts[0], { v: d[slindex] for (v,d) in varlist.items() } )
-        #                for r in rparts[1:]:
-        #                    #ranges.append( (r, {v: d[shardview.to_base_slice(shardview.mapslice(rpart,shardview.to_slice(r)))] for (v,d) in varlist.items() } ) )
-        #                    #ranges.append( (r, {v: d[shardview.to_base_slice(shardview.mapsv(rpart,r))] for (v,d) in varlist.items() } ) )
-        #                    slindex = shardview.to_base_slice(shardview.mapsv(rpart,r))
-        #                    ranges.append( (r, {v: d[slindex] for (v,d) in varlist.items() } ) )
-        #            if len(vparts)>1:
-        #                for r in vparts:
-        #                    #partlist.append( (r, data[shardview.to_base_slice(shardview.mapslice(vpart,shardview.to_slice(r)))]) )
-        #                    partlist.append( (r, data[shardview.to_base_slice(shardview.mapsv(vpart,r))]) )
-        #                break
-        #            # if we get here, should continue with same j value (repeat with updated ranges)
 
         times.append(timer())
         if len(ranges) > 1:
             dprint(2, "Ranges:", len(ranges))
 
         # execute function in each range
-        # for (r,arrvars) in ranges:
         for i, r in enumerate(ranges):
             arrvars = rangedvars[i]
             if not shardview.is_empty(r):

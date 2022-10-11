@@ -281,6 +281,13 @@ def to_slice(sv):
     st = _steps(sv)
     return tuple([slice(s[i], e[i], st[i]) for i in range(len(s))])
 
+# Note: subtle difference between to_slice and as_slice;  as_slice assumes length = slice end-start
+def as_slice(sv):
+    s = _index_start(sv)
+    e = s + _size(sv)
+    st = _steps(sv)
+    return tuple([slice(s[i], e[i], st[i]) for i in range(len(s))])
+
 
 def to_base_slice(sv):
     s = _base_offset(sv)
