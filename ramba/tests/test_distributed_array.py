@@ -639,6 +639,19 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_skipslice2(self):
+        # Test slice indexing / views
+        def impl(app):
+            a = app.fromfunction(lambda i, j: i + j, (500, 50), dtype=int)
+            b = a[40:340:3,20::2]
+            b[b>50] -= 20
+            c = app.broadcast_to(b.T,(70,15,100))
+            d = c[15:25:2,2:12:7,::3] - 3
+            e = app.sum(d)
+            return d+e
+
+        run_both(impl)
+
 
     def test_masked(self):
         # Test boolean mask indexing

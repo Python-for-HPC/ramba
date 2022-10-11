@@ -810,10 +810,18 @@ def broadcast(distribution, broadcasted_dims, size):
                 for j in range(len(size))
             ]
         )
+        new_steps = np.array(
+            [
+                1
+                if broadcasted_dims[j]
+                else _steps(distribution[i])[j - new_dims]
+                for j in range(len(size))
+            ]
+        )
         # new_offset = np.array([0 if broadcasted_dims[j] else distribution[i]._base_offset[j - new_dims] for j in range(len(size))])
         # ret.append(shardview(new_size, new_start, new_offset))
         ret.append(
-            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map)
+            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map, new_steps)
         )
     return np.array(ret)
 
@@ -836,8 +844,9 @@ def remap_axis(size, distribution, newmap):
     for i in range(len(distribution)):
         new_size = np.array([_size(distribution[i])[j] for j in newmap])
         new_start = np.array([_index_start(distribution[i])[j] for j in newmap])
+        new_steps = np.array([_steps(distribution[i])[j] for j in newmap])
         new_dist.append(
-            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map)
+            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map, new_steps)
         )
     return new_global_size, np.array(new_dist)
 
