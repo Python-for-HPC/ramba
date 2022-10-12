@@ -3694,11 +3694,9 @@ class RemoteState:
 
 if not USE_MPI:
     if USE_NON_DIST:
-        #RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
         pass
-        #assert False
     else:
-        RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
+        RemoteState = ray.remote(RemoteState)
 
 
 # Wrappers to abstract away Ray method calls
@@ -8747,7 +8745,7 @@ else:  # Ray setup
         res = [{"CPU": num_threads}] * num_workers
         pg = placement_group(res, strategy="SPREAD")
         remote_states = [
-            RemoteState.options(placement_group=pg).remote(x, get_common_state())
+            RemoteState.options(placement_group=pg, num_cpus=num_threads).remote(x, get_common_state())
             for x in range(num_workers)
         ]
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
