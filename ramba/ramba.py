@@ -5025,80 +5025,6 @@ class ndarray:
         else:
             return self.internal_array_unaryop(op, optext, imports, dtype)
 
-    """
-    def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None
-    ):
-        dprint(1, "array_unaryop", id(self), op, optext)
-        if dtype is None:
-            dtype = self.dtype
-        elif dtype == "float":
-            dtype = np.float32 if self.dtype == np.float32 else np.float64
-        if reduction:
-            # TODO: should see if this can be converted into a deferred op
-            deferred_op.do_ops()
-            if axis is None or (axis == 0 and self.ndim == 1):
-                # v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(num_workers)]
-                # g1 = get_results(v)
-                g1 = remote_call_all(
-                    "array_unaryop",
-                    self.gid,
-                    None,
-                    self.distribution,
-                    None,
-                    op,
-                    None,
-                    dtype,
-                )
-                v = np.array(g1)
-                uop = getattr(v, op)
-                ret = uop(dtype=dtype)
-            else:
-                dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
-                k = dsz[axis]
-                red_arr = empty(
-                    dsz, dtype=dtype, distribution=dist, no_defer=True
-                )  # should create immediately
-                remote_exec_all(
-                    "array_unaryop",
-                    self.gid,
-                    red_arr.gid,
-                    self.distribution,
-                    dist,
-                    op,
-                    axis,
-                    dtype,
-                )
-                sl = tuple(0 if i == axis else slice(None) for i in range(red_arr.ndim))
-                if k == 1:  # done, just get the slice with axis removed
-                    ret = red_arr[sl]
-                else:
-                    # need global reduction
-                    arr = empty_like(red_arr[sl])
-                    code = ["", arr, " = " + optext + "( np.array([", red_arr[sl]]
-                    for j in range(1, k):
-                        sl = tuple(
-                            j if i == axis else slice(None) for i in range(red_arr.ndim)
-                        )
-                        code += [", ", red_arr[sl]]
-                    code.append("]) )")
-                    deferred_op.add_op(code, arr, imports=imports)
-                    ret = arr
-            return ret
-        else:
-            new_ndarray = create_array_with_divisions(
-                self.shape,
-                self.distribution,
-                local_border=self.local_border,
-                dtype=dtype,
-            )
-            deferred_op.add_op(
-                ["", new_ndarray, " = " + optext + "(", self, ")"],
-                new_ndarray,
-                imports=imports,
-            )
-            return new_ndarray
-    """
 
     def broadcastable_to(self, shape):
         new_dims = len(shape) - len(self.shape)
@@ -5514,7 +5440,7 @@ class ndarray:
     def getitem_array(self, index):
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
 
         index_has_slice = any([isinstance(i, slice) for i in index])
@@ -7886,24 +7812,6 @@ for mfunc in mod_to_array:
     mcode += "        return np." + mfunc + "(the_array, *args, **kwargs)\n"
     exec(mcode)
     implements(mfunc, False)(eval(mfunc))
-
-# def isnan(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.isnan(*args, **kwargs)
-#    else:
-#        return np.isnan(the_array)
-#
-# def abs(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.abs(*args, **kwargs)
-#    else:
-#        return np.abs(the_array)
-#
-# def mean(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.sum(*args, **kwargs)/np.prod(the_array.shape)
-#    else:
-#        return np.mean(the_array, *args, **kwargs)
 
 
 def power(a, b):
