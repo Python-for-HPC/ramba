@@ -12,6 +12,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 import os
 import numba
+from numba import literal_unroll
 import numpy as np
 from ramba.common import *
 
@@ -365,7 +366,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
 @numba.njit(cache=True)
 def mapslice(sv, sl):
     # print("HERE:",sl, sv, len(sl), len_size(sv))
-    assert len(sl) == len_size(sv)
+    # assert len(sl) == len_size(sv)  # This assert causes compilation failure at i+=1; likely due to Numba bug;  need to revisit
     sv_s = _start(sv)
     sv_e = _stop(sv)
     sv_st = _steps(sv)
@@ -374,11 +375,10 @@ def mapslice(sv, sl):
     si = np.zeros(len(sl), dtype=ramba_dist_dtype)
     st = np.zeros(len(sl), dtype=ramba_dist_dtype)
     i = 0
-    for sl_i in numba.literal_unroll(sl):
+    for sl_i in literal_unroll(sl):
         s[i], sz[i], si[i], st[i] = calc_map_internal(sl_i,sv_s[i], sv_e[i], sv_st[i])
         i += 1
     return shardview(sz, si, index_to_base_as_array(sv, s), _axis_map(sv), st)
-
 
 @numba.njit(cache=True)
 def mapsv(sv, sl):

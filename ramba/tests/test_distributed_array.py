@@ -646,7 +646,7 @@ class TestBasic:
             b = a[40:340:3,20::2]
             b[b>50] -= 20
             c = app.broadcast_to(b.T,(70,15,100))
-            d = c[15:25:2,2:12:7,::3] - 3
+            d = c[15:25:2,2:7,::3] - 3
             e = app.sum(d)
             return d+e
 
