@@ -137,7 +137,7 @@ Then, on each of the other nodes, add it to the cluster by running:
 ```
 ray start --address="<HEAD IP>:<HEAD PORT>" --redis-password="<SECRET>"
 ```
-Here, HEAD IP is the IP address of the head node, and HEAD PORT indicates the port it uses (printed out when the head node starts).  Typically this is 6379.  See the [Ray documentation](https://docs.ray.io/en/latest/cluster/cloud.html#manual-cluster) for more information and options for starting a Ray cluster.  
+Here, HEAD IP is the IP address of the head node, and HEAD PORT indicates the port it uses (printed out when the head node starts).  Typically this is 6379.  See the [Ray documentation](https://docs.ray.io/en/latest/cluster/vms/user-guides/launching-clusters/on-premises.html#on-prem) for more information and options for starting a Ray cluster.  
 
 To use the cluster, run the Ramba program with environment variable ray_redis_password set to SECRET on any of the cluster nodes, e.g.:
 ```
@@ -236,9 +236,9 @@ modifications to the NumPy API as supported by Ramba.
 # Security Note
 Please note that this work is a research prototype and that it internally uses Ray and/or ZeroMQ for
 communication.  These communication channels are generally not secured or authenticated.  This means
-that data sent across those communication channels may be visible to eavesdroppers.  Also, it is means
+that data sent across those communication channels may be visible to eavesdroppers.  Also, it means
 that malicious users may be able to send messages to this system that are interpreted as legitimate.
-This may result in corrupted data and since pickled functions are also sent over the communication
+This may result in corrupted data and, since pickled functions are also sent over the communication
 channel, malicious attackers may be able to run arbitrary code.
 
 Since this prototype uses Ray, occasionally orphaned Ray processes may be left around.  These can
