@@ -5005,8 +5005,9 @@ class ndarray:
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if initval<0: initval = getminmax(dtype)[0]
-        elif initval>1: initval = getminmax(dtype)[1]
+        if isinstance(initval, int):
+            if initval<0: initval = getminmax(dtype)[0]
+            elif initval>1: initval = getminmax(dtype)[1]
         if reduction:
             if self.maskarray is not None:
                 if axis is not None and axis>0:
@@ -5140,7 +5141,7 @@ class ndarray:
 
     @classmethod
     def array_binop_executor(
-        cls, temp_array, self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
+        cls, temp_array, self, rhs, op, optext, opfunc="", inplace=False, reverse=False, imports=[], dtype=None
     ):
         if isinstance(rhs, np.ndarray):
             rhs = fromarray(rhs)
@@ -5181,13 +5182,13 @@ class ndarray:
 
             if reverse:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = ", rhsview, optext, selfview],
+                    ["", new_ndarray, " = "+opfunc+"(", rhsview, optext, selfview,")"],
                     new_ndarray,
                     imports=imports,
                 )
             else:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = ", selfview, optext, rhsview],
+                    ["", new_ndarray, " = "+opfunc+"(", selfview, optext, rhsview,")"],
                     new_ndarray,
                     imports=imports,
                 )
@@ -5197,7 +5198,7 @@ class ndarray:
 
     @DAGapi
     def array_binop(
-        self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
+        self, rhs, op, optext, opfunc="", inplace=False, reverse=False, imports=[], dtype=None
     ):
         dprint(1, "array_binop", id(self), op, optext)
         new_shape = numpy_broadcast_shape(self, rhs)
@@ -5213,89 +5214,6 @@ class ndarray:
             else:
                 return DAGshape(new_shape, new_dtype, False)
 
-    """
-    def array_binop(
-        self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
-    ):
-        t0 = timer()
-        if isinstance(rhs, np.ndarray):
-            rhs = fromarray(rhs)
-        if inplace:
-            sz, selfview, rhsview = ndarray.broadcast(self, rhs)
-            assert self.shape== sz
-
-            if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
-                getattr(selfview, op)(rhsview)
-                return self
-
-            deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
-            t1 = timer()
-            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
-            return self
-        else:
-            lb = max(
-                self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
-            )
-            new_array_shape, selfview, rhsview = ndarray.broadcast(self, rhs)
-
-            dtype = unify_args(self.dtype, rhs, dtype)
-            "
-            if hasattr(rhs, "dtype"):
-                rhs_dtype = rhs.dtype
-            else:
-                try:
-                    rhs_dtype = np.dtype(rhs)
-                except Exception:
-                    rhs_dtype = None
-            if dtype is None:
-                dtype = np.result_type(self.dtype, rhs_dtype)
-            elif dtype == "float":
-                dtype = (
-                    np.float32
-                    if rhs_dtype == np.float32 and self.dtype == np.float32
-                    else np.float64
-                )
-            "
-
-            if self.advindex is not None or (isinstance(rhs, ndarray) and rhs.advindex is not None):
-                res = ndarray(
-                    new_array_shape,
-                    dtype=dtype,
-                    advindex=("array_binop", (self, rhs, optext, inplace, reverse, imports, dtype))
-                )
-                return res
-
-            if isinstance(new_array_shape, tuple):
-                if len(new_array_shape) > 0:
-                    new_ndarray = empty(new_array_shape, local_border=lb, dtype=dtype)
-                else:
-                    res = getattr(selfview, op)(rhsview)
-                    if isinstance(res, np.ndarray):
-                        return fromarray(res)
-                    elif isinstance(res, numbers.Number) and new_array_shape == ():
-                        return array(res)
-                    else:
-                        return res
-            else:  # must be scalar output
-                res = getattr(selfview, op)(rhsview)
-                return res
-
-            if reverse:
-                deferred_op.add_op(
-                    ["", new_ndarray, " = ", rhsview, optext, selfview],
-                    new_ndarray,
-                    imports=imports,
-                )
-            else:
-                deferred_op.add_op(
-                    ["", new_ndarray, " = ", selfview, optext, rhsview],
-                    new_ndarray,
-                    imports=imports,
-                )
-            t1 = timer()
-            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
-            return new_ndarray
-    """
 
     @classmethod
     def setitem_executor(cls, temp_array, self, key, value):
@@ -5601,6 +5519,10 @@ class ndarray:
             )
             return res
     """
+
+    # isclose() not supported (yet) in numba
+    #def allclose(self, other, **kwargs):
+    #    return self.isclose(other).all(**kwargs)
 
     # def __len__(self):
     #    return self.shape[0]
@@ -6458,6 +6380,7 @@ def numpy_broadcast_shape(a, b):
 def make_method(
     name,
     optext,
+    opfunc="",
     inplace=False,
     unary=False,
     reduction=False,
@@ -6484,7 +6407,7 @@ def make_method(
             #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
             #                assert(self.shape == rhs.shape)
             new_ndarray = self.array_binop(
-                rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype
+                rhs, name, optext, opfunc, inplace, reverse, imports=imports, dtype=dtype
             )
             t1 = timer()
             dprint(4, "BIN METHOD: time", (t1 - t0) * 1000)
@@ -6495,8 +6418,10 @@ def make_method(
 
 
 class op_info:
-    def __init__(self, code, imports=[], dtype=None):
+    def __init__(self, code, func="", init=None, imports=[], dtype=None):
         self.code = code
+        self.func = func
+        self.init = init
         self.imports = imports
         self.dtype = dtype
 
@@ -6515,9 +6440,13 @@ array_binop_funcs = {
     "__le__": op_info(" <= ", dtype=np.bool_),
     "__eq__": op_info(" == ", dtype=np.bool_),
     "__ne__": op_info(" != ", dtype=np.bool_),
+    "logical_and": op_info(",", "numpy.logical_and", imports=["numpy"],dtype=np.bool_),
+    "logical_or": op_info(",", "numpy.logical_or", imports=["numpy"],dtype=np.bool_),
+    "logical_xor": op_info(",", "numpy.logical_xor", imports=["numpy"],dtype=np.bool_),
+    #"isclose": op_info(",", "numpy.isclose", imports=["numpy"],dtype=np.bool_),  # isclose not yet supported in numba!
 }
 for (abf, code) in array_binop_funcs.items():
-    new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
+    new_func = make_method(abf, code.code, code.func, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
 array_binop_rfuncs = {
@@ -6560,7 +6489,12 @@ array_unaryop_funcs = {
     "__neg__": op_info(" -"),
     "exp": op_info(" math.exp", imports=["math"], dtype="float"),
     "log": op_info(" math.log", imports=["math"], dtype="float"),
+    "isfinite": op_info(" numpy.isfinite", imports=["numpy"], dtype=np.bool_),
+    "isinf": op_info(" numpy.isinf", imports=["numpy"], dtype=np.bool_),
     "isnan": op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_),
+    "isneginf": op_info(" numpy.isneginf", imports=["numpy"], dtype=np.bool_),
+    "isposinf": op_info(" numpy.isposinf", imports=["numpy"], dtype=np.bool_),
+    "logical_not": op_info(" numpy.logical_not", imports=["numpy"], dtype=np.bool_),
 }
 
 for (abf, code) in array_unaryop_funcs.items():
@@ -6570,14 +6504,16 @@ for (abf, code) in array_unaryop_funcs.items():
     setattr(ndarray, abf, new_func)
 
 array_simple_reductions = {
-    "sum":("","+",0),
-    "prod":("","*",1),
-    "min":("min",",",-1),
-    "max":("max",",",-2)
+    "sum":op_info("+","",0),
+    "prod":op_info("*","",1),
+    "min":op_info(",","min",-1),
+    "max":op_info(",","max",-2),
+    "all":op_info(" * ","",True,dtype=np.bool_),
+    "any":op_info(" + ","",False,dtype=np.bool_),
 }
 for (abf, code) in array_simple_reductions.items():
     new_func = make_method(
-        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True, optext2=code[0], opsep=code[1], initval=code[2]
+        abf, abf, unary=True, reduction=True, optext2=code.func, opsep=code.code, initval=code.init, dtype=code.dtype
     )
     setattr(ndarray, abf, new_func)
 
@@ -7803,6 +7739,18 @@ mod_to_array = [
     "arctan",
     "nanmean",
     "nansum",
+    "isfinite",
+    "isinf",
+    "isnan",
+    "isneginf",
+    "isposinf",
+    "all",
+    "any",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+    #"isclose",
+    #"allclose",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"

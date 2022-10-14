@@ -211,7 +211,7 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 |            | index routines  | &#x1f534; not implemented | ("where" partly works)
 |Math        | arithmetic operations | &#x1f7e2; works     | +, -, +=, //, etc. 
 |            | comparisons     | &#x1f7e2; works           | 
-|            | logical operations | &#x1f534; not implemented |
+|            | logical operations | &#x1f7e1; partial      | logical_and, any, etc.
 |            | trig functions  | &#x1f7e1; partial         |
 |            | power           | &#x1f7e1; partial         | pow, exp, log, sqrt, square
 |            | floating manip. | &#x1f534; not implemented | (isnan works, though)
