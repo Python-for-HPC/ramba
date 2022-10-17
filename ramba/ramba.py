@@ -3283,7 +3283,7 @@ class RemoteState:
         gdict = globals()
         for imp in imports:
             the_module = __import__(imp)
-            gdict[imp] = the_module
+            gdict[imp.split(".")[0]] = the_module
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
@@ -5141,8 +5141,11 @@ class ndarray:
 
     @classmethod
     def array_binop_executor(
-        cls, temp_array, self, rhs, op, optext, opfunc="", inplace=False, reverse=False, imports=[], dtype=None
+        cls, temp_array, self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
+        extras=[]
+        for i,v in extra_args.items():
+            extras += [", "+i+"=", v]
         if isinstance(rhs, np.ndarray):
             rhs = fromarray(rhs)
         if inplace:
@@ -5182,13 +5185,13 @@ class ndarray:
 
             if reverse:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = "+opfunc+"(", rhsview, optext, selfview,")"],
+                    ["", new_ndarray, " = "+opfunc+"(", rhsview, optext, selfview,*extras,")"],
                     new_ndarray,
                     imports=imports,
                 )
             else:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = "+opfunc+"(", selfview, optext, rhsview,")"],
+                    ["", new_ndarray, " = "+opfunc+"(", selfview, optext, rhsview,*extras,")"],
                     new_ndarray,
                     imports=imports,
                 )
@@ -5198,7 +5201,7 @@ class ndarray:
 
     @DAGapi
     def array_binop(
-        self, rhs, op, optext, opfunc="", inplace=False, reverse=False, imports=[], dtype=None
+        self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
         dprint(1, "array_binop", id(self), op, optext)
         new_shape = numpy_broadcast_shape(self, rhs)
@@ -5207,7 +5210,7 @@ class ndarray:
             new_shape = ()
             DAG.instantiate(self)
             DAG.instantiate(rhs)
-            return ndarray.array_binop_executor(None, self, rhs, op, optext, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
+            return ndarray.array_binop_executor(None, self, rhs, op, optext, extra_args=extra_args, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
             if inplace:
                 return DAGshape(new_shape, new_dtype, self)
@@ -5520,9 +5523,8 @@ class ndarray:
             return res
     """
 
-    # isclose() not supported (yet) in numba
-    #def allclose(self, other, **kwargs):
-    #    return self.isclose(other).all(**kwargs)
+    def allclose(self, other, rtol=1e-5, atol=1e-8, equal_nan=False, **kwargs):
+        return self.isclose(other, rtol=rtol, atol=atol, equal_nan=equal_nan).all(**kwargs)
 
     # def __len__(self):
     #    return self.shape[0]
@@ -6377,6 +6379,14 @@ def numpy_broadcast_shape(a, b):
     return tuple(new_shape[::-1])
 
 
+@numba.njit
+def internal_isclose(a,b,rtol=1e-5,atol=1e-8,equal_nan=False):
+    return (
+        (np.isfinite(a) and np.abs(a-b)<=(atol+rtol*np.abs(b))) or
+        (equal_nan and np.isnan(a) and np.isnan(b)) or
+        (np.isinf(a) and a==b) )
+
+
 def make_method(
     name,
     optext,
@@ -6401,13 +6411,13 @@ def make_method(
 
     else:
 
-        def _method(self, rhs):
+        def _method(self, rhs, **kwargs):
             t0 = timer()
             #            print("make_method", name, type(self), type(rhs))
             #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
             #                assert(self.shape == rhs.shape)
             new_ndarray = self.array_binop(
-                rhs, name, optext, opfunc, inplace, reverse, imports=imports, dtype=dtype
+                rhs, name, optext, opfunc, extra_args=kwargs, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype
             )
             t1 = timer()
             dprint(4, "BIN METHOD: time", (t1 - t0) * 1000)
@@ -6443,7 +6453,7 @@ array_binop_funcs = {
     "logical_and": op_info(",", "numpy.logical_and", imports=["numpy"],dtype=np.bool_),
     "logical_or": op_info(",", "numpy.logical_or", imports=["numpy"],dtype=np.bool_),
     "logical_xor": op_info(",", "numpy.logical_xor", imports=["numpy"],dtype=np.bool_),
-    #"isclose": op_info(",", "numpy.isclose", imports=["numpy"],dtype=np.bool_),  # isclose not yet supported in numba!
+    "isclose": op_info(",", "ramba.internal_isclose", imports=["ramba"], dtype=np.bool_),
 }
 for (abf, code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, code.func, imports=code.imports, dtype=code.dtype)
@@ -7749,8 +7759,8 @@ mod_to_array = [
     "logical_and",
     "logical_or",
     "logical_xor",
-    #"isclose",
-    #"allclose",
+    "isclose",
+    "allclose",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
