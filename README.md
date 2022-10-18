@@ -198,7 +198,7 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 |            | from data       | &#x1f7e1; partial         | fromfunction, fromarray
 |            | ranges          | &#x1f7e1; partial         | arange, linspace, mgrid
 |Array Manipulation| reshape   | &#x1f7e1; partial         | reshape is very expensive in distributed context, so only very limited support;  use reshape_copy
-|            | axis manipulation | &#x1f7e1; partial       | T, transpose; missing: swapaxes, rollaxis, moveaxis 
+|            | axis manipulation | &#x1f7e2; works         | T, transpose, swapaxes, rollaxis, moveaxis 
 |            | dimensionality  | &#x1f7e1; partial         | only broadcast_to
 |            | joining arrays  | &#x1f7e1; partial         | only concatenate
 |            | splitting arrays| &#x1f534; not implemented |

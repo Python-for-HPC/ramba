@@ -4798,13 +4798,62 @@ class ndarray:
         if len(args) == 0:
             axes = range(ndims)[::-1]
         else:
-            if len(args) > 1:
-                axes = args
-            elif len(args) == 1 and isinstance(args[0], tuple):
+            if len(args) == 1 and isinstance(args[0], tuple):
                 axes = args[0]
-            # Not sufficient...should check for duplicates (i.e., all axes used exactly once)
-            assert all(index >= 0 and index < ndims for index in axes)
+            else:
+                axes = args
+            if len(axes)!=ndims:
+                raise ValueError("axes don't match array")
+            badaxes = [i for i in axes if i<-ndims or i>=ndims]
+            axes = np.core.numeric.normalize_axis_tuple(axes,ndims)
+            #if len(badaxes)>0:
+            #    raise np.AxisError(f'axis {badaxes[0]} is out of bounds for array of dimension {ndims}')
+            #axes = [i+ndims if i<0 else i for i in axes]
+            #if len(set(axes))!=ndims:
+            #    raise ValueError("repeated axis in transpose")
         return self.remapped_axis(axes)
+
+    def swapaxes(self,a1,a2):
+        ndims = self.ndim
+        a1 = np.core.numeric.normalize_axis_index(a1,ndims)
+        a2 = np.core.numeric.normalize_axis_index(a2,ndims)
+        #if a1<-ndims or a1>=ndims:
+        #    raise np.AxisError(f'axis {a1} is out of bounds for array of dimension {ndims}')
+        #if a2<-ndims or a2>=ndims:
+        #    raise np.AxisError(f'axis {a2} is out of bounds for array of dimension {ndims}')
+        axes = list(range(ndims))
+        axes[a1],axes[a2] = axes[a2],axes[a1]
+        return self.remapped_axis(axes)
+
+    def moveaxis(self,source,destination):
+        ndims = self.ndim
+        s = np.core.numeric.normalize_axis_tuple(source,ndims,'source')
+        d = np.core.numeric.normalize_axis_tuple(destination,ndims,'destination')
+        if len(s)!=len(d):
+            raise ValueError("`source` and `destination` arguments must have the same number of elements")
+        axesleft = list(range(ndims))
+        axes = [-1]*ndims
+        for i,v in enumerate(s):
+            axes[d[i]] = v
+            axesleft.remove(v)
+        for i in range(ndims):
+            if axes[i]<0:
+                axes[i] = axesleft.pop(0)
+        return self.remapped_axis(axes)
+
+    def rollaxis(self,axis,start=0):
+        ndims = self.ndim
+        axis = np.core.numeric.normalize_axis_index(axis,ndims)
+        if not isinstance(start,int):
+            raise TypeError("integfer argument expected")
+        if start<-ndims or start>ndims:
+            raise np.AxisError(f"`start` arg requires {-ndims} <= start < {ndims+1} but {start} was passed in")
+        if start<0:
+            start+=ndims
+        if start>axis:
+            start-=1
+        return self.moveaxis(axis,start)
+
 
     @property
     def T(self):
@@ -7794,6 +7843,9 @@ mod_to_array = [
     "logical_xor",
     "isclose",
     "allclose",
+    "swapaxes",
+    "moveaxis",
+    "rollaxis",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
