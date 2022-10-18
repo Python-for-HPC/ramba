@@ -5514,6 +5514,13 @@ class ndarray:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
             return DAGshape(res_size, dtype, False)
 
+    def nansum(self, asarray=False, **kwargs):
+        v = self[self.isnan().logical_not()].sum(asarray=True,**kwargs)
+        if not asarray:
+            v = v[0]
+        return v
+
+    """
     @classmethod
     def nansum_executor(cls, temp_array, self, axis=None, dtype=None):
         dprint(1, "nansum_executor", id(self))
@@ -5531,7 +5538,7 @@ class ndarray:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
             return DAGshape(res_size, dtype, False)
 
-    """
+
     def nanmean(self, axis=None, dtype=None):
         dprint(1, "nanmean", id(self))
         if axis is None:
