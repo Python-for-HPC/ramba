@@ -3283,7 +3283,7 @@ class RemoteState:
         gdict = globals()
         for imp in imports:
             the_module = __import__(imp)
-            gdict[imp] = the_module
+            gdict[imp.split(".")[0]] = the_module
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
@@ -3636,11 +3636,9 @@ class RemoteState:
 
 if not USE_MPI:
     if USE_NON_DIST:
-        #RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
         pass
-        #assert False
     else:
-        RemoteState = ray.remote(num_cpus=num_threads)(RemoteState)
+        RemoteState = ray.remote(RemoteState)
 
 
 # Wrappers to abstract away Ray method calls
@@ -4401,7 +4399,16 @@ class DAG:
     @classmethod
     def instantiate(cls, arr, **kwargs):
         if isinstance(arr, ndarray):
-            cls.instantiate_dag_node(arr.dag, **kwargs)
+            # A DAG node may be dependent on the last DAG operation to
+            # create the given array or the last DAG operation that updates
+            # the base array of a shared bdarray (view).  We look at the sequence
+            # number and instantiate the latter of the bdarray's DAG node for
+            # the shared bdarray case and the ndarray's DAG node for the base
+            # array case.
+            if arr.bdarray.dag.seq_no > arr.dag.seq_no:
+                cls.instantiate_dag_node(arr.bdarray.dag, **kwargs)
+            else:
+                cls.instantiate_dag_node(arr.dag, **kwargs)
 
     def execute(self):
         soutput = self.output()
@@ -4733,13 +4740,62 @@ class ndarray:
         if len(args) == 0:
             axes = range(ndims)[::-1]
         else:
-            if len(args) > 1:
-                axes = args
-            elif len(args) == 1 and isinstance(args[0], tuple):
+            if len(args) == 1 and isinstance(args[0], tuple):
                 axes = args[0]
-            # Not sufficient...should check for duplicates (i.e., all axes used exactly once)
-            assert all(index >= 0 and index < ndims for index in axes)
+            else:
+                axes = args
+            if len(axes)!=ndims:
+                raise ValueError("axes don't match array")
+            badaxes = [i for i in axes if i<-ndims or i>=ndims]
+            axes = np.core.numeric.normalize_axis_tuple(axes,ndims)
+            #if len(badaxes)>0:
+            #    raise np.AxisError(f'axis {badaxes[0]} is out of bounds for array of dimension {ndims}')
+            #axes = [i+ndims if i<0 else i for i in axes]
+            #if len(set(axes))!=ndims:
+            #    raise ValueError("repeated axis in transpose")
         return self.remapped_axis(axes)
+
+    def swapaxes(self,a1,a2):
+        ndims = self.ndim
+        a1 = np.core.numeric.normalize_axis_index(a1,ndims)
+        a2 = np.core.numeric.normalize_axis_index(a2,ndims)
+        #if a1<-ndims or a1>=ndims:
+        #    raise np.AxisError(f'axis {a1} is out of bounds for array of dimension {ndims}')
+        #if a2<-ndims or a2>=ndims:
+        #    raise np.AxisError(f'axis {a2} is out of bounds for array of dimension {ndims}')
+        axes = list(range(ndims))
+        axes[a1],axes[a2] = axes[a2],axes[a1]
+        return self.remapped_axis(axes)
+
+    def moveaxis(self,source,destination):
+        ndims = self.ndim
+        s = np.core.numeric.normalize_axis_tuple(source,ndims,'source')
+        d = np.core.numeric.normalize_axis_tuple(destination,ndims,'destination')
+        if len(s)!=len(d):
+            raise ValueError("`source` and `destination` arguments must have the same number of elements")
+        axesleft = list(range(ndims))
+        axes = [-1]*ndims
+        for i,v in enumerate(s):
+            axes[d[i]] = v
+            axesleft.remove(v)
+        for i in range(ndims):
+            if axes[i]<0:
+                axes[i] = axesleft.pop(0)
+        return self.remapped_axis(axes)
+
+    def rollaxis(self,axis,start=0):
+        ndims = self.ndim
+        axis = np.core.numeric.normalize_axis_index(axis,ndims)
+        if not isinstance(start,int):
+            raise TypeError("integfer argument expected")
+        if start<-ndims or start>ndims:
+            raise np.AxisError(f"`start` arg requires {-ndims} <= start < {ndims+1} but {start} was passed in")
+        if start<0:
+            start+=ndims
+        if start>axis:
+            start-=1
+        return self.moveaxis(axis,start)
+
 
     @property
     def T(self):
@@ -4849,13 +4905,13 @@ class ndarray:
                 red_arr_bcast,
                 imports=imports,
                 precode = ["", tmp, " = ", initval],
-                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(", 
+                postcode = ["", red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"] = " + optext2 +"(",
                     red_arr_bcast, "["+("0,"*red_arr_bcast.ndim)+"]"+opsep, tmp, ")"]
             )
         else:
             deferred_op.add_op(
-                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"], 
-                red_arr_bcast, 
+                ["", red_arr_bcast, " = " + optext2 + "(",red_arr_bcast, opsep, src_arr, ")"],
+                red_arr_bcast,
                 imports=imports,
                 axis_reduce=(axis, red_arr_bcast)
             )
@@ -4912,6 +4968,32 @@ class ndarray:
     def internal_array_unaryop( self, op, optext, imports=[], dtype=None ):
         return DAGshape(self.shape, dtype, False)
 
+    @classmethod
+    def array_unaryop_executor(
+        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
+    ):
+        if dtype is None:
+            dtype = self.dtype
+        elif dtype == "float":
+            dtype = np.float32 if self.dtype == np.float32 else np.float64
+
+        if isinstance(initval, int):
+            if initval<0: initval = getminmax(dtype)[0]
+            elif initval>1: initval = getminmax(dtype)[1]
+        assert reduction
+        if axis is None or (axis == 0 and self.ndim == 1):
+            assert asarray
+            dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
+            red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+            red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
+            return red_arr.internal_reduction2b(op, dtype, asarray)
+        else:
+            dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
+            red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+            red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
+            return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+
+    @DAGapi
     def array_unaryop(
         self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -4920,100 +5002,27 @@ class ndarray:
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if initval<0: initval = getminmax(dtype)[0]
-        elif initval>1: initval = getminmax(dtype)[1]
+        if isinstance(initval, int):
+            if initval<0: initval = getminmax(dtype)[0]
+            elif initval>1: initval = getminmax(dtype)[1]
         if reduction:
             if self.maskarray is not None:
                 if axis is not None and axis>0:
                     raise np.AxisError("Error axis must be 0")
                 axis = None
             if axis is None or (axis == 0 and self.ndim == 1):
+                if asarray:
+                    return DAGshape((1,), dtype, False)
+                DAG.instantiate(self)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
                 red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 return red_arr.internal_reduction2b(op, dtype, asarray)
             else:
-                dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
-                red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-                return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+                return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
         else:
             return self.internal_array_unaryop(op, optext, imports, dtype)
 
-    """
-    def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None
-    ):
-        dprint(1, "array_unaryop", id(self), op, optext)
-        if dtype is None:
-            dtype = self.dtype
-        elif dtype == "float":
-            dtype = np.float32 if self.dtype == np.float32 else np.float64
-        if reduction:
-            # TODO: should see if this can be converted into a deferred op
-            deferred_op.do_ops()
-            if axis is None or (axis == 0 and self.ndim == 1):
-                # v = [remote_async_call(i, "array_unaryop", self.gid, self.distribution[i], None, op, axis, dtype) for i in range(num_workers)]
-                # g1 = get_results(v)
-                g1 = remote_call_all(
-                    "array_unaryop",
-                    self.gid,
-                    None,
-                    self.distribution,
-                    None,
-                    op,
-                    None,
-                    dtype,
-                )
-                v = np.array(g1)
-                uop = getattr(v, op)
-                ret = uop(dtype=dtype)
-            else:
-                dsz, dist = shardview.reduce_axis(self.shape, self.distribution, axis)
-                k = dsz[axis]
-                red_arr = empty(
-                    dsz, dtype=dtype, distribution=dist, no_defer=True
-                )  # should create immediately
-                remote_exec_all(
-                    "array_unaryop",
-                    self.gid,
-                    red_arr.gid,
-                    self.distribution,
-                    dist,
-                    op,
-                    axis,
-                    dtype,
-                )
-                sl = tuple(0 if i == axis else slice(None) for i in range(red_arr.ndim))
-                if k == 1:  # done, just get the slice with axis removed
-                    ret = red_arr[sl]
-                else:
-                    # need global reduction
-                    arr = empty_like(red_arr[sl])
-                    code = ["", arr, " = " + optext + "( np.array([", red_arr[sl]]
-                    for j in range(1, k):
-                        sl = tuple(
-                            j if i == axis else slice(None) for i in range(red_arr.ndim)
-                        )
-                        code += [", ", red_arr[sl]]
-                    code.append("]) )")
-                    deferred_op.add_op(code, arr, imports=imports)
-                    ret = arr
-            return ret
-        else:
-            new_ndarray = create_array_with_divisions(
-                self.shape,
-                self.distribution,
-                local_border=self.local_border,
-                dtype=dtype,
-            )
-            deferred_op.add_op(
-                ["", new_ndarray, " = " + optext + "(", self, ")"],
-                new_ndarray,
-                imports=imports,
-            )
-            return new_ndarray
-    """
 
     def broadcastable_to(self, shape):
         new_dims = len(shape) - len(self.shape)
@@ -5129,8 +5138,11 @@ class ndarray:
 
     @classmethod
     def array_binop_executor(
-        cls, temp_array, self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
+        cls, temp_array, self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
+        extras=[]
+        for i,v in extra_args.items():
+            extras += [", "+i+"=", v]
         if isinstance(rhs, np.ndarray):
             rhs = fromarray(rhs)
         if inplace:
@@ -5170,13 +5182,13 @@ class ndarray:
 
             if reverse:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = ", rhsview, optext, selfview],
+                    ["", new_ndarray, " = "+opfunc+"(", rhsview, optext, selfview,*extras,")"],
                     new_ndarray,
                     imports=imports,
                 )
             else:
                 deferred_op.add_op(
-                    ["", new_ndarray, " = ", selfview, optext, rhsview],
+                    ["", new_ndarray, " = "+opfunc+"(", selfview, optext, rhsview,*extras,")"],
                     new_ndarray,
                     imports=imports,
                 )
@@ -5186,7 +5198,7 @@ class ndarray:
 
     @DAGapi
     def array_binop(
-        self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
+        self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
         dprint(1, "array_binop", id(self), op, optext)
         new_shape = numpy_broadcast_shape(self, rhs)
@@ -5195,96 +5207,13 @@ class ndarray:
             new_shape = ()
             DAG.instantiate(self)
             DAG.instantiate(rhs)
-            return ndarray.array_binop_executor(None, self, rhs, op, optext, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
+            return ndarray.array_binop_executor(None, self, rhs, op, optext, extra_args=extra_args, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
             if inplace:
                 return DAGshape(new_shape, new_dtype, self)
             else:
                 return DAGshape(new_shape, new_dtype, False)
 
-    """
-    def array_binop(
-        self, rhs, op, optext, inplace=False, reverse=False, imports=[], dtype=None
-    ):
-        t0 = timer()
-        if isinstance(rhs, np.ndarray):
-            rhs = fromarray(rhs)
-        if inplace:
-            sz, selfview, rhsview = ndarray.broadcast(self, rhs)
-            assert self.shape== sz
-
-            if not isinstance(selfview, ndarray) and not isinstance(rhsview, ndarray):
-                getattr(selfview, op)(rhsview)
-                return self
-
-            deferred_op.add_op(["", self, optext, rhsview], self, imports=imports)
-            t1 = timer()
-            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
-            return self
-        else:
-            lb = max(
-                self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
-            )
-            new_array_shape, selfview, rhsview = ndarray.broadcast(self, rhs)
-
-            dtype = unify_args(self.dtype, rhs, dtype)
-            "
-            if hasattr(rhs, "dtype"):
-                rhs_dtype = rhs.dtype
-            else:
-                try:
-                    rhs_dtype = np.dtype(rhs)
-                except Exception:
-                    rhs_dtype = None
-            if dtype is None:
-                dtype = np.result_type(self.dtype, rhs_dtype)
-            elif dtype == "float":
-                dtype = (
-                    np.float32
-                    if rhs_dtype == np.float32 and self.dtype == np.float32
-                    else np.float64
-                )
-            "
-
-            if self.advindex is not None or (isinstance(rhs, ndarray) and rhs.advindex is not None):
-                res = ndarray(
-                    new_array_shape,
-                    dtype=dtype,
-                    advindex=("array_binop", (self, rhs, optext, inplace, reverse, imports, dtype))
-                )
-                return res
-
-            if isinstance(new_array_shape, tuple):
-                if len(new_array_shape) > 0:
-                    new_ndarray = empty(new_array_shape, local_border=lb, dtype=dtype)
-                else:
-                    res = getattr(selfview, op)(rhsview)
-                    if isinstance(res, np.ndarray):
-                        return fromarray(res)
-                    elif isinstance(res, numbers.Number) and new_array_shape == ():
-                        return array(res)
-                    else:
-                        return res
-            else:  # must be scalar output
-                res = getattr(selfview, op)(rhsview)
-                return res
-
-            if reverse:
-                deferred_op.add_op(
-                    ["", new_ndarray, " = ", rhsview, optext, selfview],
-                    new_ndarray,
-                    imports=imports,
-                )
-            else:
-                deferred_op.add_op(
-                    ["", new_ndarray, " = ", selfview, optext, rhsview],
-                    new_ndarray,
-                    imports=imports,
-                )
-            t1 = timer()
-            dprint(4, "BINARY_OP:", optext, "time", (t1 - t0) * 1000)
-            return new_ndarray
-    """
 
     @classmethod
     def setitem_executor(cls, temp_array, self, key, value):
@@ -5429,7 +5358,7 @@ class ndarray:
     def getitem_array(self, index):
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
-        if isinstance(index, ndarray) and index.dtype==np.bool and index.broadcastable_to(self.shape):
+        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
 
         index_has_slice = any([isinstance(i, slice) for i in index])
@@ -5556,7 +5485,31 @@ class ndarray:
             res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
             return DAGshape(res_size, dtype, False)
 
+    def nansum(self, asarray=False, **kwargs):
+        v = self[self.isnan().logical_not()].sum(asarray=True,**kwargs)
+        if not asarray:
+            v = v[0]
+        return v
+
     """
+    @classmethod
+    def nansum_executor(cls, temp_array, self, axis=None, dtype=None):
+        dprint(1, "nansum_executor", id(self))
+        assert axis is not None
+        assert 0 # Actually do the computation if it isn't optimized away.
+
+    @DAGapi
+    def nansum(self, axis=None, dtype=None):
+        dprint(1, "nansum", id(self))
+        if axis is None:
+            DAG.instantiate(self)  # here or in sreduce?
+            sres = sreduce(lambda x: x if x != np.nan else 0, lambda x,y: x+y, 0, self)
+            return sres
+        else:
+            res_size = tuple(self.shape[:axis] + self.shape[axis+1:])
+            return DAGshape(res_size, dtype, False)
+
+
     def nanmean(self, axis=None, dtype=None):
         dprint(1, "nanmean", id(self))
         if axis is None:
@@ -5573,6 +5526,9 @@ class ndarray:
             )
             return res
     """
+
+    def allclose(self, other, rtol=1e-5, atol=1e-8, equal_nan=False, **kwargs):
+        return self.isclose(other, rtol=rtol, atol=atol, equal_nan=equal_nan).all(**kwargs)
 
     # def __len__(self):
     #    return self.shape[0]
@@ -6428,9 +6384,18 @@ def numpy_broadcast_shape(a, b):
     return tuple(new_shape[::-1])
 
 
+@numba.njit
+def internal_isclose(a,b,rtol=1e-5,atol=1e-8,equal_nan=False):
+    return (
+        (np.isfinite(a) and np.abs(a-b)<=(atol+rtol*np.abs(b))) or
+        (equal_nan and np.isnan(a) and np.isnan(b)) or
+        (np.isinf(a) and a==b) )
+
+
 def make_method(
     name,
     optext,
+    opfunc="",
     inplace=False,
     unary=False,
     reduction=False,
@@ -6451,13 +6416,13 @@ def make_method(
 
     else:
 
-        def _method(self, rhs):
+        def _method(self, rhs, **kwargs):
             t0 = timer()
             #            print("make_method", name, type(self), type(rhs))
             #            if isinstance(self, ndarray) and isinstance(rhs, ndarray):
             #                assert(self.shape == rhs.shape)
             new_ndarray = self.array_binop(
-                rhs, name, optext, inplace, reverse, imports=imports, dtype=dtype
+                rhs, name, optext, opfunc, extra_args=kwargs, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype
             )
             t1 = timer()
             dprint(4, "BIN METHOD: time", (t1 - t0) * 1000)
@@ -6468,8 +6433,10 @@ def make_method(
 
 
 class op_info:
-    def __init__(self, code, imports=[], dtype=None):
+    def __init__(self, code, func="", init=None, imports=[], dtype=None):
         self.code = code
+        self.func = func
+        self.init = init
         self.imports = imports
         self.dtype = dtype
 
@@ -6488,9 +6455,13 @@ array_binop_funcs = {
     "__le__": op_info(" <= ", dtype=np.bool_),
     "__eq__": op_info(" == ", dtype=np.bool_),
     "__ne__": op_info(" != ", dtype=np.bool_),
+    "logical_and": op_info(",", "numpy.logical_and", imports=["numpy"],dtype=np.bool_),
+    "logical_or": op_info(",", "numpy.logical_or", imports=["numpy"],dtype=np.bool_),
+    "logical_xor": op_info(",", "numpy.logical_xor", imports=["numpy"],dtype=np.bool_),
+    "isclose": op_info(",", "ramba.internal_isclose", imports=["ramba"], dtype=np.bool_),
 }
 for (abf, code) in array_binop_funcs.items():
-    new_func = make_method(abf, code.code, imports=code.imports, dtype=code.dtype)
+    new_func = make_method(abf, code.code, code.func, imports=code.imports, dtype=code.dtype)
     setattr(ndarray, abf, new_func)
 
 array_binop_rfuncs = {
@@ -6533,7 +6504,12 @@ array_unaryop_funcs = {
     "__neg__": op_info(" -"),
     "exp": op_info(" math.exp", imports=["math"], dtype="float"),
     "log": op_info(" math.log", imports=["math"], dtype="float"),
+    "isfinite": op_info(" numpy.isfinite", imports=["numpy"], dtype=np.bool_),
+    "isinf": op_info(" numpy.isinf", imports=["numpy"], dtype=np.bool_),
     "isnan": op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_),
+    "isneginf": op_info(" numpy.isneginf", imports=["numpy"], dtype=np.bool_),
+    "isposinf": op_info(" numpy.isposinf", imports=["numpy"], dtype=np.bool_),
+    "logical_not": op_info(" numpy.logical_not", imports=["numpy"], dtype=np.bool_),
 }
 
 for (abf, code) in array_unaryop_funcs.items():
@@ -6543,14 +6519,16 @@ for (abf, code) in array_unaryop_funcs.items():
     setattr(ndarray, abf, new_func)
 
 array_simple_reductions = {
-    "sum":("","+",0), 
-    "prod":("","*",1), 
-    "min":("min",",",-1), 
-    "max":("max",",",-2)
+    "sum":op_info("+","",0),
+    "prod":op_info("*","",1),
+    "min":op_info(",","min",-1),
+    "max":op_info(",","max",-2),
+    "all":op_info(" * ","",True,dtype=np.bool_),
+    "any":op_info(" + ","",False,dtype=np.bool_),
 }
 for (abf, code) in array_simple_reductions.items():
     new_func = make_method(
-        abf, "np." + abf, imports=["numpy"], unary=True, reduction=True, optext2=code[0], opsep=code[1], initval=code[2]
+        abf, abf, unary=True, reduction=True, optext2=code.func, opsep=code.code, initval=code.init, dtype=code.dtype
     )
     setattr(ndarray, abf, new_func)
 
@@ -6686,9 +6664,9 @@ class deferred_op:
                 precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
-            code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) + 
-                    "\n" + "\n".join(precode) + 
-                    ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) + 
+            code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +
+                    "\n" + "\n".join(precode) +
+                    ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) +
                     ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
         else:
             code = ""
@@ -6701,7 +6679,7 @@ class deferred_op:
                 for t in l[0]:
                     print ("  ",t[0],t[1][0],g)
             for n,s in self.use_other.items():
-                print ("  ",n,pickle.loads(s)) 
+                print ("  ",n,pickle.loads(s))
             print()
         times.append(timer())
         remote_exec_all(
@@ -6793,7 +6771,7 @@ class deferred_op:
                 cls.ramba_deferred_ops.postcode.append(codeline)
             else:
                 cls.ramba_deferred_ops.precode.append(codeline)
-        
+
     # add operations to the deferred stack; if not compatible, execute what we have first
     @classmethod
     def add_op(
@@ -7775,6 +7753,22 @@ mod_to_array = [
     "arccos",
     "arctan",
     "nanmean",
+    "nansum",
+    "isfinite",
+    "isinf",
+    "isnan",
+    "isneginf",
+    "isposinf",
+    "all",
+    "any",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+    "isclose",
+    "allclose",
+    "swapaxes",
+    "moveaxis",
+    "rollaxis",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
@@ -7784,24 +7778,6 @@ for mfunc in mod_to_array:
     mcode += "        return np." + mfunc + "(the_array, *args, **kwargs)\n"
     exec(mcode)
     implements(mfunc, False)(eval(mfunc))
-
-# def isnan(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.isnan(*args, **kwargs)
-#    else:
-#        return np.isnan(the_array)
-#
-# def abs(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.abs(*args, **kwargs)
-#    else:
-#        return np.abs(the_array)
-#
-# def mean(the_array, *args, **kwargs):
-#    if isinstance(the_array, ndarray):
-#        return the_array.sum(*args, **kwargs)/np.prod(the_array.shape)
-#    else:
-#        return np.mean(the_array, *args, **kwargs)
 
 
 def power(a, b):
@@ -8643,7 +8619,7 @@ else:  # Ray setup
         res = [{"CPU": num_threads}] * num_workers
         pg = placement_group(res, strategy="SPREAD")
         remote_states = [
-            RemoteState.options(placement_group=pg).remote(x, get_common_state())
+            RemoteState.options(placement_group=pg, num_cpus=num_threads).remote(x, get_common_state())
             for x in range(num_workers)
         ]
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])

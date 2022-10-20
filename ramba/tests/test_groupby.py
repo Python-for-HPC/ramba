@@ -13,9 +13,9 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                #coords={"time":pd.date_range("1/1/2000", "31/12/2000", freq="D")},
-                #coords={"time":pd.date_range("1/1/2000", "31/12/2001", freq="D")},
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                #coords={"time":pd.date_range("2000-1-1", "2000-12-31", freq="D")},
+                #coords={"time":pd.date_range("2000-1-1", "2001-12-31", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -30,9 +30,9 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                #coords={"time":pd.date_range("1/1/2000", "31/12/2000", freq="D")},
-                #coords={"time":pd.date_range("1/1/2000", "31/12/2001", freq="D")},
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                #coords={"time":pd.date_range("2000-1-1", "2000-12-31", freq="D")},
+                #coords={"time":pd.date_range("2000-1-1", "2001-12-31", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -60,7 +60,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -73,7 +73,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.season")
@@ -93,7 +93,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -106,7 +106,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -131,7 +131,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -144,7 +144,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -169,7 +169,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -182,7 +182,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -207,7 +207,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -220,7 +220,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -245,7 +245,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -258,7 +258,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -283,7 +283,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -296,7 +296,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -321,7 +321,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -333,7 +333,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")
@@ -357,7 +357,7 @@ class TestGroupby:
             rlin = ramba.fromarray(x)
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             coords = da.coords["time"].values
@@ -369,7 +369,7 @@ class TestGroupby:
         def xarray_numpy_impl(rlin):
             da = xarray.DataArray(
                 rlin,
-                coords={"time":pd.date_range("1/1/2000", "31/12/2004", freq="D")},
+                coords={"time":pd.date_range("2000-1-1", "2004-12-31", freq="D")},
                 dims=("x", "time"),
             )
             gb = da.groupby("time.dayofyear")

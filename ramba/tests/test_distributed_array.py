@@ -28,7 +28,7 @@ class TestStencil:
         run_both(impl)
 
     def test_read_after_write(self):                # Stencil using weighted subarrays
-                                    # Here, stencil and update of source are same size, so depends 
+                                    # Here, stencil and update of source are same size, so depends
                                     # critically on read after write detection and not fusing loops
         def impl(app):
             A = app.ones(100,dtype=float)
@@ -598,6 +598,20 @@ class TestBasic:
             return a
 
         run_both(impl)
+
+    def test_asarray_after_base_update(self):
+        def impl():
+            a = ramba.ones(120)
+            b = a[10:50]
+            a += 7
+            return b.asarray()
+
+        res = impl()
+        a = np.ones(120)
+        b = a[10:50]
+        a += 7
+        print("asdf:", res, b)
+        assert np.array_equal(b, res)
 
     """
     def test14(self):
