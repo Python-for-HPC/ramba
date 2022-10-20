@@ -6274,9 +6274,13 @@ if ntiming > 0:
     atexit.register(matmul_summary)
 
 
-def canonical_dim(dim, dim_size, end=False):
+def canonical_dim(dim, dim_size, end=False, neg_slice=False):
+    if not isinstance(dim, (int, type(None))):
+        raise TypeError("indices must be integer or None")
     if dim is None:
-        return dim_size if end else 0
+        dim = dim_size if end!=neg_slice else 0
+        dim -= 1 if neg_slice else 0
+        return dim
     if dim < 0:
         return max(0, dim + dim_size)
     elif dim < dim_size:
@@ -6284,6 +6288,22 @@ def canonical_dim(dim, dim_size, end=False):
     else:
         return dim_size
 
+def canonical_step(s):
+    if s is None:
+        return 1
+    if not isinstance(s, int):
+        raise TypeError("step must be integer or None")
+    if s==0:
+        raise TypeError("step cannot be zero")
+    return s
+
+def canonical_slice( sl, dim_size ):
+    s = canonical_step(sl.step)
+    return slice(
+        canonical_dim(sl.start, dim_size, neg_slice=(s<0)),
+        canonical_dim(sl.stop, dim_size, end=True, neg_slice=(s<0)),
+        s
+    )
 
 def dim_sizes_from_index(index, size):
     newindex = []
@@ -6298,7 +6318,8 @@ def dim_sizes_from_index(index, size):
         if isinstance(ti, int):
             newindex.append(1)
         elif isinstance(ti, slice):
-            newindex.append(canonical_dim(ti.stop, size[i], end=True) - canonical_dim(ti.start, size[i]))
+            tmp = canonical_slice(ti, size[i])
+            newindex.append( max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
         elif isinstance(ti, np.ndarray):
             newindex.append(len(ti))
         else:
@@ -6320,13 +6341,7 @@ def canonical_index(index, shape):
             ni = canonical_dim(ti, shape[i])
             newindex.append(slice(ni, ni + 1))
         elif isinstance(ti, slice):
-            newindex.append(
-                slice(
-                    canonical_dim(ti.start, shape[i]),
-                    canonical_dim(ti.stop, shape[i], end=True),
-                    ti.step
-                )
-            )
+            newindex.append( canonical_slice(ti, shape[i]) )
         else:
             assert 0
     return tuple(newindex)
