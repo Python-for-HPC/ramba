@@ -206,7 +206,7 @@ def base_to_index(sv, base):
 def index_to_base(sv, index, end=False):
     assert len(index) == len_size(sv)
     offset = [index[i] - s for i,s in enumerate(_start(sv))]
-    offset = [o if _steps(sv)[i]>0 else max(0,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
+    offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
     offset = [o*abs(_steps(sv)[i]) for i,o in enumerate(offset)]
     invmap = -np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i, v in enumerate(_axis_map(sv)):
@@ -225,7 +225,7 @@ def index_to_base(sv, index, end=False):
 def index_to_base_as_array(sv, index, end=False):
     assert len(index) == len_size(sv)
     offset = [index[i] - s for i,s in enumerate(_start(sv))]
-    offset = [o if _steps(sv)[i]>0 else max(0,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
+    offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
     offset = [o*abs(_steps(sv)[i]) for i,o in enumerate(offset)]
     #offset = [(index[i] - s)*_steps(sv)[i] for i, s in enumerate(_start(sv))]
     invmap = -np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
@@ -260,7 +260,9 @@ def as_base(sv, pv):
     st = get_base_steps(sv)
     for i,step in enumerate(st):
         if step<0:
-            s[i],e[i] = e[i]-step, s[i]-step
+            s[i],e[i] = e[i]-step, s[i]+1
+        else:
+            e[i] = e[i]-step+1
     return shardview(e-s, s, steps=st)
 
 def slice_to_local(sv, sl):

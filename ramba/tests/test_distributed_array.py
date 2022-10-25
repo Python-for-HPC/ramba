@@ -660,7 +660,20 @@ class TestBasic:
             b = a[40:340:3,20::2]
             b[b>50] -= 20
             c = app.broadcast_to(b.T,(70,15,100))
-            d = c[15:25:2,2:7,::3] - 3
+            d = c[15:25:2,2:7,::7] - c[20:30:2,6:11, 1::7] + 4
+            e = app.sum(d)
+            return d+e
+
+        run_both(impl)
+
+    def test_negative_skipslice(self):
+        # Test slice indexing / views
+        def impl(app):
+            a = app.fromfunction(lambda i, j: i + j, (500, 50), dtype=int)
+            b = a[340:40:-3,:20:-2]
+            b[b>50] -= 20
+            c = app.broadcast_to(b.T,(70,15,100))
+            d = c[15:25:2,7:2:-1,::-3] - c[30:20:-2,6:11, -1::-3] + 4
             e = app.sum(d)
             return d+e
 
