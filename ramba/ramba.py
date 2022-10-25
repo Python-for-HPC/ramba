@@ -3830,14 +3830,16 @@ def unify_args(lhs, rhs, dtype):
             rhs_dtype = np.dtype(rhs)
         except Exception:
             rhs_dtype = None
-    if dtype is None:
-        dtype = np.result_type(lhs, rhs_dtype)
-    elif dtype == "float":
-        dtype = (
-            np.float32
-            if rhs_dtype == np.float32 and lhs == np.float32
-            else np.float64
-        )
+    if dtype is not None:
+        if dtype == 'float':
+            dtype = np.float32 if rhs_dtype == np.float32 and lhs == np.float32 else np.float64
+        return dtype
+    try:
+        dtype = np.result_type(lhs,rhs)
+        return dtype
+    except Exception:
+        pass
+    dtype = np.result_type(lhs, rhs_dtype)
     return dtype
 
 
