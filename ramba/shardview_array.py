@@ -415,10 +415,6 @@ def mapslice(sv, sl):
     return shardview(sz, si, b, _axis_map(sv), st)
 
 
-# This function does not handle negative steps in sl;  however, it is called only from execute deferred ops, and 
-# should only be called with step=1/None;  Will need to update if we use this elsewhere
-# this does work if sv has a negative step
-
 @numba.njit(cache=True)
 def mapsv(sv, sl):
     assert len_size(sl) == len_size(sv)
@@ -428,11 +424,22 @@ def mapsv(sv, sl):
     sl_s = _start(sl)
     sl_e = _stop(sl)
     sl_st = _steps(sl)
-    s = np.minimum(np.maximum(sl_s, sv_s + (sl_s-sv_s)%sl_st), sv_e)
-    e = np.minimum(np.maximum(sl_e - (sl_e-1-sl_s)%sl_st, sv_s), sv_e)
-    sz = np.ceil((e-s)/sl_st).astype(ramba_dist_dtype)
-    si = (s-sl_s)//sl_st
+    s = np.zeros(len_size(sl), dtype=ramba_dist_dtype)
+    e = np.zeros(len_size(sl), dtype=ramba_dist_dtype)   # last item index, inclusive
+    si = np.zeros(len_size(sl), dtype=ramba_dist_dtype)
+    for i in range(len(sv_s)):
+        if sl_st[i]>0:
+            s[i] = min(max(sl_s[i], sv_s[i] + (sl_s[i]-sv_s[i])%sl_st[i]), sv_e[i])
+            e[i] = min(max(sl_e[i] - (sl_e[i]-1-sl_s[i])%sl_st[i], sv_s[i]), sv_e[i])
+            si[i] = max(0,(s[i]-sl_s[i])//sl_st[i])
+        else:
+            s[i] = min(max(sl_s[i] + (sl_e[i]-sl_s[i]-1)%abs(sl_st[i]), sv_s[i]+(sl_e[i]-sv_s[i]-1)%abs(sl_st[i])), sv_e[i])
+            e[i] = min(max(sl_e[i], sv_s[i]), sv_e[i])
+            si[i] = max(0,int(np.ceil((e[i]-sl_e[i])/sl_st[i])))
+    sz = np.ceil((e-s)/np.abs(sl_st)).astype(ramba_dist_dtype)
     st = sv_st*sl_st
+    for i in range(len(e)):
+        e[i] = s[i] + max(0,sz[i]-1)*np.abs(sl_st[i])
 
     b = index_to_base_as_array(sv,s)
     b2 = index_to_base_as_array(sv,e)
