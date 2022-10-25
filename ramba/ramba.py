@@ -3375,7 +3375,7 @@ class RemoteState:
                                 merge = True
                                 break
                         if not merge:
-                            to_send[i].append([g, base_part, (v, part, base_part)])
+                            to_send[i].append([g, shardview.clean_range(base_part), (v, part, base_part)])
                         copy_time += timer()
                         dprint(
                             2,
@@ -3398,6 +3398,7 @@ class RemoteState:
                 v = v[2:]
                 sl = self.get_partial_view( g, shardview.to_slice(base_part), None, global_index=False, remap_view=False )
                 msg.append((sl.copy(), base_part, v))
+                dprint(2, "Partial message from", self.worker_num,"to",i,sl, base_part,v )
             self.comm_queues[i].put((uuid, self.worker_num, msg))
 
         expected_parts = len( from_set)  # since messages are coalesced, expect 1 from each node sending to us
@@ -3412,13 +3413,6 @@ class RemoteState:
 
         times.append(timer())
         # Receive data from other workers
-        # for i in range(expected_parts):
-        #    try:
-        #        _, v, part, sl = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==uuid, timeout=5)
-        #        arr_parts[v].append( (part, sl) )
-        #    except Exception:
-        #        print("some exception", sys.exc_info()[0])
-        #        assert(0)
         msgs = []
         while expected_parts > 0:
             m = self.comm_queues[self.worker_num].multi_get(
@@ -3431,18 +3425,14 @@ class RemoteState:
             msgs += m
             expected_parts -= len(m)
             if expected_parts > 0:
-                print("Still waiting for", expected_parts, "items")
-        # for _,v,part,sl in msgs:
-        #    arr_parts[v].append( (part, sl) )
+                dprint(2, "Still waiting for", expected_parts, "items")
         for _, _, m in msgs:
             for sl, full_part, l in m:
                 for v, part, base_part in l:
-                    # arr_parts[v].append( (part, sl) )
-                    # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                     arrview_time -= timer()
                     x = shardview.get_start(base_part)
                     x -= shardview.get_start(full_part)
-                    sl2 = sl[ shardview.to_slice(base_part) ]
+                    sl2 = sl[ shardview.as_slice(base_part) ]
                     arr_parts[v].append(
                         (shardview.clean_range(part), shardview.array_to_view(part, sl2))
                     )
@@ -3461,68 +3451,20 @@ class RemoteState:
             ranges = shardview.get_range_splits_list(vparts)
         times.append(timer())
         rangedvars = [{} for _ in ranges]
-        # varlist={}
         for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
-            # varlist.clear()
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
                     if not shardview.overlaps(rpart, vpart):  # skip
                         continue
-                    # times.append(timer())
-                    # slindex = shardview.to_base_slice(shardview.mapsv(vpart,rpart))
                     tmp = shardview.mapsv(vpart, rpart)
-                    # times.append(timer())
-                    # slindex = shardview.to_base_slice(tmp)
-                    # times.append(timer())
-                    # varlist[varname] = data[slindex]
                     varlist[varname] = shardview.get_base_slice(tmp, data)
-            # times.append(timer())
-            # if not shardview.is_empty(rpart):
-            #    func( **varlist, **othervars )
-            # times.append(timer())
-
-        #######
-        # ranges = [ (subspace, {}) ]
-        # for (varname, partlist) in arr_parts.items():
-        #    i=0;
-        #    while i<len(partlist):
-        #        vpart, data = partlist[i]
-        #        i+=1
-        #        j=0
-        #        while j<len(ranges):
-        #            rpart,varlist = ranges[j]
-        #            if not shardview.overlaps(rpart,vpart):   # skip
-        #                j+=1
-        #                continue
-        #            if shardview.is_compat(rpart,vpart):  # matches range
-        #                varlist[varname] = data
-        #                break
-        #            # does not match;  split the ranges into parts, add to lists
-        #            rparts, vparts = shardview.get_range_splits(rpart,vpart)
-        #            if len(rparts)>1:
-        #                #ranges[j] = ( rparts[0], { v: d[shardview.to_base_slice(shardview.mapslice(rpart,shardview.to_slice(rparts[0])))] for (v,d) in varlist.items() } )
-        #                #ranges[j] = ( rparts[0], { v: d[shardview.to_base_slice(shardview.mapsv(rpart,rparts[0]))] for (v,d) in varlist.items() } )
-        #                slindex = shardview.to_base_slice(shardview.mapsv(rpart,rparts[0]))
-        #                ranges[j] = ( rparts[0], { v: d[slindex] for (v,d) in varlist.items() } )
-        #                for r in rparts[1:]:
-        #                    #ranges.append( (r, {v: d[shardview.to_base_slice(shardview.mapslice(rpart,shardview.to_slice(r)))] for (v,d) in varlist.items() } ) )
-        #                    #ranges.append( (r, {v: d[shardview.to_base_slice(shardview.mapsv(rpart,r))] for (v,d) in varlist.items() } ) )
-        #                    slindex = shardview.to_base_slice(shardview.mapsv(rpart,r))
-        #                    ranges.append( (r, {v: d[slindex] for (v,d) in varlist.items() } ) )
-        #            if len(vparts)>1:
-        #                for r in vparts:
-        #                    #partlist.append( (r, data[shardview.to_base_slice(shardview.mapslice(vpart,shardview.to_slice(r)))]) )
-        #                    partlist.append( (r, data[shardview.to_base_slice(shardview.mapsv(vpart,r))]) )
-        #                break
-        #            # if we get here, should continue with same j value (repeat with updated ranges)
 
         times.append(timer())
         if len(ranges) > 1:
             dprint(2, "Ranges:", len(ranges))
 
         # execute function in each range
-        # for (r,arrvars) in ranges:
         for i, r in enumerate(ranges):
             arrvars = rangedvars[i]
             if not shardview.is_empty(r):
@@ -4645,7 +4587,7 @@ class gid_dist:
 
 def apply_index(shape, index):
     cindex = canonical_index(index, shape)
-    dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+    dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
     axismap = [
         i
         for i in range(len(dim_shapes))
@@ -4894,57 +4836,37 @@ class ndarray:
     def remapped_axis(self, newmap):
         return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False, aliases=self)
 
-    """
-    def remapped_axis(self, newmap):
-        # make sure array distribution can't change (ie, not flexible or is already constructed)
-        if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
-            deferred_op.do_ops()
-        newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, self.gid, newdist, readonly=self.readonly)
-    """
 
     def asarray(self):
         dprint(1, "asarray", id(self))
         if self.shape == ():
             return self.distribution
 
-        #deferred_op.do_ops()
         DAG.instantiate(self)
 
         ret = np.empty(self.shape, dtype=self.dtype)
-        # dist_shape = self.distribution.shape
-        # topleft = tuple([self.distribution[0][0][j] for j in range(dist_shape[2])])
         dprint(2, "asarray:", self.distribution, self.shape)
         dprint(2, "asarray:", shardview.distribution_to_divisions(self.distribution))
-        # shards = ray.get([remote_states[i].get_array.remote(self.gid) for i in range(dist_shape[0])])
-        # shards = ray.get([remote_states[i].get_partial_array_global.remote(self.gid,
-        #                  tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])]) ) for i in range(dist_shape[0])])
-        # shards = ray.get([remote_states[i].get_view.remote(self.gid, self.distribution[i]) for i in range(num_workers)])
         shards = get_results(
             [
                 remote_async_call(i, "get_view", self.gid, self.distribution[i])
                 for i in range(num_workers)
             ]
         )
-        #print("shards:", shards)
-        #        for i in range(dist_shape[0]):
+        dist = shardview.clean_dist(self.distribution)
         for i in range(num_workers):
-            #            dprint(2, "for:", i, dist_shape[2])
-            # gindex = tuple([slice(self.distribution[i][0][j], self.distribution[i][1][j] + 1) for j in range(dist_shape[2])])
-            # rindex = slice_minus_offset(gindex, topleft)
-            # dprint(3, "gindex:", gindex, rindex, shards[i].shape, shards[i].shape)
             dprint(
                 3,
                 "gslice:",
                 self.distribution[i],
-                shardview.to_slice(self.distribution[i]),
+                dist[i],
+                shardview.to_slice(dist[i]),
                 "bslice:",
                 shardview.to_base_slice(self.distribution[i]),
                 shards[i].shape,
-                ret[shardview.to_slice(self.distribution[i])].shape
+                ret[shardview.to_slice(dist[i])].shape
             )
-            # ret[rindex] = shards[i]
-            ret[shardview.to_slice(self.distribution[i])] = shards[i]
+            ret[shardview.to_slice(dist[i])] = shards[i]
         return ret
 
     @classmethod
@@ -5404,7 +5326,7 @@ class ndarray:
                 deferred_op.do_ops()
             num_dim = len(self.shape)
             cindex = canonical_index(index, self.shape)
-            dim_shapes = tuple([max(0, x.stop - x.start) for x in cindex])
+            dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
             dprint(2, "getitem slice:", cindex, dim_shapes)
 
             sdistribution = shardview.slice_distribution(cindex, self.distribution)
@@ -6354,9 +6276,13 @@ if ntiming > 0:
     atexit.register(matmul_summary)
 
 
-def canonical_dim(dim, dim_size, end=False):
+def canonical_dim(dim, dim_size, end=False, neg_slice=False):
+    if not isinstance(dim, (int, type(None))):
+        raise TypeError("indices must be integer or None")
     if dim is None:
-        return dim_size if end else 0
+        dim = dim_size if end!=neg_slice else 0
+        dim -= 1 if neg_slice else 0
+        return dim
     if dim < 0:
         return max(0, dim + dim_size)
     elif dim < dim_size:
@@ -6364,6 +6290,22 @@ def canonical_dim(dim, dim_size, end=False):
     else:
         return dim_size
 
+def canonical_step(s):
+    if s is None:
+        return 1
+    if not isinstance(s, int):
+        raise TypeError("step must be integer or None")
+    if s==0:
+        raise TypeError("step cannot be zero")
+    return s
+
+def canonical_slice( sl, dim_size ):
+    s = canonical_step(sl.step)
+    return slice(
+        canonical_dim(sl.start, dim_size, neg_slice=(s<0)),
+        canonical_dim(sl.stop, dim_size, end=True, neg_slice=(s<0)),
+        s
+    )
 
 def dim_sizes_from_index(index, size):
     newindex = []
@@ -6378,7 +6320,8 @@ def dim_sizes_from_index(index, size):
         if isinstance(ti, int):
             newindex.append(1)
         elif isinstance(ti, slice):
-            newindex.append(canonical_dim(ti.stop, size[i], end=True) - canonical_dim(ti.start, size[i]))
+            tmp = canonical_slice(ti, size[i])
+            newindex.append( max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
         elif isinstance(ti, np.ndarray):
             newindex.append(len(ti))
         else:
@@ -6400,12 +6343,7 @@ def canonical_index(index, shape):
             ni = canonical_dim(ti, shape[i])
             newindex.append(slice(ni, ni + 1))
         elif isinstance(ti, slice):
-            newindex.append(
-                slice(
-                    canonical_dim(ti.start, shape[i]),
-                    canonical_dim(ti.stop, shape[i], end=True),
-                )
-            )
+            newindex.append( canonical_slice(ti, shape[i]) )
         else:
             assert 0
     return tuple(newindex)

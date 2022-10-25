@@ -12,6 +12,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 import os
 import numba
+from numba import literal_unroll
 import numpy as np
 from ramba.common import *
 
@@ -28,6 +29,7 @@ ramba_dummy_index = ramba_dist_dtype(0)
 #   index_start specifies the beginning of the global index range for this shard/view portion
 #   base_offset is the start position in the base container
 #   axis_map maps view axes to base container axes (or -1 for broadcasted axes)
+#   steps is the step size used for each axis
 #   Note: size, index_start, and axis_map are of length k; base_offset may have some other length
 # the "shardview" is m*k array;  row 0 is size, row 1 is index_start, row 2 is axis map
 #   item[3,0] is l, the length of the base_offset;  items[3,1]... are the elements of base_offset
@@ -36,14 +38,8 @@ ramba_dummy_index = ramba_dist_dtype(0)
 
 
 @numba.njit(cache=True)
-def shardview(size, index_start=None, base_offset=None, axis_map=None, dummy=ramba_dummy_index):
-    # if np.any(size<1): size=size*0
-    # i_s = size*0 if index_start is None else index_start
-    # b_o = size*0 if base_offset is None else base_offset
-    # a_m = np.arange(size.shape[0]) if axis_map is None else axis_map
-    # assert((len(size)==len(i_s)) and (len(size)==len(a_m)))
-    # m = 3 + (len(size)+len(b_o))//len(size)
-    m = 3 + (
+def shardview(size, index_start=None, base_offset=None, axis_map=None, steps=None, dummy=ramba_dummy_index):
+    m = 4 + (
         len(size) + (len(size) if base_offset is None else len(base_offset))
     ) // len(size)
     sv = np.zeros((m, len(size)), dtype=ramba_dist_dtype)
@@ -58,7 +54,12 @@ def shardview(size, index_start=None, base_offset=None, axis_map=None, dummy=ram
         if axis_map is None
         else axis_map.astype(ramba_dist_dtype)
     )
-    sv[3, 0] = len(size) if base_offset is None else len(base_offset)
+    sv[3] = (
+        np.ones(len(size), dtype=ramba_dist_dtype)
+        if steps is None
+        else steps.astype(ramba_dist_dtype)
+    )
+    sv[4, 0] = len(size) if base_offset is None else len(base_offset)
     if base_offset is not None:
         _base_offset(sv)[:] = base_offset.astype(ramba_dist_dtype)
     return sv
@@ -93,10 +94,14 @@ def _stop(s):
 def _axis_map(s):
     return s[2]
 
+@numba.njit(cache=True)
+def _steps(s):
+    return s[3]
+
 
 @numba.njit(cache=True)
 def _base_offset(s):
-    return s[3:].reshape(-1)[1 : s[3, 0] + 1]
+    return s[4:].reshape(-1)[1 : s[4, 0] + 1]
 
 
 @numba.njit(cache=True)
@@ -106,7 +111,7 @@ def len_size(s):
 
 @numba.njit(cache=True)
 def len_base_offset(s):
-    return s[3, 0]
+    return s[4, 0]
 
 
 @numba.njit(cache=True)
@@ -131,12 +136,16 @@ def get_base_offset(sv):
 
 @numba.njit(cache=True)
 def get_axis_map(sv):
-    return sv._axis_map
+    return _axis_map(sv)
 
 
 @numba.njit(cache=True)
 def get_stop(sv):
     return _stop(sv)
+
+@numba.njit(cache=True)
+def get_steps(sv):
+    return _steps(sv)
 
 
 @numba.njit(cache=True)
@@ -146,6 +155,7 @@ def is_eq(sv, other):
         and (_index_start(sv) == _index_start(other)).all()
         and (_base_offset(sv) == _base_offset(other)).all()
         and (_axis_map(sv) == _axis_map(other)).all()
+        and (_steps(sv) == _steps(other)).all()
     )
 
 
@@ -179,13 +189,14 @@ def contains(sv, other):
 
 
 @numba.njit(cache=True)
-def clean_range(sv):  # remove offset, axis_map
+def clean_range(sv):  # remove offset, axis_map, steps
     return shardview(_size(sv), _index_start(sv))
 
 
+# This does not apeear to be used;  should update for negative steps if we need to keep
 def base_to_index(sv, base):
     assert len(base) == len_base_offset(sv)
-    offset = [base[i] - b for i, b in enumerate(_base_offset(sv))]
+    offset = [(base[i] - b) // _steps(sv)[i] for i, b in enumerate(_base_offset(sv))]
     am = _axis_map(sv)
     return tuple(
         [s + (0 if am[i] < 0 else offset[am[i]]) for i, s in enumerate(_size(sv))]
@@ -194,7 +205,9 @@ def base_to_index(sv, base):
 
 def index_to_base(sv, index, end=False):
     assert len(index) == len_size(sv)
-    offset = [index[i] - s for i, s in enumerate(_start(sv))]
+    offset = [index[i] - s for i,s in enumerate(_start(sv))]
+    offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
+    offset = [o*abs(_steps(sv)[i]) for i,o in enumerate(offset)]
     invmap = -np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i, v in enumerate(_axis_map(sv)):
         if v >= 0:
@@ -211,7 +224,10 @@ def index_to_base(sv, index, end=False):
 @numba.njit(cache=True)
 def index_to_base_as_array(sv, index, end=False):
     assert len(index) == len_size(sv)
-    offset = [index[i] - s for i, s in enumerate(_start(sv))]
+    offset = [index[i] - s for i,s in enumerate(_start(sv))]
+    offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
+    offset = [o*abs(_steps(sv)[i]) for i,o in enumerate(offset)]
+    #offset = [(index[i] - s)*_steps(sv)[i] for i, s in enumerate(_start(sv))]
     invmap = -np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i, v in enumerate(_axis_map(sv)):
         if v >= 0:
@@ -225,11 +241,29 @@ def index_to_base_as_array(sv, index, end=False):
         ]
     )
 
+def get_base_steps(sv, sl=None):
+    assert sl is None or len(sl)==len_size(sv)
+    st = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
+    for i, v in enumerate(_axis_map(sv)):
+        if v>=0:
+            st[v] = _steps(sv)[i]
+            if sl is not None and sl[i].step is not None:
+                st[v] *= sl[i].step
+    return st
+
+
+# Need to update for steps?? Yes!
 def as_base(sv, pv):
     assert len_size(sv) == len_size(pv)
     s = index_to_base_as_array(sv, _index_start(pv))
     e = index_to_base_as_array(sv, _stop(pv), end=True)
-    return shardview(e-s, s)
+    st = get_base_steps(sv)
+    for i,step in enumerate(st):
+        if step<0:
+            s[i],e[i] = e[i]-step, s[i]+1
+        else:
+            e[i] = e[i]-step+1
+    return shardview(e-s, s, steps=st)
 
 def slice_to_local(sv, sl):
     assert len(sl) == len_size(sv)
@@ -238,7 +272,9 @@ def slice_to_local(sv, sl):
     e = [
         x if x != 0 else None for x in e
     ]  # special case to let border computation work with neg offset
-    return tuple([slice(s[i], e[i]) for i in range(len(s))])
+    #st = [_steps(sv)[i] * (1 if sl[i].step is None else sl[i].step) for i in range(len(sl))]
+    st = get_base_steps(sv, sl)
+    return tuple([slice(s[i], None if st[i]<0 and e[i] is not None and e[i]<0 else e[i], st[i]) for i in range(len(s))])
 
 
 def div_to_local(sv, div):
@@ -248,39 +284,65 @@ def div_to_local(sv, div):
         x if x != 0 else None for x in e
     ]  # special case to let border computation work with neg offset
     # print (div,s,e)
-    return tuple([slice(s[i], e[i]) for i in range(len(s))])
+    st = get_base_steps(sv)
+    return tuple([slice(s[i], None if st[i]<0 and e[i] is not None and e[i]<0 else e[i], st[i]) for i in range(len(s))])
 
 
 def to_slice(sv):
     s = _index_start(sv)
+    e = s + (_size(sv)-1)*abs(_steps(sv))+1
+    st = _steps(sv)
+    return tuple([slice(
+        s[i] if st[i]>0 else e[i]-1, 
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        st[i] ) for i in range(len(s))])
+
+# Note: subtle difference between to_slice and as_slice;  as_slice assumes length = slice end-start
+def as_slice(sv):
+    s = _index_start(sv)
     e = s + _size(sv)
-    return tuple([slice(s[i], e[i]) for i in range(len(s))])
+    st = _steps(sv)
+    return tuple([slice(
+        s[i] if st[i]>0 else e[i]-1, 
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        st[i] ) for i in range(len(s))])
 
 
 def to_base_slice(sv):
     s = _base_offset(sv)
     e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
+    st = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i, v in enumerate(_axis_map(sv)):
         if v >= 0:
-            e[v] = _size(sv)[i]
+            e[v] += (_size(sv)[i]-1) * abs(_steps(sv)[i])
+            st[v] = _steps(sv)[i]
     e += s
-    return tuple([slice(s[i], e[i]) for i in range(len(s))])
+    return tuple([slice(
+        s[i] if st[i]>0 else e[i]-1, 
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        st[i] ) for i in range(len(s))])
 
 
 import numba.cpython.unsafe.tuple as UT
+import ramba.numba_ext as UTx
 
 
 @numba.njit(cache=True)
 def get_base_slice(sv, arr):
-    t = UT.build_full_slice_tuple(arr.ndim)
+    t = UTx.build_full_slice3_tuple(arr.ndim)
     s = _base_offset(sv)
     e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
+    st = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     for i, v in enumerate(_axis_map(sv)):
         if v >= 0:
-            e[v] = _size(sv)[i]
+            e[v] += (_size(sv)[i]-1) * abs(_steps(sv)[i])
+            st[v] = _steps(sv)[i]
     e += s
     for i in range(arr.ndim):
-        t = UT.tuple_setitem(t, i, slice(s[i], e[i]))
+        t = UT.tuple_setitem(t, i, slice(
+            s[i] if st[i]>0 else e[i]-1, 
+            e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+            st[i] ) )
     return arr[t]
 
 
@@ -295,37 +357,98 @@ def has_index(sv, index):
     # return (_index_start(sv)<=index).all() and (index<_stop(sv)).all()
 
 
+@numba.generated_jit(nopython=True,cache=True)
+def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
+    if isinstance(sl_i,numba.types.SliceType):
+        if (sl_i.members==2):
+            def impl(sl_i, sv_s, sv_e, sv_st):
+                s = min(max(sl_i.start, sv_s), sv_e)
+                e = min(max(sl_i.stop, sv_s), sv_e)
+                sz = e-s
+                si = s-sl_i.start
+                st = sv_st
+                return s, e-1, sz, si, st
+            return impl
+        def impl(sl_i, sv_s, sv_e, sv_st):
+            if sl_i.step is None:
+                s = min(max(sl_i.start, sv_s), sv_e)
+                e = min(max(sl_i.stop, sv_s), sv_e)
+                sz = e-s
+                si = s-sl_i.start
+                st = sv_st
+            else:
+                if sl_i.step>0:
+                    s = min(max(sl_i.start, sv_s + (sl_i.start-sv_s)%sl_i.step), sv_e)
+                    e = min(max(sl_i.stop - (sl_i.stop-1-sl_i.start)%sl_i.step, sv_s), sv_e)
+                    si = max(0,(s-sl_i.start)//sl_i.step)
+                else:
+                    s = min(max(sl_i.stop + 1 + (sl_i.start-sl_i.stop-1)%abs(sl_i.step), sv_s+(sl_i.start-sv_s)%abs(sl_i.step)), sv_e)
+                    e = min(max(sl_i.start+1, sv_s), sv_e)
+                    si = max(0,int(np.ceil((e-1-sl_i.start)/sl_i.step)))
+                sz = int(np.ceil((e-s)/abs(sl_i.step)))
+                st = sv_st*sl_i.step
+                e = s + (sz-1)*abs(sl_i.step)+1
+            return s, max(s,e-1), sz, si, st
+        return impl
+    else:
+        raise numba.core.errors.TypingError("ERR: slice contains something unexpected!", type(sl_i))
+
 @numba.njit(cache=True)
 def mapslice(sv, sl):
-    # print("HERE:",sl, sv, len(sl), len_size(sv))
-    assert len(sl) == len_size(sv)
-    sv_s = _index_start(sv)
+    # assert len(sl) == len_size(sv)  # This assert causes compilation failure at i+=1; likely due to Numba bug;  need to revisit
+    sv_s = _start(sv)
     sv_e = _stop(sv)
-    # s = np.array([min(max(sl[i].start,sv_s[i]),sv_e[i]) for i in range(len(sl))])
-    # e = np.array([min(max(sl[i].stop,sv_s[i]),sv_e[i]) for i in range(len(sl))])
-    # s = np.array([min(max(x.start,sv_s[i]),sv_e[i]) for i,x in enumerate(numba.literal_unroll(sl))])
-    # e = np.array([min(max(x.stop,sv_s[i]),sv_e[i]) for i,x in enumerate(numba.literal_unroll(sl))])
-    s = np.array([min(max(sl[i].start, sv_s[i]), sv_e[i]) for i in range(len_size(sv))])
-    e = np.array([min(max(sl[i].stop, sv_s[i]), sv_e[i]) for i in range(len_size(sv))])
-    # si = s - np.array([sd.start for sd in sl])
-    si = s - np.array([sl[i].start for i in range(len_size(sv))])
-    # return shardview(e-s, si, np.array(index_to_base(sv, s)), _axis_map(sv))
-    return shardview(e - s, si, index_to_base_as_array(sv, s), _axis_map(sv))
+    sv_st = _steps(sv)
+    s = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    e = np.zeros(len(sl), dtype=ramba_dist_dtype)   # last item index, inclusive
+    sz = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    si = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    st = np.zeros(len(sl), dtype=ramba_dist_dtype)
+    i = 0
+    for sl_i in literal_unroll(sl):
+        s[i], e[i], sz[i], si[i], st[i] = calc_map_internal(sl_i,sv_s[i], sv_e[i], sv_st[i])
+        i += 1
+    b = index_to_base_as_array(sv,s)
+    b2 = index_to_base_as_array(sv,e)
+    for i in range(len(b)):
+        b[i] = min(b[i], b2[i])
+    return shardview(sz, si, b, _axis_map(sv), st)
 
 
 @numba.njit(cache=True)
 def mapsv(sv, sl):
-    # print("HERE:",sl, sv, len(sl), len_size(sv))
     assert len_size(sl) == len_size(sv)
-    sv_s = _index_start(sv)
+    sv_s = _start(sv)
     sv_e = _stop(sv)
-    s = np.minimum(np.maximum(_index_start(sl), sv_s), sv_e)
-    e = np.minimum(np.maximum(_stop(sl), sv_s), sv_e)
-    si = s - _index_start(sl)
-    # return shardview(e-s, si, np.array(index_to_base(sv, s)), _axis_map(sv))
-    return shardview(e - s, si, index_to_base_as_array(sv, s), _axis_map(sv))
+    sv_st = _steps(sv)
+    sl_s = _start(sl)
+    sl_e = _stop(sl)
+    sl_st = _steps(sl)
+    s = np.zeros(len_size(sl), dtype=ramba_dist_dtype)
+    e = np.zeros(len_size(sl), dtype=ramba_dist_dtype)   # last item index, inclusive
+    si = np.zeros(len_size(sl), dtype=ramba_dist_dtype)
+    for i in range(len(sv_s)):
+        if sl_st[i]>0:
+            s[i] = min(max(sl_s[i], sv_s[i] + (sl_s[i]-sv_s[i])%sl_st[i]), sv_e[i])
+            e[i] = min(max(sl_e[i] - (sl_e[i]-1-sl_s[i])%sl_st[i], sv_s[i]), sv_e[i])
+            si[i] = max(0,(s[i]-sl_s[i])//sl_st[i])
+        else:
+            s[i] = min(max(sl_s[i] + (sl_e[i]-sl_s[i]-1)%abs(sl_st[i]), sv_s[i]+(sl_e[i]-sv_s[i]-1)%abs(sl_st[i])), sv_e[i])
+            e[i] = min(max(sl_e[i], sv_s[i]), sv_e[i])
+            si[i] = max(0,int(np.ceil((e[i]-sl_e[i])/sl_st[i])))
+    sz = np.ceil((e-s)/np.abs(sl_st)).astype(ramba_dist_dtype)
+    st = sv_st*sl_st
+    for i in range(len(e)):
+        e[i] = s[i] + max(0,sz[i]-1)*np.abs(sl_st[i])
+
+    b = index_to_base_as_array(sv,s)
+    b2 = index_to_base_as_array(sv,e)
+    for i in range(len(b)):
+        b[i] = min(b[i], b2[i])
+    return shardview(sz, si, b, _axis_map(sv), st)
 
 
+# Don't need to update for steps??
 @numba.njit(cache=True)
 def intersect(sv, sl):
     assert len_size(sv) == len_size(sl)
@@ -338,6 +461,7 @@ def intersect(sv, sl):
     return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
     # return shardview(e-s, s, axis_map=_axis_map(sv))
 
+# Don't need to update for steps??
 @numba.njit(cache=True)
 def union(sv, sl):
     assert len_size(sv) == len_size(sl)
@@ -349,6 +473,7 @@ def union(sv, sl):
     e = np.array([max(sl_e[i], sv_e[i]) for i in range(len_size(sl))])
     return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
 
+# No need to update for stpes?
 # get a view of array (e.g. piece of a bcontainer) based on this shardview
 # output is an np array with shape same as shardview size
 # Will broadcast along additional dimensions as needed
@@ -734,10 +859,18 @@ def broadcast(distribution, broadcasted_dims, size):
                 for j in range(len(size))
             ]
         )
+        new_steps = np.array(
+            [
+                1
+                if broadcasted_dims[j]
+                else _steps(distribution[i])[j - new_dims]
+                for j in range(len(size))
+            ]
+        )
         # new_offset = np.array([0 if broadcasted_dims[j] else distribution[i]._base_offset[j - new_dims] for j in range(len(size))])
         # ret.append(shardview(new_size, new_start, new_offset))
         ret.append(
-            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map)
+            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map, new_steps)
         )
     return np.array(ret)
 
@@ -760,8 +893,9 @@ def remap_axis(size, distribution, newmap):
     for i in range(len(distribution)):
         new_size = np.array([_size(distribution[i])[j] for j in newmap])
         new_start = np.array([_index_start(distribution[i])[j] for j in newmap])
+        new_steps = np.array([_steps(distribution[i])[j] for j in newmap])
         new_dist.append(
-            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map)
+            shardview(new_size, new_start, _base_offset(distribution[i]), new_axis_map, new_steps)
         )
     return new_global_size, np.array(new_dist)
 
