@@ -3665,6 +3665,27 @@ class RemoteState:
 
                 if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] > 0:
                     out_container[make_slices(ndim, i, pad_width[i][1], False)] = cval[i][1]
+        elif mode == "edge":
+            def edge_rhs(ndim, dim, pad_len, is_start_pad):
+                ret = []
+                for i in range(ndim):
+                    if i == dim:
+                        if is_start_pad:
+                            ret.append(pad_len)
+                        else:
+                            ret.append(-(pad_len+1))
+                    else:
+                        ret.append(slice(None,None))
+                return tuple(ret)
+
+            for i in range(ndim):
+                j = self.worker_num
+                # This worker holds the beginning of this dimension.
+                if in_dist[j][1][i] == 0 and pad_width[i][0] > 0:
+                    out_container[make_slices(ndim, i, pad_width[i][0], True)] = out_container[edge_rhs(ndim, i, pad_width[i][0], True)]
+
+                if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] > 0:
+                    out_container[make_slices(ndim, i, pad_width[i][1], False)] = out_container[edge_rhs(ndim, i, pad_width[i][1], False)]
 
     def load(self, gid, fname, index=None, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
@@ -7613,7 +7634,7 @@ def pad(arr, pad_width, mode='constant', **kwargs):
     assert arr.ndim == len(pad_width)
     newshape = tuple([x[0] + x[1][0] + x[1][1] for x in zip(arr.shape, pad_width)])
 
-    assert mode == "constant" # We will add more modes later.
+    assert mode in ["constant", "empty", "edge"] # We will add more modes later.
 
     return DAGshape(newshape, arr.dtype, False)
 

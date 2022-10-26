@@ -932,6 +932,19 @@ class TestBasic:
                 bl = b.asarray()
                 assert np.array_equal(bnp, bl)
 
+    def test_pad1_edge(self):
+        shape = 200
+        all_tests = [((0,1), {}),
+                     ((2,0), {}),
+                     ((3,4), {})]
+        for one_test in all_tests:
+            a = ramba.arange(shape)
+            anp = np.arange(shape)
+            b = ramba.pad(a, one_test[0], mode="edge", **one_test[1])
+            bnp = np.pad(anp, one_test[0], mode="edge", **one_test[1])
+            bl = b.asarray()
+            assert np.array_equal(bnp, bl)
+
 
 class TestRandom:
     def test1(self):
