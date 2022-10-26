@@ -836,7 +836,7 @@ time_dict = {
 }
 """
 
-if in_driver() and numba.version_info.short >= (0, 53):
+if in_driver() and (numba.version_info.short == (None, None) or numba.version_info.short >= (0, 53)):
     global compile_recorder
     compile_recorder = numba.core.event.RecordingListener()
     numba.core.event.register("numba:compile", compile_recorder)
@@ -1208,7 +1208,7 @@ class LocalNdarray:
             else slice_index
         )
         arr = self.bcontainer[local_slice]
-        #print("lnd::get_partial_view:", slice_index, shard, global_index, local_slice, arr, self.bcontainer)
+        #print("lnd::get_partial_view:", slice_index, shard, global_index, local_slice, arr, self.bcontainer, id(self.bcontainer))
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
@@ -1738,7 +1738,8 @@ class RemoteState:
         self.up_rvq = None
         self.tlast = timer()
 
-        if numba.version_info.short >= (0, 53):
+        #if numba.version_info.short >= (0, 53):
+        if numba.version_info.short == (None, None) or numba.version_info.short >= (0, 53):
             self.compile_recorder = numba.core.event.RecordingListener()
             numba.core.event.register("numba:compile", self.compile_recorder)
         self.deferred_ops_time = 0
@@ -3604,6 +3605,67 @@ class RemoteState:
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
+    def pad(self, out_gid, out_dist, out_shape, in_gid, in_dist, in_shape, pad_width, mode, **kwargs):
+        in_lnd = self.numpy_map[in_gid]
+        in_container = in_lnd.bcontainer[in_lnd.core_slice]
+
+        """
+        lnd = LocalNdarray(
+            out_gid,
+            self,
+            old_lnd.subspace,
+            old_lnd.dim_lens,
+            old_lnd.whole,
+            border,
+            old_lnd.whole_space,
+            from_border,
+            to_border,
+            old_lnd.dtype,
+        )
+        self.numpy_map[out_gid] = lnd
+        """
+
+        out_lnd = self.numpy_map[out_gid]
+        out_container = out_lnd.bcontainer[out_lnd.core_slice]
+
+        ndim = len(in_shape)
+        slices = []
+        # For each dimension...
+        for i in range(ndim):
+            j = self.worker_num
+            # This worker holds the beginning of this dimension.
+            dim_start = pad_width[i][0] if in_dist[j][1][i] == 0 and pad_width[i][0] != 0 else None
+            dim_end = -pad_width[i][1] if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] != 0 else None
+            slices.append(slice(dim_start, dim_end))
+        dprint(2, "pad slices:", self.worker_num, slices, in_container.shape, in_container)
+        out_container[tuple(slices)] = in_container[:]
+
+        def make_slices(ndim, dim, pad_len, is_start_pad):
+            ret = []
+            for i in range(ndim):
+                if i == dim:
+                    if is_start_pad:
+                        ret.append(slice(0, pad_len))
+                    else:
+                        ret.append(slice(-pad_len, None))
+                else:
+                    ret.append(slice(None,None))
+            return tuple(ret)
+
+        if mode == "constant":
+            cval = [(0,0)] * ndim
+            if "constant_values" in kwargs:
+                cval = kwargs["constant_values"]
+
+            for i in range(ndim):
+                j = self.worker_num
+                # This worker holds the beginning of this dimension.
+                if in_dist[j][1][i] == 0 and pad_width[i][0] > 0:
+                    out_container[make_slices(ndim, i, pad_width[i][0], True)] = cval[i][0]
+
+                if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] > 0:
+                    out_container[make_slices(ndim, i, pad_width[i][1], False)] = cval[i][1]
+
     def load(self, gid, fname, index=None, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
         fldr = fileio.get_load_handler(fname, ftype)
@@ -4664,6 +4726,7 @@ class ndarray:
         dprint(2, "Created ndarray", id(self), self.gid, "shape", shape, "time", (t1 - t0) * 1000)
         self.constraints = []
         if dag is None:
+
             self.once = True
         else:
             self.once = False
@@ -4737,7 +4800,7 @@ class ndarray:
 
     def transpose(self, *args):
         dprint(1, "transpose", args)
-    
+
         ndims = self.ndim
         if len(args) == 0:
             axes = range(ndims)[::-1]
@@ -6937,7 +7000,7 @@ def implements(numpy_function, uses_self):
 
 
 #***********************
-# Numpy compatible APIs 
+# Numpy compatible APIs
 #***********************
 
 # Array creation routines - Ramba specific
@@ -7497,6 +7560,61 @@ def reshape_copy_executor(temp_array, arr, newshape):
 @DAGapi
 def reshape_copy(arr, newshape):
     assert np.prod(arr.shape) == np.prod(newshape)
+    return DAGshape(newshape, arr.dtype, False)
+
+
+def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
+    dprint(2, "arr dist:", arr.distribution, arr.distribution.shape, arr.shape, temp_array.shape)
+    if arr.ndim == 1:
+        pad_width = (pad_width, )
+
+    arr_shape = arr.shape
+    new_dist = np.copy(arr.distribution)
+    dist_shape = new_dist.shape
+    # For each dimension...
+    for i in range(arr.ndim):
+        # For each worker...
+        for j in range(dist_shape[0]):
+            # This worker holds the beginning of this dimension.
+            if arr.distribution[j][1][i] == 0:
+                # This worker will now hold the beginning pad_width more.
+                # It still starts the dimension but the size is larger.
+                if arr.distribution[j][1][i] + arr.distribution[j][0][i] == arr_shape[i]:
+                    # Start and end of dimension on this worker so add both pads.
+                    new_dist[j][0][i] += pad_width[i][0] + pad_width[i][1]
+                else:
+                    new_dist[j][0][i] += pad_width[i][0]
+            elif arr.distribution[j][1][i] + arr.distribution[j][0][i] != arr_shape[i]:
+                # These workers hold the middle of this dimension.
+                # They will keep the same data size but their offset increases.
+                new_dist[j][1][i] += pad_width[i][0]
+            else:
+                # This is the last worker for this dimension.
+                # This worker will now store extra padding elements on the end.
+                new_dist[j][0][i] += pad_width[i][1]
+                # Like all non-first workers, their offset increases based on
+                # the pre-pad.
+                new_dist[j][1][i] += pad_width[i][0]
+    dprint(2, "new_dist:", new_dist)
+    new_array = empty(temp_array.shape, distribution=new_dist, dtype=temp_array.dtype)
+    deferred_op.do_ops()
+    remote_call_all("pad", new_array.gid, new_dist, temp_array.shape, arr.gid, arr.distribution, arr_shape, pad_width, mode, **kwargs)
+    return new_array
+
+
+@DAGapi
+def pad(arr, pad_width, mode='constant', **kwargs):
+    assert arr.ndim >= 1
+    dprint(2, "pad:", pad_width, arr.shape)
+    if arr.ndim == 1:
+        assert len(pad_width) == 2
+        pad_width = (pad_width, )
+
+    assert arr.ndim == len(pad_width)
+    newshape = tuple([x[0] + x[1][0] + x[1][1] for x in zip(arr.shape, pad_width)])
+
+    assert mode == "constant" # We will add more modes later.
+
     return DAGshape(newshape, arr.dtype, False)
 
 

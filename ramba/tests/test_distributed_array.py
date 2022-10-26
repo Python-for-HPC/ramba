@@ -894,6 +894,44 @@ class TestBasic:
         bl = b.asarray()
         assert np.array_equal(bnp, bl)
 
+    def test_pad1(self):
+        shape = 200
+        all_tests = [((0,1), {}),
+                     ((2,0), {}),
+                     ((3,4), {}),
+                     ((0,3), {"constant_values":((0,7),)}),
+                     ((5,0), {"constant_values":((5,0),)}),
+                     ((1,2), {"constant_values":((3,4),)})]
+        for one_test in all_tests:
+            a = ramba.arange(shape)
+            anp = np.arange(shape)
+            b = ramba.pad(a, one_test[0], **one_test[1])
+            bnp = np.pad(anp, one_test[0], **one_test[1])
+            bl = b.asarray()
+            assert np.array_equal(bnp, bl)
+
+    def test_pad2(self):
+        shapes = [(20, 30), (400, 1), (1, 300)]
+
+        all_tests = [(((0,1), (0,1)), {}),
+                     (((2,0), (3,0)), {}),
+                     (((2,0), (0,3)), {}),
+                     (((0,2), (3,0)), {}),
+                     (((2,2), (0,3)), {}),
+                     (((0,2), (3,3)), {}),
+                     (((4,2), (3,3)), {})]
+                     #((0,3), {"constant_values":((0,7),)}),
+                     #((5,0), {"constant_values":((5,0),)}),
+                     #((1,2), {"constant_values":((3,4),)})]
+        for shape in shapes:
+            for one_test in all_tests:
+                a = ramba.fromfunction(lambda i, j: i + j, shape, dtype=int)
+                anp = np.fromfunction(lambda i, j: i + j, shape, dtype=int)
+                b = ramba.pad(a, one_test[0], **one_test[1])
+                bnp = np.pad(anp, one_test[0], **one_test[1])
+                bl = b.asarray()
+                assert np.array_equal(bnp, bl)
+
 
 class TestRandom:
     def test1(self):
