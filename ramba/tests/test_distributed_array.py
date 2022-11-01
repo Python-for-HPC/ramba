@@ -945,6 +945,28 @@ class TestBasic:
             bl = b.asarray()
             assert np.array_equal(bnp, bl)
 
+    def test_pad1_slice(self):
+        orig_shape = 300
+        sstart = 25
+        shape = 200
+        os_slice = slice(sstart, sstart + shape)
+        all_tests = [((0,1), {}),
+                     ((2,0), {}),
+                     ((3,4), {}),
+                     ((0,3), {"constant_values":((0,7),)}),
+                     ((5,0), {"constant_values":((5,0),)}),
+                     ((1,2), {"constant_values":((3,4),)})]
+        for one_test in all_tests:
+            o = ramba.arange(orig_shape)
+            onp = np.arange(orig_shape)
+            a = o[os_slice]
+            anp = onp[os_slice]
+            b = ramba.pad(a, one_test[0], **one_test[1])
+            bnp = np.pad(anp, one_test[0], **one_test[1])
+            bl = b.asarray()
+            assert np.array_equal(bnp, bl)
+
+    # Test pad with reduced dimension, increased dimension, transpose.
 
 class TestRandom:
     def test1(self):

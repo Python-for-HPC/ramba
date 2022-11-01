@@ -3605,88 +3605,6 @@ class RemoteState:
             dprint(2, "mslice", mslice, bcontainer.shape)
             bcontainer[:] = np.mgrid[mslice]
 
-    def pad(self, out_gid, out_dist, out_shape, in_gid, in_dist, in_shape, pad_width, mode, **kwargs):
-        in_lnd = self.numpy_map[in_gid]
-        in_container = in_lnd.bcontainer[in_lnd.core_slice]
-
-        """
-        lnd = LocalNdarray(
-            out_gid,
-            self,
-            old_lnd.subspace,
-            old_lnd.dim_lens,
-            old_lnd.whole,
-            border,
-            old_lnd.whole_space,
-            from_border,
-            to_border,
-            old_lnd.dtype,
-        )
-        self.numpy_map[out_gid] = lnd
-        """
-
-        out_lnd = self.numpy_map[out_gid]
-        out_container = out_lnd.bcontainer[out_lnd.core_slice]
-
-        ndim = len(in_shape)
-        slices = []
-        # For each dimension...
-        for i in range(ndim):
-            j = self.worker_num
-            # This worker holds the beginning of this dimension.
-            dim_start = pad_width[i][0] if in_dist[j][1][i] == 0 and pad_width[i][0] != 0 else None
-            dim_end = -pad_width[i][1] if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] != 0 else None
-            slices.append(slice(dim_start, dim_end))
-        dprint(2, "pad slices:", self.worker_num, slices, in_container.shape, in_container)
-        out_container[tuple(slices)] = in_container[:]
-
-        def make_slices(ndim, dim, pad_len, is_start_pad):
-            ret = []
-            for i in range(ndim):
-                if i == dim:
-                    if is_start_pad:
-                        ret.append(slice(0, pad_len))
-                    else:
-                        ret.append(slice(-pad_len, None))
-                else:
-                    ret.append(slice(None,None))
-            return tuple(ret)
-
-        if mode == "constant":
-            cval = [(0,0)] * ndim
-            if "constant_values" in kwargs:
-                cval = kwargs["constant_values"]
-
-            for i in range(ndim):
-                j = self.worker_num
-                # This worker holds the beginning of this dimension.
-                if in_dist[j][1][i] == 0 and pad_width[i][0] > 0:
-                    out_container[make_slices(ndim, i, pad_width[i][0], True)] = cval[i][0]
-
-                if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] > 0:
-                    out_container[make_slices(ndim, i, pad_width[i][1], False)] = cval[i][1]
-        elif mode == "edge":
-            def edge_rhs(ndim, dim, pad_len, is_start_pad):
-                ret = []
-                for i in range(ndim):
-                    if i == dim:
-                        if is_start_pad:
-                            ret.append(pad_len)
-                        else:
-                            ret.append(-(pad_len+1))
-                    else:
-                        ret.append(slice(None,None))
-                return tuple(ret)
-
-            for i in range(ndim):
-                j = self.worker_num
-                # This worker holds the beginning of this dimension.
-                if in_dist[j][1][i] == 0 and pad_width[i][0] > 0:
-                    out_container[make_slices(ndim, i, pad_width[i][0], True)] = out_container[edge_rhs(ndim, i, pad_width[i][0], True)]
-
-                if in_dist[j][1][i] + in_dist[j][0][i] == in_shape[i] and pad_width[i][1] > 0:
-                    out_container[make_slices(ndim, i, pad_width[i][1], False)] = out_container[edge_rhs(ndim, i, pad_width[i][1], False)]
-
     def load(self, gid, fname, index=None, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
         fldr = fileio.get_load_handler(fname, ftype)
@@ -5314,7 +5232,7 @@ class ndarray:
 
         if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
             view = self[key]
-            if isinstance(value, (int, bool, float, complex)):
+            if isinstance(value, (int, bool, float, complex, np.generic)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             elif value.broadcastable_to(view.shape):
@@ -5483,6 +5401,21 @@ class ndarray:
 
         if not isinstance(index, tuple):
             index = (index,)
+
+        # Convert negative indices to positive.
+        index = tuple([index[i] if (not isinstance(index[i], int) or index[i] >= 0) else self.shape[i] + index[i] for i in range(len(index))])
+
+        # Make sure they weren't so negative that they go off the front of the array and are still negative.
+        for i in range(len(index)):
+            if isinstance(index[i], int) and index[i] < 0:
+                raise IndexError(
+                    "index "
+                    + str(index[i])
+                    + " is out of bounds for axis "
+                    + str(i)
+                    + " with shape "
+                    + str(self.shape[i])
+                )
 
         if index[-1] is Ellipsis:
             index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
@@ -7590,10 +7523,12 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
         pad_width = (pad_width, )
 
     arr_shape = arr.shape
-    new_dist = np.copy(arr.distribution)
+    new_dist = shardview.clean_dist(arr.distribution)
     dist_shape = new_dist.shape
     # For each dimension...
+    core_slice = []
     for i in range(arr.ndim):
+        core_slice.append(slice(pad_width[i][0] if pad_width[i][0] != 0 else None, -pad_width[i][1] if pad_width[i][1] != 0 else None))
         # For each worker...
         for j in range(dist_shape[0]):
             # This worker holds the beginning of this dimension.
@@ -7618,8 +7553,59 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
                 new_dist[j][1][i] += pad_width[i][0]
     dprint(2, "new_dist:", new_dist)
     new_array = empty(temp_array.shape, distribution=new_dist, dtype=temp_array.dtype)
-    deferred_op.do_ops()
-    remote_call_all("pad", new_array.gid, new_dist, temp_array.shape, arr.gid, arr.distribution, arr_shape, pad_width, mode, **kwargs)
+    core_slice = tuple(core_slice)
+    new_array[core_slice] = arr
+
+    def make_slices(ndim, dim, pad_len, is_start_pad):
+        ret = []
+        for i in range(ndim):
+            if i == dim:
+                if is_start_pad:
+                    ret.append(slice(0, pad_len))
+                else:
+                    ret.append(slice(-pad_len, None))
+            else:
+                ret.append(slice(None,None))
+        return tuple(ret)
+
+    if mode == "constant":
+        cval = [(0,0)] * arr.ndim
+        if "constant_values" in kwargs:
+            cval = kwargs["constant_values"]
+
+        for i in range(arr.ndim):
+            # This worker holds the beginning of this dimension.
+            if pad_width[i][0] > 0:
+                new_array[make_slices(arr.ndim, i, pad_width[i][0], True)] = cval[i][0]
+
+            if pad_width[i][1] > 0:
+                new_array[make_slices(arr.ndim, i, pad_width[i][1], False)] = cval[i][1]
+    elif mode == "edge":
+        def edge_rhs(ndim, dim, pad_len, is_start_pad):
+            ret = []
+            for i in range(ndim):
+                if i == dim:
+                    if is_start_pad:
+                        ret.append(pad_len)
+                    else:
+                        ret.append(-(pad_len+1))
+                else:
+                    ret.append(slice(None,None))
+            if ndim == 1:
+                return ret[0]
+            else:
+                return tuple(ret)
+
+        for i in range(arr.ndim):
+            # This worker holds the beginning of this dimension.
+            if pad_width[i][0] > 0:
+                new_array[make_slices(arr.ndim, i, pad_width[i][0], True)] = new_array[edge_rhs(arr.ndim, i, pad_width[i][0], True)]
+
+            if pad_width[i][1] > 0:
+                na_slice = make_slices(arr.ndim, i, pad_width[i][1], False)
+                na_edge_slice = edge_rhs(arr.ndim, i, pad_width[i][1], False)
+                new_array[na_slice] = new_array[na_edge_slice]
+
     return new_array
 
 
