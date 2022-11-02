@@ -8006,7 +8006,7 @@ def sync():
 ##### Skeletons ######
 
 
-def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=True):
+def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=True, imports=[]):
     # TODO: should see if this can be converted into a deferred op
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
@@ -8020,6 +8020,23 @@ def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=T
     new_ndarray = create_array_with_divisions(
         shape, dist, partitioned[0].local_border, dtype=dtype
     )
+    if isinstance(func, str):  # assume we have a string representing a lambda function or some internal function
+        args2 = [',']*(2*len(args)-1)
+        args2[::2] = args
+        index_args = ""
+        if attr=="smap_index":
+            index_args=[]
+            for i in range(new_ndarray.ndim):
+                index_args.append(f"index[{i}]+global_start[{i}]")
+            index_args = "("+",".join(index_args)+"),"
+        deferred_op.add_op(
+            ["", new_ndarray, " = (" + func + ")(" + index_args, *args2, ")"],
+            new_ndarray,
+            imports=imports,
+        )
+        return new_ndarray
+
+    deferred_op.do_ops()
     #args_to_remote = [x.gid if isinstance(x, ndarray) else x for x in args]
     args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
@@ -8030,9 +8047,8 @@ def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=T
     dprint(2, "smap_internal done")
     return new_ndarray
 
-
 @DAGapi
-def smap_internal(func, attr, *args, dtype=None, parallel=True):
+def smap_internal(func, attr, *args, dtype=None, parallel=True, imports=[]):
     # TODO: should see if this can be converted into a deferred op
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
@@ -8042,41 +8058,12 @@ def smap_internal(func, attr, *args, dtype=None, parallel=True):
     return DAGshape(shape, dtype, False)
 
 
-"""
-def smap_internal(func, attr, *args, dtype=None, parallel=True):
-    # TODO: should see if this can be converted into a deferred op
-    deferred_op.do_ops()
-    partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
-    assert len(partitioned) > 0
-    shape = partitioned[0].shape
-    dist = partitioned[0].distribution
-    for arg in partitioned:
-        DAG.instantiate(arg)
-        assert shardview.dist_is_eq(arg.distribution, dist)
-
-    if dtype is None:
-        dtype = partitioned[0].dtype
-    new_ndarray = create_array_with_divisions(
-        shape, dist, partitioned[0].local_border, dtype=dtype
-    )
-    args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
-
-    # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
-    remote_exec_all(
-        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
-    )
-    new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
-    dprint(2, "smap_internal done")
-    return new_ndarray
-"""
+def smap(func, *args, dtype=None, parallel=True, imports=[]):
+    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel, imports=imports)
 
 
-def smap(func, *args, dtype=None, parallel=True):
-    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel)
-
-
-def smap_index(func, *args, dtype=None, parallel=True):
-    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel)
+def smap_index(func, *args, dtype=None, parallel=True, imports=[]):
+    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel, imports=imports)
 
 
 class SreduceReducer:

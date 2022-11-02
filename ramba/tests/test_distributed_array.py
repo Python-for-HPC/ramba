@@ -223,7 +223,7 @@ class TestBroadcast:
         assert np.array_equal(rnp, r_l)
 
 
-def rb_comparer(np_res, ramba_res, array_comp):
+def rb_comparer(np_res, ramba_res, array_comp=np.array_equal):
     if isinstance(np_res, tuple):
         assert isinstance(ramba_res, tuple)
         assert len(np_res) == len(ramba_res)
@@ -679,6 +679,61 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_smap1(self):
+        a = ramba.arange(100)
+        b = ramba.smap("lambda x: 3*x-7", a)
+        c = ramba.smap(lambda x: 3*x-7, a)
+        d = np.arange(100)*3-7
+        rb_comparer(d, b)
+        rb_comparer(d, c)
+
+    def test_smap2(self):
+        a = ramba.fromfunction(lambda i,j: i+j,(100,100))
+        b = ramba.smap("lambda x: 3*x-7", a)
+        c = ramba.smap(lambda x: 3*x-7, a)
+        d = np.fromfunction(lambda i,j: i+j, (100,100))*3-7
+        rb_comparer(d, b)
+        rb_comparer(d, c)
+
+    def test_smap3(self):
+        a = ramba.arange(100)
+        a2 = a*a
+        b = ramba.smap("lambda x,y: 3*x-7*y", a2, a)
+        c = ramba.smap(lambda x,y: 3*x-7*y, a2, a)
+        d = np.arange(100)
+        d = 3*d*d-7*d
+        rb_comparer(d, b)
+        rb_comparer(d, c)
+
+    # NOTE: Should test smap, smp_index with slices, transpose, etc.
+
+    def test_smap_index1(self):
+        a = ramba.arange(100)-25
+        b = ramba.smap_index("lambda i,x: 7*i+x", a)
+        c = ramba.smap_index(lambda i,x: 7*i+x, a)
+        d = np.arange(100)-25
+        d = 7*np.arange(100)+d
+        rb_comparer(d, b)
+        rb_comparer(d, c)
+
+    def test_smap_index2(self):
+        a = ramba.ones((100,100))
+        b = ramba.smap_index("lambda i,x: 7*i[0]-i[1]+x", a)
+        c = ramba.smap_index(lambda i,x: 7*i[0]-i[1]+x, a)
+        d = np.fromfunction(lambda i,j: 7*i-j+1,((100,100)))
+        rb_comparer(d, b)
+        rb_comparer(d, c)
+
+    def test_smap_index3(self):
+        a = ramba.arange(100)-25
+        a2 = ramba.arange(100)*a
+        b = ramba.smap_index("lambda i,x,y: 7*i+x-4*y", a,a2)
+        c = ramba.smap_index(lambda i,x,y: 7*i+x-4*y, a,a2)
+        d = np.arange(100)-25
+        d2 = np.arange(100)*d
+        d = 7*np.arange(100)+d-4*d2
+        rb_comparer(d, b)
+        rb_comparer(d, c)
 
     def test_masked(self):
         # Test boolean mask indexing
