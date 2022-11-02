@@ -19,9 +19,9 @@ jobs:
         python-version: [3.7, 3.8]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
@@ -39,8 +39,9 @@ jobs:
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
     - name: Test with pytest
       run: |
-        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest -v -k "not Dgemm" --timeout 60
+        RAMBA_WORKERS=2 RAMBA_NUM_THREADS=1 pytest -v -k "not Dgemm" --timeout 90
     - name: Test with pytest under MPI
       run: |
-        RAMBA_NUM_THREADS=1 mpiexec -n 2 pytest -v -k "not Dgemm" --timeout 60
+        RAMBA_NUM_THREADS=1 mpiexec -n 2 pytest -v -k "not Dgemm" --timeout 90
       shell: bash
+
