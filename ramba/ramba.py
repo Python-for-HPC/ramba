@@ -4603,7 +4603,7 @@ def apply_index(shape, index):
 def getminmax(dtype):
     try:
         i = np.iinfo(dtype)
-        return (i[min],i[max])
+        return (i.min,i.max)
     except:
         # not integer, assume float
         return (np.NINF,np.PINF)
@@ -4982,7 +4982,7 @@ class ndarray:
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
         if isinstance(initval, int):
-            if initval<0: initval = getminmax(dtype)[0]
+            if initval<-1: initval = getminmax(dtype)[0]
             elif initval>1: initval = getminmax(dtype)[1]
         assert reduction
         if axis is None or (axis == 0 and self.ndim == 1):
@@ -6555,7 +6555,7 @@ for (abf, code) in array_unaryop_funcs.items():
 array_simple_reductions = {
     "sum":op_info("+","",0),
     "prod":op_info("*","",1),
-    "min":op_info(",","min",-1),
+    "min":op_info(",","min",2),
     "max":op_info(",","max",-2),
     "all":op_info(" * ","",True,dtype=np.bool_),
     "any":op_info(" + ","",False,dtype=np.bool_),
@@ -7002,6 +7002,8 @@ def create_array_executor(
 
     if isinstance(filler, str): # ignore no_defer
         deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
+    elif isinstance(filler, numbers.Number):
+        deferred_op.add_op(["", new_ndarray, " = ", filler], new_ndarray)
     elif filler is None and no_defer==False:
         deferred_op.add_op(["#", new_ndarray], new_ndarray) # deferred op no op, just to make sure empty array is constructed
     else:
@@ -7136,7 +7138,7 @@ def ones_like(other_ndarray):
 
 
 def full(shape, v, local_border=0, **kwargs):
-    return init_array(shape, str(v), local_border=local_border, **kwargs)
+    return init_array(shape, v, local_border=local_border, **kwargs)
 
 def full_like(other_ndarray):
     return full(
