@@ -6562,7 +6562,7 @@ array_simple_reductions = {
 }
 for (abf, code) in array_simple_reductions.items():
     new_func = make_method(
-        abf, abf, unary=True, reduction=True, optext2=code.func, opsep=code.code, initval=code.init, dtype=code.dtype
+        abf, "np."+abf, unary=True, reduction=True, optext2=code.func, opsep=code.code, initval=code.init, dtype=code.dtype
     )
     setattr(ndarray, abf, new_func)
 
