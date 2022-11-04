@@ -234,7 +234,8 @@ def rb_comparer(np_res, ramba_res, array_comp=np.array_equal):
         ramba_local = ramba_res.asarray()
         assert array_comp(np_res, ramba_local)
     else:
-        assert np_res == ramba_res
+        #assert np_res == ramba_res
+        assert array_comp(np_res,ramba_res)   # Note: this works for scalars as well
 
 
 def run_both(func, *args, array_comp=np.array_equal):
@@ -1023,6 +1024,31 @@ class TestBasic:
 
     # Test pad with reduced dimension, increased dimension, transpose.
 
+class TestReduction:
+    ops = ["sum", "prod", "min", "max"]
+
+    def testFull(self):
+        def impl(app, op):
+            a = app.fromfunction(lambda i,j,k: 0.01*i+0.7*j+0.3*k+1, (8,6,4))
+            return eval("a."+op+"()")
+
+        [run_both(impl, x, array_comp=np.allclose) for x in TestReduction.ops]
+
+    def testAxis1(self):
+        def impl(app, op):
+            a = app.fromfunction(lambda i,j,k: 10*i+7*j+k+1, (8,6,4))
+            return eval("a."+op+"(axis=1)")
+
+        [run_both(impl, x, array_comp=np.allclose) for x in TestReduction.ops]
+
+    def testAxis2(self):
+        def impl(app, op):
+            a = app.fromfunction(lambda i,j,k: 10*i+7*j+k+1, (8,6,4))
+            return eval("a."+op+"(axis=(1,0))")
+
+        [run_both(impl, x, array_comp=np.allclose) for x in TestReduction.ops]
+
+
 class TestRandom:
     def test1(self):
         shape = (1000, 10)
@@ -1052,12 +1078,12 @@ class TestDel:
         def impl(app):
             s = 0
 
-            c = ramba.ones(100)
+            c = app.ones(100)
             d = c * 3
             del c
 
             for i in range(100):
-                a = ramba.ones(200)
+                a = app.ones(200)
                 b = a[37:137]
                 c = b * 3
                 s += c[42]

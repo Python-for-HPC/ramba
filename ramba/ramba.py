@@ -4923,18 +4923,26 @@ class ndarray:
 
     @classmethod
     def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
-        sl1 = tuple(0 if i == axis else slice(None) for i in range(self.ndim))
-        sl2 = tuple(slice(0,1) if i == axis else slice(None) for i in range(self.ndim))
-        k = self.shape[axis]
-        if k == 1:  # done, just get the slice with axis removed
+        if isinstance(axis, int):
+            axis = [axis]
+        sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
+        sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
+        k = np.array(self.shape)[axis]
+        if all(k == 1):  # done, just get the slice with axes removed
             return self[sl1]
         # need global reduction
         arr = empty_like(self[sl2])
         code = ["", arr, " = " + optext + "( np.array(["]
-        for j in range(k):
-            sl = tuple(
-                slice(j,j+1) if i == axis else slice(None) for i in range(self.ndim)
-            )
+        for j in np.ndindex(tuple(k)):
+            sl =[]
+            ii = 0
+            for i in range(self.ndim):
+                if i in axis:
+                    sl.append( slice(j[ii],j[ii]+1) )
+                    ii+=1
+                else:
+                    sl.append( slice(None) )
+            sl = tuple( sl )
             code += [self[sl],", "]
         code[-1] = "]) )"
         deferred_op.add_op(code, arr, imports=imports)
@@ -4948,9 +4956,9 @@ class ndarray:
         # need global reduction -- should be small (1 elem per worker)a
         local = self.asarray()
         uop = getattr(local, op)
-        val = uop(dtype=dtype)
+        val = uop()
         if not asarray:
-            return val
+            return np.sum(val,dtype=dtype)  # sum is used just to convert dtype if needed
         arr = full((1,), val, dtype=dtype)
         return arr
 
@@ -4960,7 +4968,8 @@ class ndarray:
 
     @DAGapi
     def internal_reduction2(self, op, optext, imports, dtype, axis):
-        return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
+        outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
+        return DAGshape(outshape, dtype, False)
 
     @DAGapi
     def internal_reduction2b(self, op, dtype, asarray):
@@ -4984,6 +4993,12 @@ class ndarray:
         if isinstance(initval, int):
             if initval<-1: initval = getminmax(dtype)[0]
             elif initval>1: initval = getminmax(dtype)[1]
+        if axis is not None:
+            if isinstance(axis, numbers.Number):
+                axis = [axis]
+            axis = sorted( list( np.core.numeric.normalize_axis_tuple( axis, self.ndim ) ) )
+            if len(axis)==self.ndim:
+                axis = None
         assert reduction
         if axis is None or (axis == 0 and self.ndim == 1):
             assert asarray
@@ -4992,7 +5007,7 @@ class ndarray:
             red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
             return red_arr.internal_reduction2b(op, dtype, asarray)
         else:
-            dsz, dist, bdist = shardview.reduce_axis(self.shape, self.distribution, axis)
+            dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
             red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
             red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
             return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
@@ -5009,9 +5024,15 @@ class ndarray:
         if isinstance(initval, int):
             if initval<0: initval = getminmax(dtype)[0]
             elif initval>1: initval = getminmax(dtype)[1]
+        if axis is not None:
+            if isinstance(axis, numbers.Number):
+                axis = [axis]
+            axis = sorted( list( np.core.numeric.normalize_axis_tuple( axis, self.ndim ) ) )
+            if len(axis)==self.ndim:
+                axis = None
         if reduction:
             if self.maskarray is not None:
-                if axis is not None and axis>0:
+                if axis is not None and axis!=0 and axis!=[0]:
                     raise np.AxisError("Error axis must be 0")
                 axis = None
             if axis is None or (axis == 0 and self.ndim == 1):
@@ -5023,7 +5044,8 @@ class ndarray:
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 return red_arr.internal_reduction2b(op, dtype, asarray)
             else:
-                return DAGshape(tuple(self.shape[:axis]+self.shape[axis+1:]), dtype, False)
+                outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
+                return DAGshape(outshape, dtype, False)
         else:
             return self.internal_array_unaryop(op, optext, imports, dtype)
 
@@ -6692,10 +6714,16 @@ class deferred_op:
             precode.append( "  itershape = " + an_array + ".shape" )
             if len(self.axis_reductions)>0:
                 axis = self.axis_reductions[0][0]
-                precode.append( "  itershape2 = itershape[:" + str(axis) + "] + (1,) + itershape[" + str(axis+1) +":]" )
+                if isinstance(axis, int):
+                    axis = [axis]
+                tmp = "".join(["1," if i in axis else f"itershape[{i}]," for i in range(len(self.distribution[0][0]))])
+                precode.append( "  itershape2 = ("+tmp+")" )
+                tmp = "".join([f"itershape[{i}]," for i in axis])
+                precode.append( "  itershape3 = ("+tmp+")" )
                 precode.append( "  for pindex in numba.pndindex(itershape2):" )
-                precode.append( "    index = pindex[:" + str(axis) + "] + (slice(None),) + pindex[" + str(axis+1) +":]" )
-                precode.append( "    for axisindex in range(itershape["+str(axis)+"]):" )
+                tmp = "".join(["slice(None)," if i in axis else f"pindex[{i}]," for i in range(len(self.distribution[0][0]))])
+                precode.append( "    index = ("+tmp+")" )
+                precode.append( "    for axisindex in np.ndindex(itershape3):" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
             code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +

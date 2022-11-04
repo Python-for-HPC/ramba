@@ -900,29 +900,20 @@ def remap_axis(size, distribution, newmap):
     return new_global_size, np.array(new_dist)
 
 
-# creates distribution reduced along given axis;  keeps 1 element for each division along the axis, so local reduction can be done
-@numba.njit(cache=True)
-def reduce_axis(size, dist, axis):
-    divs = list(
-        set([_start(dist[i])[axis] for i in range(len(dist)) if not is_empty(dist[i])])
-    )
-    rdist = clean_dist(dist)
-    bdist = clean_dist(dist)
-    for i in range(len(rdist)):
-        if rdist[i, 1, axis] in divs:
-            rdist[i, 1, axis] = divs.index(rdist[i, 1, axis])
-            rdist[i, 0, axis] = 1
-        bdist[i, 2, axis] = -1
-    rsz = UT.tuple_setitem(size, axis, len(divs))
-    return rsz, rdist, bdist
+# creates distribution reduced along a set of axes;  keeps 1 element for each division along each axis for local reductions
+def reduce_axes(size, dist, axes):
+    return reduce_axes_internal(size, dist, tuple(axes))
 
 # creates distribution reduced along all axes;  keeps 1 element for each division along each axis for local reductions
-@numba.njit(cache=True)
 def reduce_all_axes(size, dist):
+    return reduce_axes_internal(size, dist, tuple(range(len(size))))
+
+@numba.njit(cache=True)
+def reduce_axes_internal(size, dist, axes):
     rdist = clean_dist(dist)
     bdist = clean_dist(dist)
     rsz = size
-    for j in range(len(size)):
+    for j in axes:
         divs = list( set([_start(dist[i])[j] for i in range(len(dist)) if not is_empty(dist[i])]) )
         for i in range(len(rdist)):
             if rdist[i, 1, j] in divs:
