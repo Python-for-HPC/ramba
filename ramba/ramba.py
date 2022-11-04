@@ -5424,8 +5424,7 @@ class ndarray:
         if not isinstance(index, tuple):
             index = (index,)
 
-        # Convert negative indices to positive.
-        index = tuple([index[i] if (not isinstance(index[i], int) or index[i] >= 0) else self.shape[i] + index[i] for i in range(len(index))])
+        index = canonical_index(index, self.shape)
 
         # Make sure they weren't so negative that they go off the front of the array and are still negative.
         for i in range(len(index)):
@@ -5442,6 +5441,7 @@ class ndarray:
         if index[-1] is Ellipsis:
             index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
 
+        # np.newaxis is an alias for None
         if any([x is None for x in index]):
             newdims = [i for i in range(len(index)) if index[i] is None]
             expanded_array = expand_dims(self, newdims)
@@ -7604,7 +7604,6 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
             cval = kwargs["constant_values"]
 
         for i in range(arr.ndim):
-            # This worker holds the beginning of this dimension.
             if pad_width[i][0] > 0:
                 new_array[make_slices(arr.ndim, i, pad_width[i][0], True)] = cval[i][0]
 
@@ -7627,13 +7626,42 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
                 return tuple(ret)
 
         for i in range(arr.ndim):
-            # This worker holds the beginning of this dimension.
             if pad_width[i][0] > 0:
                 new_array[make_slices(arr.ndim, i, pad_width[i][0], True)] = new_array[edge_rhs(arr.ndim, i, pad_width[i][0], True)]
 
             if pad_width[i][1] > 0:
                 na_slice = make_slices(arr.ndim, i, pad_width[i][1], False)
                 na_edge_slice = edge_rhs(arr.ndim, i, pad_width[i][1], False)
+                new_array[na_slice] = new_array[na_edge_slice]
+    elif mode == "wrap":
+        def make_wrap_slices(ndim, dim, pad_len, is_start_pad, in_shape, out_shape):
+            ret = []
+            for i in range(ndim):
+                if i == dim:
+                    adjusted_pad = min(pad_len, in_shape[i])
+                    diff = pad_len - adjusted_pad
+                    if is_start_pad:
+                        sstart = in_shape[i] + diff
+                        ret.append(slice(sstart, sstart + adjusted_pad))
+                    else:
+                        sstart = -in_shape[i] - adjusted_pad - diff
+                        send = sstart + adjusted_pad
+                        ret.append(slice(sstart, None if send == 0 else send))
+                else:
+                    ret.append(slice(None,None))
+            return tuple(ret)
+
+        for i in range(arr.ndim):
+            if pad_width[i][0] > 0:
+                na_slice = make_slices(arr.ndim, i, pad_width[i][0], True)
+                na_edge_slice = make_wrap_slices(arr.ndim, i, pad_width[i][0], True, arr_shape, temp_array.shape)
+                #print("copying 1:", i, na_slice, na_edge_slice)
+                new_array[na_slice] = new_array[na_edge_slice]
+
+            if pad_width[i][1] > 0:
+                na_slice = make_slices(arr.ndim, i, pad_width[i][1], False)
+                na_edge_slice = make_wrap_slices(arr.ndim, i, pad_width[i][1], False, arr_shape, temp_array.shape)
+                #print("copying 2:", i, na_slice, na_edge_slice)
                 new_array[na_slice] = new_array[na_edge_slice]
 
     return new_array
@@ -7650,7 +7678,7 @@ def pad(arr, pad_width, mode='constant', **kwargs):
     assert arr.ndim == len(pad_width)
     newshape = tuple([x[0] + x[1][0] + x[1][1] for x in zip(arr.shape, pad_width)])
 
-    assert mode in ["constant", "empty", "edge"] # We will add more modes later.
+    assert mode in ["constant", "empty", "edge", "wrap"] # We will add more modes later.
 
     return DAGshape(newshape, arr.dtype, False)
 
