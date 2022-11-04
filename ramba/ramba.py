@@ -5424,19 +5424,19 @@ class ndarray:
         if not isinstance(index, tuple):
             index = (index,)
 
-        index = canonical_index(index, self.shape)
+        # index = canonical_index(index, self.shape)
 
-        # Make sure they weren't so negative that they go off the front of the array and are still negative.
-        for i in range(len(index)):
-            if isinstance(index[i], int) and index[i] < 0:
-                raise IndexError(
-                    "index "
-                    + str(index[i])
-                    + " is out of bounds for axis "
-                    + str(i)
-                    + " with shape "
-                    + str(self.shape[i])
-                )
+        # # Make sure they weren't so negative that they go off the front of the array and are still negative.
+        # for i in range(len(index)):
+        #     if isinstance(index[i], int) and index[i] < 0:
+        #         raise IndexError(
+        #             "index "
+        #             + str(index[i])
+        #             + " is out of bounds for axis "
+        #             + str(i)
+        #             + " with shape "
+        #             + str(self.shape[i])
+        #         )
 
         if index[-1] is Ellipsis:
             index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
@@ -5451,6 +5451,7 @@ class ndarray:
         if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
             self.instantiate()
 
+            index = canonical_index(index, self.shape, allslice=False)
             owner = shardview.find_index(
                 self.distribution, index
             )  # find_index(self.distribution, index)
@@ -6368,7 +6369,7 @@ def dim_sizes_from_index(index, size):
     return tuple(newindex)
 
 
-def canonical_index(index, shape):
+def canonical_index(index, shape, allslice=True):
     newindex = []
     if not isinstance(index, tuple):
         index = (index,)
@@ -6380,7 +6381,10 @@ def canonical_index(index, shape):
         ti = index[i]
         if isinstance(ti, int):
             ni = canonical_dim(ti, shape[i])
-            newindex.append(slice(ni, ni + 1))
+            if allslice:
+                newindex.append(slice(ni, ni + 1))
+            else:
+                newindex.append(ni)
         elif isinstance(ti, slice):
             newindex.append( canonical_slice(ti, shape[i]) )
         else:
