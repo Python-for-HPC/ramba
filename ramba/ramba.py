@@ -7124,6 +7124,7 @@ def empty(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     )
 
 
+@implements("empty_like", False)
 def empty_like(other_ndarray,**kwargs):
     return empty(
         other_ndarray.shape,
@@ -7144,6 +7145,7 @@ def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     )
 
 
+@implements("zeros_like", False)
 def zeros_like(other_ndarray):
     return zeros(
         other_ndarray.shape,
@@ -7156,6 +7158,7 @@ def ones(shape, local_border=0, dtype=None, distribution=None, **kwargs):
     return init_array(shape, "1", local_border=local_border, distribution=distribution, dtype=dtype, **kwargs)
 
 
+@implements("ones_like", False)
 def ones_like(other_ndarray):
     return ones(
         other_ndarray.shape,
@@ -7167,6 +7170,7 @@ def ones_like(other_ndarray):
 def full(shape, v, local_border=0, **kwargs):
     return init_array(shape, v, local_border=local_border, **kwargs)
 
+@implements("full_like", False)
 def full_like(other_ndarray):
     return full(
         other_ndarray.shape,
