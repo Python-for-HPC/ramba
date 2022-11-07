@@ -847,7 +847,7 @@ def broadcast(distribution, broadcasted_dims, size):
     for i in range(len(distribution)):
         new_size = np.array(
             [
-                size[j] if broadcasted_dims[j] else _size(distribution[i])[j - new_dims]
+                (size[j] if j<new_dims or _size(distribution[i])[j-new_dims]>0 else 0) if broadcasted_dims[j] else _size(distribution[i])[j - new_dims]
                 for j in range(len(size))
             ]
         )
