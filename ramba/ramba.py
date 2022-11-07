@@ -25,7 +25,6 @@ import inspect
 import tokenize
 from io import BytesIO
 import sys
-import parser
 import weakref
 import operator
 import copy as libcopy
@@ -667,10 +666,6 @@ if not USE_MPI:
                 whole_func = "\n".join(x[indent_len:] for x in whole_func)
                 dprint(2, "whole_func")
                 dprint(2, whole_func)
-                st = parser.suite(whole_func)
-                dprint(2, "st:", st, type(st))
-                stlist = parser.st2list(st)
-                dprint(2, "stlist:", stlist, type(stlist))
                 # Construct global helper function to do the work from the body of the incoming function.
                 deobj_func_txt, deobj_func_name = make_deobj_func(
                     fqname, inst_vars, other_args, fsrc_tokens[2:]
@@ -8806,13 +8801,22 @@ else:  # Ray setup
     if ray_first_init:
         dprint(1, "Constructing RemoteState actors")
         from ray.util.placement_group import placement_group
+        from packaging import version
 
         res = [{"CPU": num_threads}] * num_workers
         pg = placement_group(res, strategy="SPREAD")
-        remote_states = [
-            RemoteState.options(placement_group=pg, num_cpus=num_threads).remote(x, get_common_state())
-            for x in range(num_workers)
-        ]
+        if version.parse(ray.__version__) < version.parse('2.0.0'):
+            remote_states = [
+                RemoteState.options(placement_group=pg, num_cpus=num_threads).remote(x, get_common_state())
+                for x in range(num_workers)
+            ]
+        else:
+            from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+            remote_states = [
+                RemoteState.options( scheduling_strategy=PlacementGroupSchedulingStrategy(placement_group=pg),
+                    num_cpus=num_threads).remote(x, get_common_state())
+                for x in range(num_workers)
+            ]
         control_queues = ray.get([x.get_control_queue.remote() for x in remote_states])
         comm_queues = ray.get([x.get_comm_queue.remote() for x in remote_states])
         aggregators = get_aggregators(comm_queues)
