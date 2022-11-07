@@ -100,7 +100,6 @@ We suggest using conda to setup an environment for running ramba.
 Ramba was developed and tested on Linux, usng both Ray and MPI backends.  Ramba may work on Windows using MPI, though this has not been extensively tested.  ZeroMQ is needed for the communication layer.  
 Ramba uses pickle version 5 for serializtion of objects.  This should already be available if running Python 3.8 or higher.  If not, please install the pickle5 package.  In addition, cloudpickle is also needed to serialize functions (as this is not possible through the normal pickle package).  
 Finally, ramba uses numba for JIT compilation.  
-Note: Ray requires Python <3.9 (Update: Python 3.9 is now supported experimentally by Ray)
 
 Thus the requirements are:
 - mpi4py and/or ray
@@ -205,8 +204,8 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 |            | tiling          | &#x1f534; not implemented |
 |            | insert/remove elements | &#x1f534; not implemented |
 |            | rearrange elements | &#x1f534; not implemented |
-|Index/slice | range slice     | &#x1f7e1; partial         | produces view like in numpy; skips not supported
-|            | masked arrays   | &#x1f7e1; partial         | only in assignments / in-place operations;  see below for details
+|Index/slice | range slice     | &#x1f7e1; partial         | produces view like in numpy; steps > 1 and negative steps are supported
+|            | masked arrays   | &#x1f7e1; partial         | only in assignments / in-place operations / reductions;  see below for details
 |            | fancy indexing  | &#x1f534; not implemented |
 |            | index routines  | &#x1f534; not implemented | ("where" partly works)
 |Math        | arithmetic operations | &#x1f7e2; works     | +, -, +=, //, etc. 
