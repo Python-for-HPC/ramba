@@ -7619,9 +7619,9 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
             for i in range(ndim):
                 if i == dim:
                     if is_start_pad:
-                        ret.append(pad_len)
+                        ret.append(slice(pad_len,pad_len+1))
                     else:
-                        ret.append(-(pad_len+1))
+                        ret.append(slice(-(pad_len+1), -pad_len))
                 else:
                     ret.append(slice(None,None))
             if ndim == 1:
