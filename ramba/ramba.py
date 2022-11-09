@@ -1096,7 +1096,7 @@ class LocalNdarray:
         )
 
     def getlocal(self, width=None):
-        if isinstance(width, int):
+        if isinstance(width, numbers.Integral):
             neighborhood = width
         else:
             neighborhood = 0
@@ -2481,8 +2481,8 @@ class RemoteState:
             partial_numpy = clocal.bcontainer
             alocal = a.get_view(a_distribution[self.worker_num])
             blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
-            nothing_to_do = all(x == 0 for x in alocal.shape) or all(
-                x == 0 for x in blocal.shape
+            nothing_to_do = all([x == 0 for x in alocal.shape]) or all(
+                [x == 0 for x in blocal.shape]
             )
             if not nothing_to_do and alocal.shape[1] != blocal.shape[0]:
                 print("mismatch", self.worker_num, alocal.shape, blocal.shape)
@@ -3800,7 +3800,7 @@ def print_comm_stats():
 
 
 def find_index(distribution, index):
-    if isinstance(index, int):
+    if isinstance(index, numbers.Integral):
         index = (index,)
 
     dprint(3, "find_index:", distribution, index)
@@ -4785,7 +4785,7 @@ class ndarray:
     def rollaxis(self,axis,start=0):
         ndims = self.ndim
         axis = np.core.numeric.normalize_axis_index(axis,ndims)
-        if not isinstance(start,int):
+        if not isinstance(start,numbers.Integral):
             raise TypeError("integfer argument expected")
         if start<-ndims or start>ndims:
             raise np.AxisError(f"`start` arg requires {-ndims} <= start < {ndims+1} but {start} was passed in")
@@ -4918,7 +4918,7 @@ class ndarray:
 
     @classmethod
     def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
-        if isinstance(axis, int):
+        if isinstance(axis, numbers.Integral):
             axis = [axis]
         sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
         sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
@@ -4985,7 +4985,7 @@ class ndarray:
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if isinstance(initval, int):
+        if isinstance(initval, numbers.Integral):
             if initval<-1: initval = getminmax(dtype)[0]
             elif initval>1: initval = getminmax(dtype)[1]
         if axis is not None:
@@ -5016,7 +5016,7 @@ class ndarray:
         elif dtype == "float":
             dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if isinstance(initval, int):
+        if isinstance(initval, numbers.Integral):
             if initval<0: initval = getminmax(dtype)[0]
             elif initval>1: initval = getminmax(dtype)[1]
         if axis is not None:
@@ -5267,27 +5267,10 @@ class ndarray:
                 print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
-        if all([isinstance(i, int) for i in key]) and len(key) == len(self.shape):
+        if all([isinstance(i, numbers.Integral) for i in key]) and len(key) == len(self.shape):
             print("Setting individual element is not handled yet!")
             assert 0
 
-        """
-        if isinstance(key[0], slice):
-            if key.start is None and key.stop is None:   # a[:] = b
-                if isinstance(value, ndarray):
-                    if self.shape == value.shape:
-                        deferred_op.add_op(["", self, " = ", value, ""], self)
-                        #[remote_states[i].setitem1.remote(self.gid, value.gid) for i in range(num_workers)]
-                        return
-                elif isinstance(value, (int, float, complex)):
-                    deferred_op.add_op(["", self, " = ", value, ""], self)
-                    return
-            else:   # a[s:e] = b
-                view = self[key]
-                if view.shape == value.shape:
-                    deferred_op.add_op(["", view, " = ", value, ""], view)
-                    return
-        """
         # Need to handle all possible remaining cases.
         print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
@@ -5330,7 +5313,7 @@ class ndarray:
         elif index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
             for i in range(len(index)):
-                if isinstance(index[i], int) and index[i] >= self.shape[i]:
+                if isinstance(index[i], numbers.Integral) and index[i] >= self.shape[i]:
                     raise IndexError(
                         "index "
                         + str(index[i])
@@ -5393,7 +5376,7 @@ class ndarray:
         elif index_has_slice or len(index) < len(self.shape):
             # check for out-of-bounds
             for i in range(len(index)):
-                if isinstance(index[i], int) and index[i] >= self.shape[i]:
+                if isinstance(index[i], numbers.Integral) and index[i] >= self.shape[i]:
                     raise IndexError(
                         "index "
                         + str(index[i])
@@ -5423,7 +5406,7 @@ class ndarray:
 
         # # Make sure they weren't so negative that they go off the front of the array and are still negative.
         # for i in range(len(index)):
-        #     if isinstance(index[i], int) and index[i] < 0:
+        #     if isinstance(index[i], numbers.Integral) and index[i] < 0:
         #         raise IndexError(
         #             "index "
         #             + str(index[i])
@@ -5443,7 +5426,7 @@ class ndarray:
             return expanded_array
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
-        if all([isinstance(i, int) for i in index]) and len(index) == len(self.shape):
+        if all([isinstance(i, numbers.Integral) for i in index]) and len(index) == len(self.shape):
             self.instantiate()
 
             index = canonical_index(index, self.shape, allslice=False)
@@ -6312,7 +6295,7 @@ if ntiming > 0:
 
 
 def canonical_dim(dim, dim_size, end=False, neg_slice=False):
-    if not isinstance(dim, (int, type(None))):
+    if not isinstance(dim, (numbers.Integral,type(None))):
         raise TypeError("indices must be integer or None")
     if dim is None:
         dim = dim_size if end!=neg_slice else 0
@@ -6328,7 +6311,7 @@ def canonical_dim(dim, dim_size, end=False, neg_slice=False):
 def canonical_step(s):
     if s is None:
         return 1
-    if not isinstance(s, int):
+    if not isinstance(s, numbers.Integral):
         raise TypeError("step must be integer or None")
     if s==0:
         raise TypeError("step cannot be zero")
@@ -6352,7 +6335,7 @@ def dim_sizes_from_index(index, size):
             newindex.append(size[i])
             continue
         ti = index[i]
-        if isinstance(ti, int):
+        if isinstance(ti, numbers.Integral):
             newindex.append(1)
         elif isinstance(ti, slice):
             tmp = canonical_slice(ti, size[i])
@@ -6374,7 +6357,7 @@ def canonical_index(index, shape, allslice=True):
             newindex.append(slice(0, shape[i]))
             continue
         ti = index[i]
-        if isinstance(ti, int):
+        if isinstance(ti, numbers.Integral):
             ni = canonical_dim(ti, shape[i])
             if allslice:
                 newindex.append(slice(ni, ni + 1))
@@ -6713,7 +6696,7 @@ class deferred_op:
             precode.append( "  itershape = " + an_array + ".shape" )
             if len(self.axis_reductions)>0:
                 axis = self.axis_reductions[0][0]
-                if isinstance(axis, int):
+                if isinstance(axis, numbers.Integral):
                     axis = [axis]
                 tmp = "".join(["1," if i in axis else f"itershape[{i}]," for i in range(len(self.distribution[0][0]))])
                 precode.append( "  itershape2 = ("+tmp+")" )
@@ -7095,7 +7078,7 @@ def init_array(
     tuple_arg=True,
     **kwargs
 ):
-    if isinstance(shape, int):
+    if isinstance(shape, numbers.Integral):
         shape = (shape,)
     return create_array(
         shape,
@@ -7367,7 +7350,7 @@ def mgrid_gen_getitem(index):
     num_dim = len(index)
     dim_sizes = [num_dim]
     for i in range(num_dim):
-        if isinstance(index[i], int):
+        if isinstance(index[i], numbers.Integral):
             dim_sizes.append(index[i])
         elif isinstance(index[i], slice):
             assert index[i].step is None
