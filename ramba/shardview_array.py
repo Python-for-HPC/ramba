@@ -482,7 +482,7 @@ def array_to_view(sv, arr):
     # print ("axis map, size arr, offset",sv._axis_map,arr.shape,sv._base_offset)
     # assert(len(arr.shape)==len(sv._base_offset))
     # special case 0 size
-    if any([v == 0 for v in arr.shape]):
+    if any([v == 0 for v in arr.shape]) or any([v==0 for v in _size(sv)]):
         return np.zeros(tuple([0] * len_size(sv)))
     # special case do nothing
     if len_size(sv) == len(arr.shape) and all(
