@@ -5311,23 +5311,11 @@ class ndarray:
             assert 0 # Need to implement the slow way here in the case it doesn't get optimized away.
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
-            # check for out-of-bounds
-            for i in range(len(index)):
-                if isinstance(index[i], numbers.Integral) and index[i] >= self.shape[i]:
-                    raise IndexError(
-                        "index "
-                        + str(index[i])
-                        + " is out of bounds for axis "
-                        + str(i)
-                        + " with shape "
-                        + str(self.shape[i])
-                    )
-
+            cindex = canonical_index(index, self.shape)
             # make sure array distribution can't change (ie, not flexible or is already constructed)
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
                 deferred_op.do_ops()
             num_dim = len(self.shape)
-            cindex = canonical_index(index, self.shape)
             dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
             dprint(2, "getitem slice:", cindex, dim_shapes)
 
@@ -5365,6 +5353,9 @@ class ndarray:
         if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
 
+        if len(index) > self.ndim:
+            raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
+
         index_has_slice = any([isinstance(i, slice) for i in index])
         index_has_array = any([isinstance(i, np.ndarray) for i in index])
 
@@ -5374,18 +5365,6 @@ class ndarray:
             return DAGshape(dim_sizes, self.dtype, False, aliases=self)
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
-            # check for out-of-bounds
-            for i in range(len(index)):
-                if isinstance(index[i], numbers.Integral) and index[i] >= self.shape[i]:
-                    raise IndexError(
-                        "index "
-                        + str(index[i])
-                        + " is out of bounds for axis "
-                        + str(i)
-                        + " with shape "
-                        + str(self.shape[i])
-                    )
-
             dim_shapes, (cindex, _) = apply_index(self.shape, index)
             dprint(2, "__getitem__array slice:", cindex, dim_shapes)
             return DAGshape(dim_shapes, self.dtype, False, aliases=self)
@@ -5402,43 +5381,41 @@ class ndarray:
         if not isinstance(index, tuple):
             index = (index,)
 
-        # index = canonical_index(index, self.shape)
+        # Handle Ellipsis -- it can occur in any position, and may be combined with np.newzxis/None
+        ellpos = [i for i,x in enumerate(index) if x is Ellipsis]
+        if len(ellpos)>1:
+            raise IndexError("an index can only have a single ellipsis ('...')")
+        if len(ellpos)==1:
+            ellpos = ellpos[0]
+            preind = index[:ellpos]
+            postind = index[ellpos+1:]
+            index = preind + tuple( slice(None) for _ in range(self.ndim - len(index) + 1 + index.count(None)) ) + postind
 
-        # # Make sure they weren't so negative that they go off the front of the array and are still negative.
-        # for i in range(len(index)):
-        #     if isinstance(index[i], numbers.Integral) and index[i] < 0:
-        #         raise IndexError(
-        #             "index "
-        #             + str(index[i])
-        #             + " is out of bounds for axis "
-        #             + str(i)
-        #             + " with shape "
-        #             + str(self.shape[i])
-        #         )
-
-        if index[-1] is Ellipsis:
-            index = index[:-1] + tuple([slice(None,None) for _ in range(self.ndim - (len(index)-1))])
-
-        # np.newaxis is an alias for None
+        # Handle None;  np.newaxis is an alias for None
         if any([x is None for x in index]):
             newdims = [i for i in range(len(index)) if index[i] is None]
+            newindex = tuple([i if i is not None else slice(None) for i in index])
             expanded_array = expand_dims(self, newdims)
-            return expanded_array
+            print (self.shape, newdims, expanded_array.shape, newindex)
+            return expanded_array[newindex]
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
-        if all([isinstance(i, numbers.Integral) for i in index]) and len(index) == len(self.shape):
-            self.instantiate()
+        if all([isinstance(i, numbers.Integral) for i in index]):
+            if len(index) > len(self.shape):
+                raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
+            elif len(index) == len(self.shape):
+                self.instantiate()
 
-            index = canonical_index(index, self.shape, allslice=False)
-            owner = shardview.find_index(
-                self.distribution, index
-            )  # find_index(self.distribution, index)
-            dprint(2, "owner:", owner)
-            # ret = ray.get(remote_states[owner].getitem_global.remote(self.gid, index, self.distribution[owner]))
-            ret = remote_call(
-                owner, "getitem_global", self.gid, index, self.distribution[owner]
-            )
-            return ret
+                index = canonical_index(index, self.shape, allslice=False)
+                owner = shardview.find_index(
+                    self.distribution, index
+                )  # find_index(self.distribution, index)
+                dprint(2, "owner:", owner)
+                # ret = ray.get(remote_states[owner].getitem_global.remote(self.gid, index, self.distribution[owner]))
+                ret = remote_call(
+                    owner, "getitem_global", self.gid, index, self.distribution[owner]
+                )
+                return ret
 
         return self.getitem_array(index)
 
@@ -6294,18 +6271,24 @@ if ntiming > 0:
     atexit.register(matmul_summary)
 
 
-def canonical_dim(dim, dim_size, end=False, neg_slice=False):
+def canonical_dim(dim, dim_size, end=False, neg_slice=False, checkbounds=False, axis=0):
     if not isinstance(dim, (numbers.Integral,type(None))):
         raise TypeError("indices must be integer or None")
     if dim is None:
         dim = dim_size if end!=neg_slice else 0
         dim -= 1 if neg_slice else 0
         return dim
-    if dim < 0:
-        return max(0, dim + dim_size)
+    if dim < -dim_size:
+        if checkbounds:
+            raise IndexError(f"index {dim} out of bounds for axis {axis} with size {dim_size}")
+        return 0
+    elif dim < 0:
+        return dim + dim_size
     elif dim < dim_size:
         return dim
     else:
+        if checkbounds:
+            raise IndexError(f"index {dim} out of bounds for axis {axis} with size {dim_size}")
         return dim_size
 
 def canonical_step(s):
@@ -6351,14 +6334,15 @@ def canonical_index(index, shape, allslice=True):
     newindex = []
     if not isinstance(index, tuple):
         index = (index,)
-    assert len(index) <= len(shape)
+    if (len(index) > len(shape)):
+        raise IndexError(f"too many indices for array: array is {len(index)}-dimensional, but {len(index)} were indexed")
     for i in range(len(shape)):
         if i >= len(index):
             newindex.append(slice(0, shape[i]))
             continue
         ti = index[i]
         if isinstance(ti, numbers.Integral):
-            ni = canonical_dim(ti, shape[i])
+            ni = canonical_dim(ti, shape[i], checkbounds=True, axis=i)
             if allslice:
                 newindex.append(slice(ni, ni + 1))
             else:
@@ -7691,18 +7675,16 @@ def expand_dims(a, axis):
     ashape = a.shape
     if not isinstance(axis, (list, tuple)):
         axis = (axis,)
+    # Normalize axes, check for range
+    axis = np.core.numeric.normalize_axis_tuple( axis, a.ndim + len(axis) )
     new_shape = [0 for _ in range(len(ashape) + len(axis))]
     for newd in axis:
-        if newd >= len(new_shape):
-            assert 0 # should throw AxisError
         new_shape[newd] = 1
     next_index = 0
     for i in range(len(new_shape)):
-        if i in axis:
-            continue
-        new_shape[i] = ashape[next_index]
-        next_index += 1
-
+        if i not in axis:
+            new_shape[i] = ashape[next_index]
+            next_index += 1
     return reshape(a, tuple(new_shape))
 
 def squeeze(a, axis=None):
@@ -7711,12 +7693,13 @@ def squeeze(a, axis=None):
     if axis is None:
         # axis is tuple of indices that have length 1
         axis = tuple(filter(lambda x: ashape[x] == 1, range(len(ashape))))
-    if not isinstance(axis, tuple):
+    if not isinstance(axis, (list,tuple)):
         axis = (axis,)
+    # Normalize axes, check for range
+    axis = np.core.numeric.normalize_axis_tuple( axis, a.ndim )
     # Make sure all the indices they try to remove have length 1
     if not all([ashape[x] == 1 for x in axis]):
-        assert 0  # TO-DO: should raise some error
-
+        raise ValueError("cannot squeeze out an axis with size not equal to 1")
     new_shape = [ashape[i] for i in range(len(ashape)) if i not in axis]
     return reshape(a, tuple(new_shape))
 
