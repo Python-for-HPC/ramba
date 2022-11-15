@@ -163,7 +163,9 @@ class FunctionMetadata:
         self.ngfunc = {}
         self.no_global_cache = no_global_cache
         self.parallel = parallel
-        dprint(2, "FunctionMetadata finished")
+        if num_threads <= 1:
+            self.parallel = False
+        dprint(2, "FunctionMetadata finished", self.parallel, num_threads)
 
     def __call__(self, *args, **kwargs):
         """Get the types of the arguments.  See if we attempted to compile that
@@ -1557,7 +1559,7 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     njreducer = (
         reducer
         if isinstance(reducer, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(reducer)
+        else numba.extending.register_jitable(inline="always")(reducer)
         #else numba.njit(reducer)
     )
 
@@ -6270,6 +6272,7 @@ def matmul_internal(a, b, reduction=False, out=None):
 
 
 def matmul_summary():
+    print("Timing summary")
     print(get_timing_str(details=True))
 
 
@@ -8811,6 +8814,4 @@ else:  # Ray setup
         if not USE_RAY_CALLS:
             retval_queue = ramba_queue.Queue()
             [x.rpc_serve.remote(retval_queue) for x in remote_states]
-
-
 
