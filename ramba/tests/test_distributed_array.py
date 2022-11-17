@@ -680,30 +680,6 @@ class TestBasic:
 
         run_both(impl)
 
-    def test_transpose_redcution(self):
-        def impl(app):
-            s1 = app.sum(app.ones((200,100), dtype=int),axis=0)
-            s2 = app.sum(app.ones((200,100), dtype=int),axis=1)
-            s3 = app.sum(app.ones((200,100), dtype=int).T,axis=0)
-            s4 = app.sum(app.ones((200,100), dtype=int).T,axis=1)
-            s5 = app.sum(app.ones((200,100), dtype=int))
-            s6 = app.sum(app.ones((200,100), dtype=int).T)
-            return s1,s2,s3,s4,s5,s6
-
-        run_both(impl)
-
-    def test_transpose_slice_redcution(self):
-        def impl(app):
-            s1 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=0)
-            s2 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=1)
-            s3 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=0)
-            s4 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=1)
-            s5 = app.sum(app.ones((200,100), dtype=int)[150:170])
-            s6 = app.sum(app.ones((200,100), dtype=int)[150:170].T)
-            return s1,s2,s3,s4,s5,s6
-
-        run_both(impl)
-
     def test_smap1(self):
         a = ramba.arange(100)
         b = ramba.smap("lambda x: 3*x-7", a)
@@ -1081,6 +1057,42 @@ class TestReduction:
             return eval("a."+op+"(axis=(1,0))")
 
         [run_both(impl, x, array_comp=np.allclose) for x in TestReduction.ops]
+
+    def test_transpose_redcution(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int),axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int),axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int).T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int).T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int))
+            s6 = app.sum(app.ones((200,100), dtype=int).T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
+
+    def test_transpose_slice_redcution(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int)[50:170],axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int)[50:170],axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int)[50:170].T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int)[50:170].T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int)[50:170])
+            s6 = app.sum(app.ones((200,100), dtype=int)[50:170].T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
+
+    def test_transpose_slice_redcution2(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int)[150:170])
+            s6 = app.sum(app.ones((200,100), dtype=int)[150:170].T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
 
 
 class TestRandom:
