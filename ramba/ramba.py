@@ -1803,7 +1803,7 @@ class RemoteState:
 
         if filler:
             filler = func_loads(filler)
-        if filler:
+        if filler is not None:
             # per_element = True
             do_compile = True
             if isinstance(filler, Filler):
@@ -1827,8 +1827,10 @@ class RemoteState:
         )
         self.numpy_map[gid] = lnd
         new_bcontainer = lnd.bcontainer
-        if filler:
-            if mode == Filler.PER_ELEMENT:
+        if filler is not None:
+            if isinstance(filler, numbers.Number):
+                new_bcontainer[:] = filler
+            elif mode == Filler.PER_ELEMENT:
 
                 def do_per_element_non_compiled(new_bcontainer, dim_lens, starts):
                     for i in np.ndindex(dim_lens):
@@ -4998,12 +5000,12 @@ class ndarray:
         if axis is None or (axis == 0 and self.ndim == 1):
             assert asarray
             dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
             red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
             return red_arr.internal_reduction2b(op, dtype, asarray)
         else:
             dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
             red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
             return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
 
@@ -5035,7 +5037,7 @@ class ndarray:
                     return DAGshape((1,), dtype, False)
                 DAG.instantiate(self)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist )
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 return red_arr.internal_reduction2b(op, dtype, asarray)
             else:
@@ -6994,11 +6996,17 @@ def create_array_executor(
             new_ndarray.distribution = filler.copy()
         return new_ndarray
 
-    if isinstance(filler, str): # ignore no_defer
-        deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
-    elif isinstance(filler, numbers.Number):
-        deferred_op.add_op(["", new_ndarray, " = ", filler], new_ndarray)
-    elif filler is None and no_defer==False:
+    if isinstance(filler, str):
+        if no_defer==False:
+            deferred_op.add_op(["", new_ndarray, " = " + filler], new_ndarray)
+            return new_ndarray
+        filler = eval(filler)
+    if isinstance(filler, numbers.Number):
+        if no_defer==False:
+            deferred_op.add_op(["", new_ndarray, " = ", filler], new_ndarray)
+            return new_ndarray
+
+    if filler is None and no_defer==False:
         deferred_op.add_op(["#", new_ndarray], new_ndarray) # deferred op no op, just to make sure empty array is constructed
     else:
         filler = filler if filler_prepickled else func_dumps(filler)
