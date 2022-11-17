@@ -5033,16 +5033,21 @@ class ndarray:
                     raise np.AxisError("Error axis must be 0")
                 axis = None
             if axis is None or (axis == 0 and self.ndim == 1):
-                if asarray:
-                    return DAGshape((1,), dtype, False)
-                DAG.instantiate(self)
+                #if asarray:
+                #    return DAGshape((1,), dtype, False)
+                DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
                 red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 return red_arr.internal_reduction2b(op, dtype, asarray)
             else:
-                outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
-                return DAGshape(outshape, dtype, False)
+                #outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
+                #return DAGshape(outshape, dtype, False)
+                DAG.instantiate(self, do_ops=False)
+                dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
+                return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
         else:
             return self.internal_array_unaryop(op, optext, imports, dtype)
 
