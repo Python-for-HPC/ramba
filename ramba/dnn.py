@@ -1,17 +1,86 @@
 import ramba
 import numpy as np
 
-
+# Activation functions
 class relu:
     def forward(self, A):
         return ramba.smap("lambda x: max(0,x)", A)
+
+class sigmoid:
+    def forward(self, A):
+        return ramba.smap("lambda x: 1/(1+numpy.e^(-x))", A, imports=['numpy'])
+
+
+# Dropout layer
+# This is only used in training and acts as a no-op in inferencing
+# included for compatibility
+class dropout:
+    def __init__(self, rate):
+        self.rate = rate
+    def forward(self, A):
+        return A
+
+# Pooling layer
+# Forward pass is implemented 
+# Poolfunc is 'max', 'min', 'sum', or 'mean'
+# Input size is nframes * in_channels * x_0 * x_1 * ... * x_ndim-1
+# Output size is nframes * in_channels * xout_0 * xout_1 * ... * xout_ndim-1
+#   where xout_i = (x_i - k ) // stride + 1
+class pool:
+    def __init__(self, k, poolfunc='max', ndim=2, stride=1):
+        self.k = k
+        self.ndim = ndim
+        self.stride = stride
+        assert poolfunc in ['max', 'min', 'sum', 'mean']
+        self.poolfunc = poolfunc
+
+    @classmethod
+    def _pool__fwd(cls, A, fn, k, n, s, j=0, o=None):
+        if j<n:
+            l = A.shape[-(n-j)]
+            extra = (slice(None),)*(n-j-1)
+            start=0
+            if o is None:
+                o = cls.__fwd(A[(...,slice(0,l-k+1,s))+extra], fn, k, n, s, j+1)
+                start=1
+            for i in range(start,k):
+                o = cls.__fwd(A[(...,slice(i,l-k+1+i,s))+extra], fn, k, n, s, j+1, o)
+        else:
+            if o is None:
+                o = A
+            elif poolfunc=='min'
+                o = ramba.min(o,A)
+            elif poolfunc=='max':
+                o = ramba.max(o,A)
+            elif poolfunc=='sum':
+                o = o + A
+        return o
+
+    def forward(self, A, stride=None):
+        k = self.k
+        ndim = self.ndim
+        poolfunc = self.poolfunc
+        if poolfunc=='mean':
+            poolfunc = 'max'
+            needscale=True
+        else:
+            needscale=False
+        if stride is None:
+            stride = self.stride
+        if A.ndim<ndim:
+            raise ValueError("Insufficient number of dimensions in input")
+        out = self.__fwd(A,poolfunc,k,ndim,stride)
+        if needscale:
+            out = out * (1.0/(k*k))
+        return out
+
 
 # Convolution
 # Weights size is nfilters * in_channels * k^ndim
 # Forward pass is implemented 
 # Input size is nframes * in_channels * x_0 * x_1 * ... * x_ndim-1
 # Output size is nframes * nfilters * xout_0 * xout_1 * ... * xout_ndim-1
-#   where xout_i = ceil( (x_i - k + 1) / stride )
+#   where xout_i = (x_i - k ) // stride + 1
 class conv:
     def __init__(self, k, in_channels, ndim=2, nfilters=1, stride=1, has_bias=False, weights=None, bias=None):
         if weights is None:
@@ -75,7 +144,7 @@ class conv:
         out = self.__fwd(W,A,ndim,stride)
         if self.bias is not None:
             bias = ramba.expand_dims(self.bias, tuple(range(1,ndim)))
-            out += bias
+            out = out + bias
         return out
 
 
