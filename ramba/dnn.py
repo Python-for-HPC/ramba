@@ -4,7 +4,7 @@ import numpy as np
 # Activation functions
 class relu:
     def forward(self, A):
-        return ramba.smap("lambda x: max(0,x)", A)
+        return ramba.minimum(A,0)
 
 class sigmoid:
     def forward(self, A):
@@ -48,11 +48,11 @@ class pool:
         else:
             if o is None:
                 o = A
-            elif poolfunc=='min'
-                o = ramba.min(o,A)
-            elif poolfunc=='max':
-                o = ramba.max(o,A)
-            elif poolfunc=='sum':
+            elif fn=='min':
+                o = ramba.minimum(o,A)
+            elif fn=='max':
+                o = ramba.maximum(o,A)
+            elif fn=='sum':
                 o = o + A
         return o
 
@@ -61,7 +61,7 @@ class pool:
         ndim = self.ndim
         poolfunc = self.poolfunc
         if poolfunc=='mean':
-            poolfunc = 'max'
+            poolfunc = 'sum'
             needscale=True
         else:
             needscale=False
