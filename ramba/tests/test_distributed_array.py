@@ -68,18 +68,18 @@ class TestApps:
 
         run_both(impl)
 
-    def test_matmul_big1(self):  # big test -- should work on GitHub (7MB) assuming fusion works
-        A = ramba.fromfunction(lambda x, y: x + y, (300,400))
-        B = ramba.fromfunction(lambda x, y: x + y, (400,500))
-        C = (ramba.broadcast_to(A.T, (500,400,300)).T * ramba.broadcast_to(B, (300,400,500))).sum(axis=1)
-        c_7_3 = ((np.arange(400)+7)*(np.arange(400)+3)).sum()
+    def test_matmul_big1(self):  # big test -- should work on GitHub (7GB) assuming fusion works
+        A = ramba.fromfunction(lambda x, y: x + y, (1000,1100))
+        B = ramba.fromfunction(lambda x, y: x + y, (1100,1200))
+        C = (ramba.broadcast_to(A.T, (1200,1100,1000)).T * ramba.broadcast_to(B, (1000,1100,1200))).sum(axis=1)
+        c_7_3 = ((np.arange(1100)+7)*(np.arange(1100)+3)).sum()
         assert C[7,3] == c_7_3
 
-    def test_matmul_big2(self):  # big test -- should work on GitHub (7MB) assuming fusion works
-        A = ramba.fromfunction(lambda x, y: x + y, (300,400))
-        B = ramba.fromfunction(lambda x, y: x + y, (400,500))
+    def test_matmul_big2(self):  # big test -- should work on GitHub (7GB) assuming fusion works
+        A = ramba.fromfunction(lambda x, y: x + y, (1000,1100))
+        B = ramba.fromfunction(lambda x, y: x + y, (1100,1200))
         C = (ramba.expand_dims(A,2)*B).sum(axis=1)
-        c_12_4 = ((np.arange(400)+12)*(np.arange(400)+4)).sum()
+        c_12_4 = ((np.arange(1100)+12)*(np.arange(1100)+4)).sum()
         assert C[12,4] == c_12_4
 
     def test_pi_integration(self):  # integtrate 1/(1+x^2) from 0 to 1 --> arctan(1) --> pi/4
@@ -93,14 +93,14 @@ class TestApps:
 
         run_both(impl)
 
-    def test_pi_integration_fused(self):  # Should fit on GitHub VM (7MB) if fused and no arrays materialized
+    def test_pi_integration_fused(self):  # Should fit on GitHub VM (7GB) if fused and no arrays materialized
         def calc_pi(nsteps):
             step = 1.0/nsteps
             X = ramba.linspace(0.5*step, 1.0-0.5*step, num=nsteps)
             Y = 4.0 * step / (1.0+X*X)
             return ramba.sum(Y, asarray=True)   # keep in array form to defer caclulation of sum until after function returns
 
-        pi_arr = calc_pi(10*1000*1000)
+        pi_arr = calc_pi(2000*1000*1000)
         print (pi_arr[0])
 
 
@@ -1057,6 +1057,42 @@ class TestReduction:
             return eval("a."+op+"(axis=(1,0))")
 
         [run_both(impl, x, array_comp=np.allclose) for x in TestReduction.ops]
+
+    def test_transpose_redcution(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int),axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int),axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int).T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int).T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int))
+            s6 = app.sum(app.ones((200,100), dtype=int).T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
+
+    def test_transpose_slice_redcution(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int)[50:170],axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int)[50:170],axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int)[50:170].T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int)[50:170].T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int)[50:170])
+            s6 = app.sum(app.ones((200,100), dtype=int)[50:170].T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
+
+    def test_transpose_slice_redcution2(self):
+        def impl(app):
+            s1 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=0)
+            s2 = app.sum(app.ones((200,100), dtype=int)[150:170],axis=1)
+            s3 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=0)
+            s4 = app.sum(app.ones((200,100), dtype=int)[150:170].T,axis=1)
+            s5 = app.sum(app.ones((200,100), dtype=int)[150:170])
+            s6 = app.sum(app.ones((200,100), dtype=int)[150:170].T)
+            return s1,s2,s3,s4,s5,s6
+
+        run_both(impl)
 
 
 class TestRandom:
