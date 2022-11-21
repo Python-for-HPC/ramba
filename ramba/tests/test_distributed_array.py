@@ -3,7 +3,9 @@ import numpy as np
 import random
 import numba
 import time
+import os
 
+full_test = int(os.environ.get("RAMBA_FULL_TEST", "0"))
 
 @ramba.stencil
 def stencil1(a):
@@ -418,6 +420,8 @@ class TestOps:
         [run_both(impl, x) for x in TestOps.ops]
 
 
+sample_dgemm = 50
+
 
 class TestDgemm:
     def test_2Dx1D(self):
@@ -426,10 +430,17 @@ class TestDgemm:
             theta = app.fromfunction(lambda x: x, (j,), dtype=X.dtype)
             res = X @ theta
             return res
+        start_i = 4
+        end_i = 50
+        start_j = 4
+        end_j = 20
+        total_tests = (end_i - start_i) * (end_j - start_j)
+        percent = sample_dgemm / total_tests
 
-        for i in range(4, 50):
-            for j in range(4, 20):
-                run_both(impl, i, j)
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
+                if random.uniform(0, 1) < percent:
+                    run_both(impl, i, j)
 
     def test_2Dx2D(self):
         def impl(app, i, j, k):
@@ -438,10 +449,20 @@ class TestDgemm:
             res = X @ theta
             return res
 
-        for i in range(4, 20):
-            for j in range(4, 20):
-                for k in range(1, 10):
-                    run_both(impl, i, j, k)
+        start_i = 4
+        end_i = 20
+        start_j = 4
+        end_j = 20
+        start_k = 1
+        end_k = 10
+        total_tests = (end_i - start_i) * (end_j - start_j) * (end_k - start_k)
+        percent = sample_dgemm / total_tests
+
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
+                for k in range(start_k, end_k):
+                    if random.uniform(0, 1) < percent:
+                        run_both(impl, i, j, k)
 
     def test_2Dx1DT(self):  # 2D x transposed 1D
         def impl(app, i, j):
@@ -451,9 +472,17 @@ class TestDgemm:
             res = X @ theta
             return res
 
-        for i in range(4, 50):
-            for j in range(4, 20):
-                run_both(impl, i, j)
+        start_i = 4
+        end_i = 50
+        start_j = 4
+        end_j = 20
+        total_tests = (end_i - start_i) * (end_j - start_j)
+        percent = sample_dgemm / total_tests
+
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
+                if random.uniform(0, 1) < percent:
+                    run_both(impl, i, j)
 
     def test_2DTx2DT(self):  # transposed 2D x transposed 2D
         def impl(app, i, j, k):
@@ -464,10 +493,20 @@ class TestDgemm:
             res = X @ theta
             return res
 
-        for i in range(4, 20):
-            for j in range(4, 20):
-                for k in range(1, 10):
-                    run_both(impl, i, j, k)
+        start_i = 4
+        end_i = 20
+        start_j = 4
+        end_j = 20
+        start_k = 1
+        end_k = 10
+        total_tests = (end_i - start_i) * (end_j - start_j) * (end_k - start_k)
+        percent = sample_dgemm / total_tests
+
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
+                for k in range(start_k, end_k):
+                    if random.uniform(0, 1) < percent:
+                        run_both(impl, i, j, k)
 
     def test_2Dx1D_slice(self):
         def impl(app, i, j, k, l):
@@ -476,11 +515,24 @@ class TestDgemm:
             res = X[:, l : l + k] @ theta[l : l + k]
             return res
 
-        for i in range(4, 50):
-            for j in range(4, 20):
+        start_i = 4
+        end_i = 50
+        start_j = 4
+        end_j = 20
+        total_tests = 0
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
                 for k in range(1, j):
                     for l in range(j - k):
-                        run_both(impl, i, j, k, l)
+                        total_tests += 1
+        percent = sample_dgemm / total_tests
+
+        for i in range(start_i, end_i):
+            for j in range(start_j, end_j):
+                for k in range(1, j):
+                    for l in range(j - k):
+                        if random.uniform(0, 1) < percent:
+                            run_both(impl, i, j, k, l)
 
 
 
