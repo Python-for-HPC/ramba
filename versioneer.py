@@ -285,6 +285,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from distutils.command.build import build as _build
 from distutils.command.sdist import sdist as _sdist
 from distutils.core import Command
@@ -645,11 +646,18 @@ def git_versions_from_keywords(keywords, tag_prefix, verbose=False):
 def git_parse_vcs_describe(git_describe, tag_prefix, verbose=False):
     # TAG-NUM-gHEX[-dirty] or HEX[-dirty] . TAG might have hyphens.
 
+    try:
+        st = style
+    except NameError:
+        st = None
+
     # dirty
     dirty = git_describe.endswith("-dirty")
     if dirty:
         git_describe = git_describe[: git_describe.rindex("-dirty")]
-    dirty_suffix = ".dirty" if dirty else ""
+        dirty_suffix = ".dev%d"%(time.time()) if st=='pep440-old' else ".dirty"
+    else:
+        dirty_suffix=""
 
     # now we have TAG-NUM-gHEX or HEX
 
@@ -683,7 +691,11 @@ def git_parse_vcs_describe(git_describe, tag_prefix, verbose=False):
     # can always test version.endswith(".dirty").
     version = tag
     if distance or dirty:
-        version += "+%d.g%s" % (distance, commit) + dirty_suffix
+        if st=='pep440-old':
+            version += ".post%d" % (distance) + dirty_suffix
+        else:
+            version += "+%d.g%s" % (distance, commit) + dirty_suffix
+
 
     return version, dirty
 

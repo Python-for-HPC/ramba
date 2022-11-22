@@ -28,9 +28,7 @@ except ImportError:
 
 
 min_python_version = "3.7"
-max_python_version = "4"  # exclusive
-min_numpy_build_version = "1.11"
-min_numpy_run_version = "1.15"
+#max_python_version = "4"  # exclusive
 
 
 def _guard_py_ver():
@@ -40,15 +38,18 @@ def _guard_py_ver():
     parse = _version_module.parse
 
     min_py = parse(min_python_version)
-    max_py = parse(max_python_version)
+    #max_py = parse(max_python_version)
     cur_py = parse(".".join(map(str, sys.version_info[:3])))
 
-    if not min_py <= cur_py < max_py:
+    #if not min_py <= cur_py < max_py:
+    if not min_py <= cur_py:
         msg = (
-            "Cannot install on Python version {}; only versions >={},<{} "
+            #"Cannot install on Python version {}; only versions >={},<{} "
+            "Cannot install on Python version {}; only versions >={}"
             "are supported."
         )
-        raise RuntimeError(msg.format(cur_py, min_py, max_py))
+        #raise RuntimeError(msg.format(cur_py, min_py, max_py))
+        raise RuntimeError(msg.format(cur_py, min_py))
 
 
 _guard_py_ver()
@@ -66,6 +67,7 @@ versioneer.versionfile_source = "ramba/_version.py"
 versioneer.versionfile_build = "ramba/_version.py"
 versioneer.tag_prefix = ""
 versioneer.parentdir_prefix = "ramba-"
+versioneer.style = "pep440-old"
 
 cmdclass = versioneer.get_cmdclass()
 cmdclass["build_doc"] = build_doc
@@ -159,26 +161,32 @@ def get_ext_modules():
 
 packages = find_packages()
 
-build_requires = ["numpy >={}".format(min_numpy_build_version)]
-install_requires = [
-    "numpy >={}".format(min_numpy_run_version),
-    "setuptools",
-]
+build_requires = []
+
+from pathlib import Path
+this_directory = Path(__file__).parent
+long_description = (this_directory / "README.md").read_text()
+with (this_directory / "requirements.txt").open() as f:
+    install_requires = f.readlines()
+install_requires.append("setuptools")
 
 metadata = dict(
     name="ramba",
-    description="combining Ray + Numba",
+    description="Distributed Numpy-like arrays in Python",
     version=versioneer.get_version(),
+    url='https://github.com/Python-for-HPC/ramba',
     classifiers=[],
-    package_data={},
     scripts=[],
     author="Intel, Inc.",
     author_email="todd.a.anderson@intel.com",
     packages=packages,
     setup_requires=build_requires,
     install_requires=install_requires,
-    python_requires=">={},<{}".format(min_python_version, max_python_version),
+    #python_requires=">={},<{}".format(min_python_version, max_python_version),
+    python_requires=">={}".format(min_python_version),
     license="BSD",
+    long_description=long_description,
+    long_description_content_type='text/markdown',
     cmdclass=cmdclass,
 )
 
