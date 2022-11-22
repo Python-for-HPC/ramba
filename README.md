@@ -67,30 +67,26 @@ is achieved with no significant change to the code.
 
 # Quick Start
 
-Quick install with Conda / Miniconda and git:
+Quick install with pip.  Note this pulls in many dependencies, so we recommend installing in a virtual environment (virtualenv or conda).
 ~~~
-conda create --name ramba -y
-conda activate ramba
-conda install "python<3.9" numba cloudpickle pyzmq -y
-pip install -U ray
-git clone https://github.com/Python-for-HPC/ramba
-cd ramba
-python setup.py install 
+pip -install ramba
 ~~~
 
-Now run the provided sample file:
+Now download and run the provided sample file:
 ~~~
-python sample/test-ramba.py
+wget https://raw.githubusercontent.com/Python-for-HPC/ramba/main/sample/test-ramba.py
+python test-ramba.py
 ~~~
 
 The first time you use Ramba, it will compile some internal functions, so the first run may be slow.  Let's run it again to see typical run times:
 ~~~
-python sample/test-ramba.py
+python test-ramba.py
 ~~~
 
 Finally, let's compare to the numpy version:
 ~~~
-python sampe/test-numpy.py
+wget https://raw.githubusercontent.com/Python-for-HPC/ramba/main/sample/test-numpy.py
+python test-numpy.py
 ~~~
 
 
@@ -113,8 +109,30 @@ Optional packages:
 - PIL
 
 ## Installation process
-- Download / clone this repository
-- run: python setup.py install
+Create conda virtual environment and install common prerequisites
+~~~
+conda create --name ramba -y
+conda activate ramba
+conda install python numba "numpy<1.23" cloudpickle pyzmq -y
+~~~
+
+We need to install Ray, MPI, or both.  To install Ray:
+~~~
+pip install -U ray
+~~~
+
+To install MPI, use:
+~~~
+pip install mpi4py-mpich
+~~~
+This will install MPICH binaries, libraries, and Python bindings in the virtual environment.  If your system already includes a working MPICH installation, you can install just mpi4py (without the -mpich suffix) to just get the Python bindings.  Note: the latter will not work with an OpenMPI installation, as this is not compatible with MPICH.  
+
+Download / clone this repository and run the install script:
+~~~
+git clone https://github.com/Python-for-HPC/ramba
+cd ramba
+python setup.py install 
+~~~
 
 # Usage
 Ramba is intended to be a drop-in replacement for NumPy.  To use Ramba, simply import ramba instead of NumPy (see [Example](#example) above).  Most array construction and operations will work as is, but will be parallelized and distributed if possible.  No special restructuring of code is necessary to use Ramba.  As with NumPy, best performance usually comes from vector-style code using operations on whole arrays or slices of arrays.  Iteration through arrays using Python loops is not recommended.  As this is the case for NumPy as well, good NumPy code should work well with Ramba, with some exceptions (e.g., reshape is not efficient in a distributed context;  see also [NumPy Compatibility](#numpy-compatibility)).
@@ -126,7 +144,7 @@ Ramba arrays are partitioned across all available workers.  Whole array operatio
 4) executes a native binary rather than slower Python code.  
 
 ## Usage on Ray clusters
-By default, when Ramba starts, it tries to connect to a Ray cluster associsted with the local machine.  If such a Ray cluseter does not exist, or it cannot connect, then a local cluster is started on the local machine.  The local cluser will use all of the available cores on the local machine, assigning one worker per core.  Note that Ray treats each virtual CPU / hyperthraed as a core, so this may not be optimal for a compute-bound task.  
+By default, when Ramba starts, it tries to connect to a Ray cluster associated with the local machine.  If such a Ray cluseter does not exist, or it cannot connect, then a local cluster is started on the local machine.  The local cluser will use all of the available cores on the local machine, assigning one worker per core.  Note that Ray treats each virtual CPU / hyperthraed as a core, so this may not be optimal for a compute-bound task.  
 
 To use multiple nodes, simply start a Ray cluster on the set of nodes first.  Pick one node as the "head", and run:
 ```
@@ -172,7 +190,9 @@ NOTE:  Early versions of Ramba MPI support did not implement a SPMD model.  Inst
 |         | RAMBA_SHOW_CODE     | 0           | Set to 1 to display code that is constructed, compiled, run remotely (included in DEBUG level 2 and above)
 |         | RAMBA_NON_DIST      | 0           | Set to 1 to run a single, nondistributed process for debugging
 |Framework| RAMBA_USE_RAY_CALLS | 0           | Use Ray calls instead of message-based task invocation (for Ray)
-|Options  | RAMBA_USE_ZMQ       | Ray:1, MPI:0| Set to 1 to use ZMQ for inter-worker messaging
+|Options  | ray_address         | "auto"      | Address of Ray cluster head
+|         | ray_redis_password  | ""          | Ray cluster pasword
+|         | RAMBA_USE_ZMQ       | Ray:1, MPI:0| Set to 1 to use ZMQ for inter-worker messaging
 |         | RAMBA_IP_HINT       | 172.113.1.1 | Hint to select network interface that routes given address (for ZMQ)
 |         | RAMBA_USE_CW        | 0           | Set to 1 to use Controller-Worker model instead of SPMD (for MPI)
 |         | RAMBA_USE_BCAST     | **          | See below
