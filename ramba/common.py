@@ -85,7 +85,9 @@ if not USE_NON_DIST:
         else:
             allnodes = set(allnodes)
             def in_driver():
-                return False
+                comm = MPI.COMM_WORLD
+                rank = comm.Get_rank()
+                return rank==0
         #if rank==0: print(allnodes)
         num_nodes = len(allnodes)
     

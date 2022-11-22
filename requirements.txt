@@ -1,7 +1,7 @@
 numba
 ray
 pyzmq
-pickle5
+pickle5; python_version < '3.8'
 cloudpickle
 numpy<1.23
 psutil
