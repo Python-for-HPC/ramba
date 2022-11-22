@@ -692,7 +692,7 @@ def git_parse_vcs_describe(git_describe, tag_prefix, verbose=False):
     version = tag
     if distance or dirty:
         if st=='pep440-old':
-            version += ".post%d" % (distance) + dirty_suffix
+            version += ".post%d" % (distance + (1 if dirty else 0)) + dirty_suffix
         else:
             version += "+%d.g%s" % (distance, commit) + dirty_suffix
 

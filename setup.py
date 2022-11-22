@@ -165,7 +165,15 @@ build_requires = []
 
 from pathlib import Path
 this_directory = Path(__file__).parent
-long_description = (this_directory / "README.md").read_text()
+with (this_directory / "README.md").open() as f:
+    readme = f.readlines()
+try:
+    l1 = readme.index("# Ramba\n")+1
+    l2 = readme.index("# Quick Start\n")
+    readme = readme[l1:l2]
+except:
+    pass
+long_description = "".join(readme)
 with (this_directory / "requirements.txt").open() as f:
     install_requires = f.readlines()
 install_requires.append("setuptools")

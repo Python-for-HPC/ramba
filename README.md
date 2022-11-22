@@ -60,7 +60,7 @@ Now let us try running the ramba version:
 3.860828161239624
 ~~~
 The Ramba version saturates all of the cores, and results in about 12x speedup over the original numpy version. (Why only 12x?  Three factors 
-contribute to this: 1) this total includes some of the intiialization time; 2) Time for JIT compile (~1 second here); 3) This code is 
+contribute to this: 1) this total includes some of the initialization time; 2) Time for JIT compile (~1 second here); 3) This code is 
 memory-bandwidth bound, so after a point, additional cores will just end up waiting on memory).  Importantly, this performance gain 
 is achieved with no significant change to the code.
 
