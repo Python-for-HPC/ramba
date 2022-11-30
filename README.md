@@ -69,7 +69,7 @@ is achieved with no significant change to the code.
 
 Quick install with pip.  Note this pulls in many dependencies, so we recommend installing in a virtual environment (virtualenv or conda).
 ~~~
-pip -install ramba
+pip install ramba
 ~~~
 
 Now download and run the provided sample file:

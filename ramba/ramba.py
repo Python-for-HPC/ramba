@@ -5254,7 +5254,7 @@ class ndarray:
         elif not isinstance(key, tuple):
             key = (key,)
 
-        if is_mask or any([isinstance(i, slice) for i in key]) or len(key) < len(self.shape):
+        if is_mask or any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex, np.generic)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
