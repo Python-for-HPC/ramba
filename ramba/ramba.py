@@ -5282,6 +5282,12 @@ class ndarray:
         dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
         if self.readonly:
             raise ValueError("assignment destination is read-only")
+
+        if self.shape == (): # 0d case
+            print("setitem 0d:", key, type(key))
+            self.distribution = value
+            return
+
         is_mask = False
         if isinstance(key, ndarray) and key.dtype==bool and key.broadcastable_to(self.shape):
             is_mask = True
@@ -7283,7 +7289,7 @@ def array(*args):
 
 # Note -- this is a bit redefined: converts ramba ndarray to a numpy array
 def asarray(x):
-    dprint(1, "asarray global")
+    dprint(1, "asarray global", type(x))
     assert isinstance(x, ndarray)
     return x.asarray()
 
