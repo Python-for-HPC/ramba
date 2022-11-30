@@ -437,6 +437,7 @@ class TestDgemm:
         total_tests = (end_i - start_i) * (end_j - start_j)
         percent = sample_dgemm / total_tests
 
+        random.seed(1234)
         for i in range(start_i, end_i):
             for j in range(start_j, end_j):
                 if random.uniform(0, 1) < percent:
@@ -458,6 +459,7 @@ class TestDgemm:
         total_tests = (end_i - start_i) * (end_j - start_j) * (end_k - start_k)
         percent = sample_dgemm / total_tests
 
+        random.seed(1357)
         for i in range(start_i, end_i):
             for j in range(start_j, end_j):
                 for k in range(start_k, end_k):
@@ -479,6 +481,7 @@ class TestDgemm:
         total_tests = (end_i - start_i) * (end_j - start_j)
         percent = sample_dgemm / total_tests
 
+        random.seed(3152)
         for i in range(start_i, end_i):
             for j in range(start_j, end_j):
                 if random.uniform(0, 1) < percent:
@@ -502,6 +505,7 @@ class TestDgemm:
         total_tests = (end_i - start_i) * (end_j - start_j) * (end_k - start_k)
         percent = sample_dgemm / total_tests
 
+        random.seed(9625)
         for i in range(start_i, end_i):
             for j in range(start_j, end_j):
                 for k in range(start_k, end_k):
@@ -527,6 +531,7 @@ class TestDgemm:
                         total_tests += 1
         percent = sample_dgemm / total_tests
 
+        random.seed(72293)
         for i in range(start_i, end_i):
             for j in range(start_j, end_j):
                 for k in range(1, j):
