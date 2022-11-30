@@ -163,7 +163,9 @@ class FunctionMetadata:
         self.ngfunc = {}
         self.no_global_cache = no_global_cache
         self.parallel = parallel
-        dprint(2, "FunctionMetadata finished")
+        if num_threads <= 1:
+            self.parallel = False
+        dprint(2, "FunctionMetadata finished", self.parallel, num_threads)
 
     def __call__(self, *args, **kwargs):
         """Get the types of the arguments.  See if we attempted to compile that
@@ -1557,7 +1559,7 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     njreducer = (
         reducer
         if isinstance(reducer, numba.core.registry.CPUDispatcher)
-        else numba.extending.register_jitable(reducer)
+        else numba.extending.register_jitable(inline="always")(reducer)
         #else numba.njit(reducer)
     )
 
@@ -3453,6 +3455,7 @@ class RemoteState:
             varlist = rangedvars[i]
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
+                    #print("TODD:", len(arr_parts), len(partlist), len(ranges))
                     if not shardview.overlaps(rpart, vpart):  # skip
                         continue
                     tmp = shardview.mapsv(vpart, rpart)
@@ -3853,28 +3856,36 @@ def get_ndarrays(item, dagout):
 
 
 def get_unified_constraints(arr):
-    flexset = {}
-    nonflexset = {}
+    flexset = {}    # Will hold related arrays whose distribution is not yet determined.
+    nonflexset = {} # Will hold related arrays whose distribution has been determined.
     cset = []
     def add_array(arr):
         if not arr:
             return
         if arr.bdarray.flex_dist:
+            # If the array we are adding to the set of related arrays now has not had
+            # its distribution determined and we haven't previously added it.
             if id(arr) not in flexset:
+                # Add to the flex set.
                 flexset[id(arr)] = arr
+                # For each constraints on this array...
                 for constraint in arr.constraints:
+                    # If the constraint is not already in the constraint set then add it.
                     if constraint not in cset:
                         cset.append(constraint)
+                # Recursively add constraints for all the related arrays related to the current array.
                 for constraint in arr.constraints:
                     for aconst in constraint.constraint_dict.values():
                         add_array(aconst[0]())
         else:
             nonflexset[id(arr)] = arr
 
+    # Start by adding constraints for the array we are trying to create right now.
     add_array(arr)
 
     ret = {}
     max_symbol = 0
+    # For each constraint in the constriant set...
     for centry in cset:
         cdict = centry.constraint_dict
         this_entry_symbol_map = {}
@@ -3923,6 +3934,8 @@ def constraints_to_kwargs(arr, kwargs):
     start_time = timer()
     if arr is None or len(arr.constraints) == 0:
         return
+
+    dprint(2, "constraints_to_kwargs found array with constraints.")
 
     if len(arr.constraints) > 1:
         assert 0 # don't handle this case yet
@@ -4459,6 +4472,8 @@ class DAG:
 
     @classmethod
     def instantiate_dag_node(cls, dag_node, do_ops=True, **kwargs):
+        inst_start = timer()
+        exec_time = 0
         if dag_node.executed:
             assert len(dag_node.backward_deps) == 0
             deferred_op.do_ops()
@@ -4470,11 +4485,19 @@ class DAG:
         cls.depth_first_traverse(dag_node, depth_first_nodes, set())
         for op in depth_first_nodes:
             dprint(2, "Running DAG executor for", op.get_dot_name())
+            estart = timer()
             op.execute()
+            eend = timer()
+            exec_time += eend - estart
         # FIX ME?  Does this need to go in the loop above if we alternate between deferred_ops and something else?
+        do_op_start = timer()
         if do_ops:
             deferred_op.do_ops()
         cls.in_evaluate -= 1
+        inst_end = timer()
+        add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
+        add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
+        add_time("instantiate_dag_node_execute", exec_time)
 
     @classmethod
     def print_nodes(cls):
@@ -4529,6 +4552,8 @@ def get_non_ramba_callsite(the_stack):
 def DAGapi(func):
     name = func.__qualname__
     def wrapper(*args, **kwargs):
+        wrap_start = timer()
+        inline_exec_time = 0
         dprint(1, "----------------------------------------------------")
         dprint(1, "DAGapi", name)
         fres = func(*args, **kwargs)
@@ -4537,12 +4562,20 @@ def DAGapi(func):
             nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
             if DAG.in_evaluate > 0:
                 dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
+                inline_start = timer()
                 dag.execute()
+                inline_end = timer()
+                inline_exec_time = inline_end - inline_start
+                add_time("DAGapi_inline_exec", inline_exec_time)
             dprint(1, "----------------------------------------------------")
-            return nres
+            ret = nres
         else:
             dprint(1, "----------------------------------------------------")
-            return fres
+            ret = fres
+        wrap_end = timer()
+        add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
+        add_time("DAGapi_total", (wrap_end - wrap_start))
+        return ret
     return wrapper
 
 
@@ -5237,6 +5270,7 @@ class ndarray:
             DAG.instantiate(rhs)
             return ndarray.array_binop_executor(None, self, rhs, op, optext, extra_args=extra_args, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
+            #add_constraint([(self, list(range(1, self.ndim + 1))), (rhs, list(range(1, rhs.ndim + 1)))])
             if inplace:
                 return DAGshape(new_shape, new_dtype, self)
             else:
@@ -5248,6 +5282,12 @@ class ndarray:
         dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
         if self.readonly:
             raise ValueError("assignment destination is read-only")
+
+        if self.shape == (): # 0d case
+            print("setitem 0d:", key, type(key))
+            self.distribution = value
+            return
+
         is_mask = False
         if isinstance(key, ndarray) and key.dtype==bool and key.broadcastable_to(self.shape):
             is_mask = True
@@ -5403,7 +5443,7 @@ class ndarray:
             newdims = [i for i in range(len(index)) if index[i] is None]
             newindex = tuple([i if i is not None else slice(None) for i in index])
             expanded_array = expand_dims(self, newdims)
-            print (self.shape, newdims, expanded_array.shape, newindex)
+            #print(self.shape, newdims, expanded_array.shape, newindex)
             return expanded_array[newindex]
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
@@ -5449,8 +5489,13 @@ class ndarray:
     def mean(self, axis=None, dtype=None):
         dprint(1, "mean", id(self))
         if axis is None:
+            mean_start = timer()
             DAG.instantiate(self)  # here or in sreduce?
+            mean_post_inst = timer()
             sres = sreduce(lambda x: (x,1), lambda x,y: (x[0]+y[0], x[1]+y[1]), (0,0), self)
+            mean_end = timer()
+            add_time("mean_sreduce", mean_end - mean_post_inst)
+            add_time("mean_instantiate", mean_post_inst - mean_start)
             #print("mean sres:", sres)
             return sres[0] / sres[1]
         else:
@@ -6270,6 +6315,7 @@ def matmul_internal(a, b, reduction=False, out=None):
 
 
 def matmul_summary():
+    print("Timing summary")
     print(get_timing_str(details=True))
 
 
@@ -6746,6 +6792,7 @@ class deferred_op:
             ]
             print("Deferred Ops execution", times)
             tprint(2, "deferred_ops::execute code", code)
+            add_time("driver_deferred_op", sum(times) / 1000)
 
     # TODO: There may be a race condition here.  Need to check and fix.
     # deferred (if needed) deletions of the remote arrays
@@ -7242,7 +7289,7 @@ def array(*args):
 
 # Note -- this is a bit redefined: converts ramba ndarray to a numpy array
 def asarray(x):
-    dprint(1, "asarray global")
+    dprint(1, "asarray global", type(x))
     assert isinstance(x, ndarray)
     return x.asarray()
 
@@ -7533,7 +7580,7 @@ def reshape_copy(arr, newshape):
 
 
 def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
-    dprint(2, "arr dist:", arr.distribution, arr.distribution.shape, arr.shape, temp_array.shape)
+    dprint(2, "Starting pad_executor:", arr.distribution, arr.distribution.shape, arr.shape, temp_array.shape)
     if arr.ndim == 1:
         pad_width = (pad_width, )
 
@@ -7649,6 +7696,7 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
                 #print("copying 2:", i, na_slice, na_edge_slice)
                 new_array[na_slice] = new_array[na_edge_slice]
 
+    dprint(2, "Ending pad_executor:")
     return new_array
 
 
@@ -8811,6 +8859,4 @@ else:  # Ray setup
         if not USE_RAY_CALLS:
             retval_queue = ramba_queue.Queue()
             [x.rpc_serve.remote(retval_queue) for x in remote_states]
-
-
 
