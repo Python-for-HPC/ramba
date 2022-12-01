@@ -2009,6 +2009,10 @@ class RemoteState:
         lnd = self.numpy_map[gid]
         return lnd.bcontainer[shardview.index_to_base(shard, global_index)]
 
+    def setitem_global(self, gid, global_index, value, shard):
+        lnd = self.numpy_map[gid]
+        lnd.bcontainer[shardview.index_to_base(shard, global_index)] = value
+
     def array_unaryop(self, lhs_gid, out_gid, dist, out_dist, op, axis, dtype):
         unaryop = getattr(self.get_view(lhs_gid, dist[self.worker_num]), op)
         if out_gid is not None:
@@ -5314,16 +5318,43 @@ class ndarray:
                 print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
-        if all([isinstance(i, numbers.Integral) for i in key]) and len(key) == len(self.shape):
-            print("Setting individual element is not handled yet!")
-            assert 0
-
         # Need to handle all possible remaining cases.
         print("Don't know how to set index", key, " of dist array of shape", self.shape)
         assert 0
 
     @DAGapi
     def setitem(self, key, value):
+        if isinstance(key, (ndarray, np.ndarray)):
+            return DAGshape(self.shape, self.dtype, self)
+        if not isinstance(key, tuple):
+            key = (key,)
+        key2 = tuple(i for i in key if i is not Ellipsis)
+        if len(key2)+1<len(key):
+            raise IndexError("an index can only have a single ellipsis ('...')")
+        if all([isinstance(i, numbers.Integral) for i in key2]):
+            if len(key2) > self.ndim:
+                raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(key2)} were indexed")
+            elif len(key2) == self.ndim:
+                dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
+                if isinstance(value, (list, tuple)):
+                    raise ValueError("setting an array element with a sequence")
+                if isinstance(value, (ndarray, np.ndarray)):
+                    if value.size!=1:
+                        raise ValueError("setting an array element with an array size>1")
+                    value = value[tuple(0 for _ in range(value.ndim))]
+                # Is there a better way of testing and performing type conversion?
+                tmp = np.empty(1, dtype=self.dtype)
+                tmp[0] = value
+                value = tmp[0]
+
+                self.instantiate()
+
+                index = canonical_index(key2, self.shape, allslice=False)
+                owner = shardview.find_index( self.distribution, index)
+                dprint(2, "owner:", owner)
+                remote_exec( owner, "setitem_global", self.gid, index, value, self.distribution[owner])
+                return
+
         return DAGshape(self.shape, self.dtype, self)
 
     def __setitem__(self, key, value):

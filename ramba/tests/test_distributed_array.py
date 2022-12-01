@@ -636,6 +636,18 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_setitem(self):
+        def impl(app):
+            a = app.ones((10,20))
+            a[2:5] = 5
+            a[...,8:12] += 12
+            a[4,17] = -3
+            a[1,...,1] += 32
+            a[7,3] = np.zeros((1,1,1))
+            return a
+
+        run_both(impl)
+
     def test_identity(self):
         def impl(app):
             a = app.identity(100)
