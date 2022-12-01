@@ -5287,10 +5287,13 @@ class ndarray:
         if self.readonly:
             raise ValueError("assignment destination is read-only")
 
-        if self.shape == (): # 0d case
-            print("setitem 0d:", key, type(key))
-            self.distribution = value
-            return
+        #if self.shape == (): # 0d case
+        #    print("setitem 0d:", key, type(key))
+        #    # Is there a better way of testing and performing type conversion?
+        #    tmp = np.empty((), dtype=self.dtype)
+        #    tmp[()] = value
+        #    self.distribution = tmp
+        #    return
 
         is_mask = False
         if isinstance(key, ndarray) and key.dtype==bool and key.broadcastable_to(self.shape):
@@ -5343,9 +5346,14 @@ class ndarray:
                         raise ValueError("setting an array element with an array size>1")
                     value = value[tuple(0 for _ in range(value.ndim))]
                 # Is there a better way of testing and performing type conversion?
-                tmp = np.empty(1, dtype=self.dtype)
-                tmp[0] = value
-                value = tmp[0]
+                tmp = np.empty((), dtype=self.dtype)
+                tmp[()] = value
+                value = tmp[()]
+
+                if self.shape == (): # 0d case
+                    dprint(2,"setitem 0d:", key, type(key))
+                    self.distribution = tmp
+                    return
 
                 self.instantiate()
 
@@ -5483,6 +5491,12 @@ class ndarray:
                 raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
             elif len(index) == len(self.shape):
                 self.instantiate()
+
+                # 0d case
+                if self.shape==():
+                    if ellpos==[]:  # No ellipsis, return value
+                        return self.distribution[()]
+                    return self.distribution  # has an ellipsis, return array not value
 
                 index = canonical_index(index, self.shape, allslice=False)
                 owner = shardview.find_index(
