@@ -1182,7 +1182,7 @@ class TestReduction:
         for s in shapes:
             a = np.arange(s[0] * s[1]).reshape(s)
             for axis in range(len(s)):
-                run_both(impl, a)
+                run_both(impl, a, axis)
 
 
 class TestRandom:
