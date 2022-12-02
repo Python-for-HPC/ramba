@@ -15,4 +15,4 @@ __version__ = "0.1.0"
 from ramba.ramba import *
 
 import ramba.random as random
-
+import ramba.tests as tests

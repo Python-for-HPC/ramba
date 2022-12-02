@@ -2025,7 +2025,6 @@ class RemoteState:
             #    print("after unaryop array_unary_op", timer())
             return ret
 
-    # TODO: should use get_view
     def smap(self, out_gid, first_gid, args, func, dtype, parallel):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
@@ -3199,6 +3198,65 @@ class RemoteState:
             exec_time - sstencil_start
         )
 
+    def scumulative_worker(self, out_gid_dist, in_gid_dist, axis, local_func, final_func, send_recv):
+        local_func = func_loads(local_func)
+        final_func = func_loads(final_func)
+        in_bcontainer = self.numpy_map[in_gid_dist.gid]
+        in_array = in_bcontainer.get_view(in_gid_dist.dist[self.worker_num])
+        if out_gid_dist.gid not in self.numpy_map:
+            self.numpy_map[out_gid_dist.gid] = in_bcontainer.init_like(out_gid_dist.gid)
+        new_bcontainer = self.numpy_map[out_gid_dist.gid].get_view(out_gid_dist.dist[self.worker_num])
+
+        base = [slice(None,None) for _ in range(in_array.ndim)]
+        def fill_axis(base, val, axis):
+            base[axis] = val
+            return tuple(base)
+
+        start_index = fill_axis(base, 0, axis)
+        new_bcontainer[start_index] = in_array[start_index]
+
+        dprint(2, "scumulative_worker:", self.worker_num, in_bcontainer.dim_lens, axis)
+        for index in range(1, in_bcontainer.dim_lens[axis]):
+            cur_index = fill_axis(base, index, axis)
+            prev_index = fill_axis(base, index - 1, axis)
+            new_bcontainer[cur_index] = local_func(new_bcontainer[prev_index], in_array[cur_index])
+
+        worker_dist = in_gid_dist.dist[self.worker_num]
+        dprint(2, "worker info:", shardview.get_start(worker_dist), shardview.get_stop(worker_dist), shardview.get_size(worker_dist))
+        send_index = fill_axis(base, slice(in_bcontainer.dim_lens[axis] - 1, in_bcontainer.dim_lens[axis]), axis)
+        if shardview.get_start(worker_dist)[axis] == 0:
+            dprint(2, "no predecessor so will not receive")
+        else:
+            dprint(2, "has predecessor so will receive")
+            try:
+                incoming_uuid, incoming_res = self.comm_queues[
+                        self.worker_num
+                ].get(gfilter=lambda x: x[0] == send_recv, timeout=5)
+            except Exception:
+                print("some exception!", sys.exc_info()[0])
+                assert 0
+            dprint(2, "received!", type(incoming_res))
+            # apply incoming_res to the end of the local data
+            new_bcontainer[send_index] = final_func(new_bcontainer[send_index], incoming_res)
+
+        next_index_in_axis = [x - 1 for x in shardview.get_stop(worker_dist)]
+        next_index_in_axis[axis] += 1
+        next_worker = shardview.find_index(in_gid_dist.dist, next_index_in_axis)
+        dprint(2, "next_index_in_axis:", next_index_in_axis, shardview.get_stop(worker_dist), next_worker)
+        if next_worker is None:
+            dprint(2, "no successor so will not send")
+        else:
+            dprint(2, "has successor so will send", send_index)
+            self.comm_queues[next_worker].put((send_recv, new_bcontainer[send_index]))
+            dprint(2, "sent!", new_bcontainer[send_index])
+
+        if shardview.get_start(worker_dist)[axis] != 0:
+            # apply incoming_res to the rest of the local data
+            rest_index = fill_axis(base, slice(0, in_bcontainer.dim_lens[axis] - 1), axis)
+            new_bcontainer[rest_index] = final_func(new_bcontainer[rest_index], incoming_res)
+        dprint(2, "done!")
+
+    """
     # TODO: should use get_view
     def scumulative_local(self, out_gid, in_gid, func):
         func = func_loads(func)
@@ -3218,6 +3276,7 @@ class RemoteState:
         boundary_value = boundary_value[0]
         for index in range(in_bcontainer.dim_lens[0]):
             in_array[index] = func(in_array[index], boundary_value)
+    """
 
     ## still needed?
     def array_binop(self, lhs_gid, rhs_gid, out_gid, op):
@@ -3808,6 +3867,7 @@ def print_comm_stats():
 # ndarray_gids = {}
 
 
+"""
 def find_index(distribution, index):
     if isinstance(index, numbers.Integral):
         index = (index,)
@@ -3822,6 +3882,7 @@ def find_index(distribution, index):
                 break
         else:
             return i
+"""
 
 
 HANDLED_FUNCTIONS = {}
@@ -7400,7 +7461,7 @@ def load(fname, dtype=None, local=False, ftype=None, **kwargs):
 
 
 # Array creation routines -- numerical ranges
-# arange, linspae, logspace, geomspace, meshgrid, mgrid, ogrid
+# arange, linspace, logspace, geomspace, meshgrid, mgrid, ogrid
 
 def arange_executor(temp_ndarray, size, local_border=0):
     res = empty(size, local_border=local_border, dtype=int64)
@@ -7995,7 +8056,13 @@ def _compute_remote_ranges(out_distribution, out_mapping):
     return from_ret, to_ret
 
 
+# Mathematical functions
 
+def cumsum(a, axis=None, dtype=None, out=None):
+    ashape = a.shape
+    if len(ashape) == 1 and axis is None:
+        axis = 0
+    return scumulative(lambda x,y: x + y, lambda x, y: x + y, a, axis=axis, out=out, dtype=dtype)
 
 
 prop_to_array = [
@@ -8324,15 +8391,82 @@ def sstencil(func, *args, **kwargs):
     return new_ndarray
 
 
-def scumulative(local_func, final_func, array):
+def scumulative(local_func, final_func, array, axis, dtype=None, out=None):
+    assert isinstance(array, ndarray)
+    array.instantiate()
+    shape = array.shape
+    assert isinstance(axis, numbers.Number) and axis >= 0 and axis < array.ndim
+    if dtype is None:
+        dtype = array.dtype
+
+    if out is None:
+        new_ndarray = create_array_with_divisions(
+            shape, array.distribution, array.local_border, dtype=dtype
+        )
+    else:
+        assert out.shape == shape
+        new_ndarray = out
+        # We also need to check that the distributions match between array and out.
+        assert False
+
+    send_recv = uuid.uuid4()
+    remote_exec_all(
+        "scumulative_worker",
+        gid_dist(new_ndarray.gid, new_ndarray.distribution),
+        gid_dist(array.gid, array.distribution),
+        axis,
+        func_dumps(local_func),
+        func_dumps(final_func),
+        send_recv
+    )
+    """
+    end_index = (
+        shardview.get_start(array.distribution[0])[0]
+        + shardview.get_size(array.distribution[0])[0]
+        - 1
+    )
+    slice_to_get = (slice(end_index, end_index + 1),)
+    dprint(3, "slice_to_get:", slice_to_get)
+    # boundary_val = ray.get(remote_states[0].get_partial_array.remote(new_ndarray.gid, slice_to_get))
+    boundary_val = remote_call(0, "get_partial_array", new_ndarray.gid, slice_to_get)
+    dprint(3, "boundary_val:", boundary_val, type(boundary_val))
+    for i in range(1, num_workers):
+        # TODO: combine these into one?
+        # ray.get(remote_states[i].scumulative_final.remote(new_ndarray.gid, boundary_val, final_func))
+        remote_exec(
+            i,
+            "scumulative_final",
+            new_ndarray.gid,
+            boundary_val,
+            func_dumps(final_func),
+        )
+        local_element = shardview.get_size(array.distribution[i])[0] - 1
+        slice_to_get = (slice(local_element, local_element + 1),)
+        # boundary_val = ray.get(remote_states[i].get_partial_array.remote(new_ndarray.gid, slice_to_get))
+        boundary_val = remote_call(
+            i, "get_partial_array", new_ndarray.gid, slice_to_get
+        )
+    """
+    new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
+    return new_ndarray
+
+"""
+def scumulative(local_func, final_func, array, out=None):
     deferred_op.do_ops()
     assert isinstance(array, ndarray)
     shape = array.shape
     assert len(shape) == 1
 
-    new_ndarray = create_array_with_divisions(
-        shape, array.distribution, array.local_border
-    )
+    if out is None:
+        new_ndarray = create_array_with_divisions(
+            shape, array.distribution, array.local_border
+        )
+    else:
+        assert out.shape == shape
+        new_ndarray = out
+        # We also need to check that the distributions match between array and out.
+        assert False
+
     # Can we do this without ray.get?
     # ray.get([remote_states[i].scumulative_local.remote(new_ndarray.gid, array.gid, local_func) for i in range(num_workers)])
     remote_exec_all(
@@ -8366,6 +8500,7 @@ def scumulative(local_func, final_func, array):
         )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
+"""
 
 
 #def spmd_executor(temp_array, func, *args, **kwargs):

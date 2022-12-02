@@ -1163,6 +1163,27 @@ class TestReduction:
 
         run_both(impl)
 
+    def test_cumsum_1d(self):
+        def impl(app):
+            s1 = app.arange(200)
+            return app.cumsum(s1)
+
+        run_both(impl)
+
+    def test_cumsum_2d_axis0(self):
+        def impl(app, a, axis):
+            if app == ramba:
+                b = app.fromarray(a)
+            else:
+                b = a
+            return app.cumsum(b, axis=axis)
+
+        shapes = [(4, 50), (20, 20), (50, 4)]
+        for s in shapes:
+            a = np.range(s[0] * s[1]).reshape(s)
+            for axis in range(len(s)):
+                run_both(impl, a)
+
 
 class TestRandom:
     def test1(self):
