@@ -3216,6 +3216,7 @@ class RemoteState:
         new_bcontainer[start_index] = in_array[start_index]
 
         dprint(2, "scumulative_worker:", self.worker_num, in_bcontainer.dim_lens, axis)
+        # Do the purely local portion on the chunk of the array we have.
         for index in range(1, in_bcontainer.dim_lens[axis]):
             cur_index = fill_axis(base, index, axis)
             prev_index = fill_axis(base, index - 1, axis)
@@ -4431,8 +4432,7 @@ class DAG:
                                                     dprint(2, "run_and_post rhs has internal_numpy")
                                                     rhsasarray = rhs.internal_numpy
                                                 else:
-                                                    rhsasarray = rhs.asarray()
-                                                    #rhsasarray = np.moveaxis(rhs.asarray(), -1, 0)
+                                                    rhsasarray = np.array(rhs)
                                                 gb = orig_array_lhs.groupby(getitem_axis, group_array, num_groups=len(slot_indices))
                                                 res = eval("gb" + binoptext + "rhsasarray")
                                                 return res
@@ -4934,6 +4934,9 @@ class ndarray:
         return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False, aliases=self)
 
 
+    def __array__(self):
+        return self.asarray()
+
     def asarray(self):
         dprint(1, "asarray", id(self))
         if self.shape == ():
@@ -5048,8 +5051,8 @@ class ndarray:
         if all([i==1 for i in self.shape]):  # done, just return the single element / array with all but one axis removed
             sl = (0,)*self.ndim if not asarray else (slice(0,1),)+(0,)*(self.ndim-1)
             return self[sl]
-        # need global reduction -- should be small (1 elem per worker)a
-        local = self.asarray()
+        # need global reduction -- should be small (1 elem per worker)
+        local = np.array(self)
         uop = getattr(local, op)
         val = uop()
         if not asarray:
@@ -5479,7 +5482,7 @@ class ndarray:
                 )
             dprint(2, "getitem slice:", dim_shapes, sdistribution)
             #            deferred_op.add_op(["", self, " = ", value, ""])
-            # return ndarray(self.gid, tuple(dim_shapes), np.asarray(sdistribution))
+            # return ndarray(self.gid, tuple(dim_shapes), np.array(sdistribution))
             # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
             return ndarray(
                 dim_shapes,
@@ -5926,7 +5929,7 @@ def matmul_internal(a, b, reduction=False, out=None):
         dprint(3, "matmul bdivs:", bdivs, "\n", bdivs[:, :, 0])
         if do_not_distribute(bshape):
             dprint(2, "matmul b matrix is not distributed")
-            blocal = b.asarray()
+            blocal = np.array(b)
             dprint(2, "blocal", blocal.shape, blocal)
             worker_info = []
             workers = []
@@ -6245,7 +6248,7 @@ def matmul_internal(a, b, reduction=False, out=None):
             worker_timings = get_results(matmul_workers)
             post_get_end_time = timer()
             if ndebug > 2:
-                pasarray = [x.asarray() for x in partials]
+                pasarray = [np.array(x) for x in partials]
                 for p in pasarray:
                     print("partial result:", p)
             out_ndarray[:] = functools.reduce(operator.add, partials)
@@ -7373,6 +7376,7 @@ def fromarray_executor(temp_array, x, local_border=0, dtype=None, **kwargs):
 
 @DAGapi
 def fromarray(x, local_border=0, dtype=None, **kwargs):
+    # This is wrong!  x could change after this function so can't delay conversion to ramba array.  We can do it immediately here or change DAGapi to pickle mutable non-Ramba args.
     dprint(1, "fromarray global")
     if isinstance(x, numbers.Number):
         return DAGshape((), dtype, False)
@@ -7389,15 +7393,21 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
     return DAGshape(shape, dtype, False)
 
 
+@implements("array", False)
 def array(*args):
     return fromarray(*args)
 
 
 # Note -- this is a bit redefined: converts ramba ndarray to a numpy array
+def asarray(x, dtype=None, **kwargs):
+    return fromarray(x, dtype=dtype, **kwargs)
+
+"""
 def asarray(x):
     dprint(1, "asarray global", type(x))
     assert isinstance(x, ndarray)
     return x.asarray()
+"""
 
 # asanyarray
 # ascontiguousarray
@@ -8615,7 +8625,7 @@ class RambaGroupby:
         self.num_groups = num_groups
         # performance warning that ndarray partitioned only on groupby dimension.
         if isinstance(self.group_array, ndarray):
-            self.np_group = asarray(self.group_array)
+            self.np_group = np.array(self.group_array)
         else:
             self.np_group = self.group_array
         assert(isinstance(self.np_group, np.ndarray))
