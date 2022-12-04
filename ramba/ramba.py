@@ -945,6 +945,7 @@ class bdarray:
         self.gid_map[gid] = self
         self.dtype = dtype
         self.idag = None
+        #self.idag = DAG("Unknown", None, False, [], (), ("Unknown DAG", 0), {}, executed=True, output=weakref.ref(self))
 
     @property
     def dag(self):
@@ -4181,7 +4182,6 @@ class DAG:
 
         if delayed.inplace:
             nres = delayed.inplace
-
             dprint(2, "DAG.add delayed.inplace", nres.bdarray.idag.forward_deps, dag.backward_deps, [id(x) for x in dag.backward_deps], id(dag))
             for forward_dep in nres.bdarray.idag.forward_deps:
                 dprint(2, "DAG.add forward_dep", forward_dep, id(forward_dep))
@@ -4194,7 +4194,7 @@ class DAG:
             nres.bdarray.idag = dag
             nres.idag = dag
         else:
-            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, gid=delayed.aliases.gid if delayed.aliases is not None else None, **delayed.extra_ndarray_opts)
+            nres = ndarray(delayed.shape, dtype=delayed.dtype, dag=dag, base=delayed.aliases if delayed.aliases is not None else None, **delayed.extra_ndarray_opts)
 
         dag.output = weakref.ref(nres)
         dprint(2, "DAG.add", name, len(dag_deps), id(nres), caller, delayed)
@@ -4493,6 +4493,9 @@ class DAG:
         # This can happen if we register an operator whose result is immediately not stored.
         if soutput is not None:
             dprint(1, "Executing DAG", self)
+            if soutput.readonly and self.executor != set_writeable_executor :
+            #if self.inplace and soutput.readonly:
+                raise ValueError("output array is read-only")
             exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
             if not self.inplace and not isinstance(exec_array_out, ndarray):
                 print("bad type", type(exec_array_out), self.name, self.args)
@@ -4703,7 +4706,34 @@ def getminmax(dtype):
         # not integer, assume float
         return (np.NINF,np.PINF)
 
-# Deferred Ops stuff
+
+def set_writeable_executor(temp_array, flags, val):
+    dprint(2, "set_writeable_executor", val)
+    assert(temp_array is flags.arr)
+    if val == True and temp_array.base is not None and temp_array.base.readonly == True:
+        raise ValueError("cannot set WRITEABLE flag to True of this array")
+    temp_array.readonly = not val
+
+class ndarray_flags:
+    def __init__(self, arr):
+        self.arr = arr
+
+    def __getitem__(self, items):
+        assert len(items) == 1
+        if items[0] == "WRITEABLE":
+            return self.writeable
+
+    @property
+    def writeable(self):
+        self.arr.instantiate()
+        return not self.arr.readonly
+
+    @writeable.setter
+    def writeable(self, val):
+        dagshape = DAGshape(self.arr.shape, self.arr.dtype, self.arr)
+        DAG.add(dagshape, "set_writeable", set_writeable_executor, (self, val,), {})
+
+
 class ndarray:
     all_arrays = weakref.WeakSet()
 
@@ -4711,7 +4741,7 @@ class ndarray:
         self,
         shape,
         *,    # the arguments below can only be passed as keyword
-        gid=None,
+        base=None,
         distribution=None,
         local_border=0,
         dtype=None,
@@ -4722,6 +4752,13 @@ class ndarray:
         **kwargs
     ):
         t0 = timer()
+        self.base = base
+        if self.base is not None:
+            gid = self.base.gid
+            if self.base.readonly:
+                readonly = True
+        else:
+            gid = None
         self.bdarray = bdarray.assign_bdarray(
             self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
         )  # extra options for distribution hints
@@ -4760,12 +4797,15 @@ class ndarray:
         dprint(2, "Created ndarray", id(self), self.gid, "shape", shape, "time", (t1 - t0) * 1000)
         self.constraints = []
         if dag is None:
-
             self.once = True
         else:
             self.once = False
         if ndebug >= 3:
             ndarray.all_arrays.add(self)
+
+    @property
+    def flags(self):
+        return ndarray_flags(self)
 
     @property
     def dag(self):
@@ -4790,7 +4830,7 @@ class ndarray:
         # maybe assign_bdarray?
         self.distribution = other.distribution
         self.local_border = other.local_border
-        self.readonly = other.readonly
+        #self.readonly = other.readonly
         self.getitem_cache = other.getitem_cache
         self.from_border = other.from_border
         self.to_border = other.to_border
@@ -4927,14 +4967,16 @@ class ndarray:
     @classmethod
     def remapped_axis_executor(cls, temp_array, self, newmap):
         newshape, newdist = shardview.remap_axis(self.shape, self.distribution, newmap)
-        return ndarray(newshape, gid=self.gid, distribution=newdist, readonly=self.readonly)
+        return ndarray(newshape, base=self, distribution=newdist, readonly=self.readonly)
 
     @DAGapi
     def remapped_axis(self, newmap):
         return DAGshape(shardview.remap_axis_result_shape(self.shape, newmap), self.dtype, False, aliases=self)
 
+    def copy(self, local_border=0):
+        return copy(self, local_border=local_border)
 
-    def __array__(self):
+    def __array__(self, dtype=None):
         return self.asarray()
 
     def asarray(self):
@@ -4994,7 +5036,7 @@ class ndarray:
     def internal_reduction1_executor(cls, temp_array, red_arr, src_arr, bdist, axis, initval, imports, optext2, opsep):
         red_arr_bcast = ndarray(
             src_arr.shape,
-            gid=red_arr.gid,
+            base=red_arr,
             distribution=bdist,
             local_border=0,
             maskarray = src_arr.maskarray,
@@ -5184,7 +5226,7 @@ class ndarray:
             deferred_op.do_ops()
         return ndarray(
             shape,
-            gid=self.gid,
+            base=self,
             distribution=shardview.broadcast(self.distribution, bd, shape),
             local_border=0,
             readonly=True
@@ -5420,6 +5462,8 @@ class ndarray:
                     return
 
                 self.instantiate()
+                if self.readonly:
+                    raise ValueError("assignment destination is read-only")
 
                 index = canonical_index(key2, self.shape, allslice=False)
                 owner = shardview.find_index( self.distribution, index)
@@ -5449,7 +5493,7 @@ class ndarray:
         if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
             if index.shape != self.shape:
                 index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, gid=self.gid, distribution=self.distribution, local_border=0,
+            return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
 
         index_has_slice = any([isinstance(i, slice) for i in index])
@@ -5486,7 +5530,7 @@ class ndarray:
             # Note: slices have local border set to 0 -- otherwise may corrupt data in the array
             return ndarray(
                 dim_shapes,
-                gid=self.gid,
+                base=self,
                 distribution=sdistribution,
                 local_border=0,
                 readonly=self.readonly,
@@ -7413,13 +7457,33 @@ def asarray(x):
 # ascontiguousarray
 # asmatrix
 
-def copy(arr, local_border=0):
-    dprint(1, "copy")
+
+def copy_executor(temp_array, arr, local_border=0):
+    dprint(1, "copy_executor")
     new_ndarray = create_array_with_divisions(
         arr.shape, arr.distribution, local_border=local_border
     )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
     return new_ndarray
+
+
+@DAGapi
+def copy(arr, local_border=0):
+    dprint(1, "copy")
+    return DAGshape(arr.shape, arr.dtype, False)
+
+
+"""
+def copy(arr, local_border=0):
+    dprint(1, "copy")
+    arr.instantiate()
+    breakpoint()
+    new_ndarray = create_array_with_divisions(
+        arr.shape, arr.distribution, local_border=local_border
+    )
+    deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
+    return new_ndarray
+"""
 
 # frombuffer
 # from_dlpack
@@ -7606,7 +7670,7 @@ def reshape_executor(temp_array, arr, newshape):
         sz, dist = shardview.remap_axis(oldsize, dist, newmap)
         dprint(2, sz, dist)
         return ndarray(
-            sz, gid=arr.gid, distribution=dist, local_border=0, readonly=arr.readonly
+            sz, base=arr, distribution=dist, local_border=0, readonly=arr.readonly
         )
     # general reshape
     global reshape_forwarding
