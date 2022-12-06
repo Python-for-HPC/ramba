@@ -92,6 +92,8 @@ if ndebug >= 5:
 
 import numpy as np
 
+newaxis = np.newaxis
+
 if gpu_present:
     import dpctl.dptensor.numpy_usm_shared as gnp
 else:
@@ -3216,16 +3218,16 @@ class RemoteState:
         start_index = fill_axis(base, 0, axis)
         new_bcontainer[start_index] = in_array[start_index]
 
-        dprint(2, "scumulative_worker:", self.worker_num, in_bcontainer.dim_lens, axis)
+        dprint(2, "scumulative_worker:", self.worker_num, in_array.shape, axis, in_gid_dist.gid, out_gid_dist.gid)
         # Do the purely local portion on the chunk of the array we have.
-        for index in range(1, in_bcontainer.dim_lens[axis]):
+        for index in range(1, in_array.shape[axis]):
             cur_index = fill_axis(base, index, axis)
             prev_index = fill_axis(base, index - 1, axis)
             new_bcontainer[cur_index] = local_func(new_bcontainer[prev_index], in_array[cur_index])
 
         worker_dist = in_gid_dist.dist[self.worker_num]
         dprint(2, "worker info:", shardview.get_start(worker_dist), shardview.get_stop(worker_dist), shardview.get_size(worker_dist))
-        send_index = fill_axis(base, slice(in_bcontainer.dim_lens[axis] - 1, in_bcontainer.dim_lens[axis]), axis)
+        send_index = fill_axis(base, slice(in_array.shape[axis] - 1, in_array.shape[axis]), axis)
         if shardview.get_start(worker_dist)[axis] == 0:
             dprint(2, "no predecessor so will not receive")
         else:
@@ -3254,7 +3256,7 @@ class RemoteState:
 
         if shardview.get_start(worker_dist)[axis] != 0:
             # apply incoming_res to the rest of the local data
-            rest_index = fill_axis(base, slice(0, in_bcontainer.dim_lens[axis] - 1), axis)
+            rest_index = fill_axis(base, slice(0, in_array.shape[axis] - 1), axis)
             new_bcontainer[rest_index] = final_func(new_bcontainer[rest_index], incoming_res)
         dprint(2, "done!")
 
@@ -3661,14 +3663,21 @@ class RemoteState:
         divs = shardview.distribution_to_divisions(out_distribution)[self.worker_num]
         dprint(2, "mgrid remote:", self.worker_num, divs)
         if np.all(divs[0] <= divs[1]):
-            out_lnd = self.numpy_map[out_gid]
-            bcontainer = out_lnd.bcontainer[out_lnd.core_slice]
+            bview = self.get_view(out_gid, out_distribution[self.worker_num])
             mslice = [
                 slice(divs[0][i + 1], divs[1][i + 1] + 1)
                 for i in range(divs.shape[1] - 1)
             ]
-            dprint(2, "mslice", mslice, bcontainer.shape)
-            bcontainer[:] = np.mgrid[mslice]
+            dprint(2, "mslice", mslice, bview.shape)
+            bview[:] = np.mgrid[mslice]
+
+    def meshgrid(self, out_gid, out_size, out_distribution, *xi):
+        divs = shardview.distribution_to_divisions(out_distribution)[self.worker_num]
+        dprint(2, "meshgrid remote:", self.worker_num, divs)
+        if np.all(divs[0] <= divs[1]):
+            bview = self.get_view(out_gid, out_distribution[self.worker_num])
+            xi_slices = [xi[i][slice(divs[0][i + 1], divs[1][i + 1] + 1)] for i in range(divs.shape[1] - 1)]
+            bview[:] = np.meshgrid(*xi_slices, copy=True, sparse=False, indexing='ij')
 
     def load(self, gid, fname, index=None, ftype=None, **kwargs):
         lnd = self.numpy_map[gid]
@@ -4596,12 +4605,16 @@ class DAG:
 
 
 class DAGshape:
-    def __init__(self, shape, dtype, inplace, aliases=None, extra_ndarray_opts={}):
+    def __init__(self, shape, dtype, inplace, aliases=None, extra_ndarray_opts={}, replaced_args=None, replaced_kwargs=None):
         self.shape = shape
         self.dtype = dtype
         self.inplace = inplace
         self.aliases = aliases
         self.extra_ndarray_opts = extra_ndarray_opts
+        # Set these above if you want the executor to get a different argument
+        # set than the one passed to the DAGapi function.
+        self.replaced_args = replaced_args
+        self.replaced_kwargs = replaced_kwargs
 
     def __repr__(self):
         return f"DAGshape({self.shape}, {self.dtype}, {self.inplace}, {self.aliases})"
@@ -4624,10 +4637,13 @@ def DAGapi(func):
         inline_exec_time = 0
         dprint(1, "----------------------------------------------------")
         dprint(1, "DAGapi", name)
+        for a in args:
+            if isinstance(a, ndarray):
+                dprint(2, "    DAGapi input array", id(a), id(a.bdarray), a.gid)
         fres = func(*args, **kwargs)
         if isinstance(fres, DAGshape):
             executor = eval(name + "_executor")
-            nres, dag = DAG.add(fres, name, executor, args, kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
+            nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
             if DAG.in_evaluate > 0:
                 dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
                 inline_start = timer()
@@ -4707,7 +4723,7 @@ def getminmax(dtype):
         return (np.NINF,np.PINF)
 
 
-def set_writeable_executor(temp_array, flags, val):
+def set_writeable_executor(temp_array, flags, input_arr, val):
     dprint(2, "set_writeable_executor", val)
     assert(temp_array is flags.arr)
     if val == True and temp_array.base is not None and temp_array.base.readonly == True:
@@ -4731,7 +4747,8 @@ class ndarray_flags:
     @writeable.setter
     def writeable(self, val):
         dagshape = DAGshape(self.arr.shape, self.arr.dtype, self.arr)
-        DAG.add(dagshape, "set_writeable", set_writeable_executor, (self, val,), {})
+        DAG.add(dagshape, "set_writeable", set_writeable_executor, (self, self.arr, val,), {})
+        # Have to do DAG.in_evaluate check?  FIX ME. TODO.
 
 
 class ndarray:
@@ -5598,6 +5615,7 @@ class ndarray:
             if len(index) > len(self.shape):
                 raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
             elif len(index) == len(self.shape):
+                dprint(2, "before getitem_real instantiate")
                 self.instantiate()
 
                 # 0d case
@@ -6689,6 +6707,11 @@ array_binop_funcs = {
     "logical_or": op_info(",", "numpy.logical_or", imports=["numpy"],dtype=np.bool_),
     "logical_xor": op_info(",", "numpy.logical_xor", imports=["numpy"],dtype=np.bool_),
     "isclose": op_info(",", "ramba.internal_isclose", imports=["ramba"], dtype=np.bool_),
+    "__and__": op_info(" & "),
+    "__xor__": op_info(" ^ "),
+    "__or__": op_info(" | "),
+    "__lshift__": op_info(" << "),
+    "__rshift__": op_info(" >> "),
 }
 for (abf, code) in array_binop_funcs.items():
     new_func = make_method(abf, code.code, code.func, imports=code.imports, dtype=code.dtype)
@@ -7394,10 +7417,18 @@ def fromarray_executor(temp_array, x, local_border=0, dtype=None, **kwargs):
     dprint(2, "fromarray kwargs", kwargs)
     shape = temp_array.shape
     dtype = temp_array.dtype
+    if isinstance(x, ndarray):
+        new_ndarray = create_array_with_divisions(
+            x.shape, x.distribution, local_border=local_border, dtype=dtype
+        )
+        deferred_op.add_op(["", new_ndarray, " = ", x, ""], new_ndarray)
+        return new_ndarray
+
     new_ndarray = create_array(
         shape, None, local_border=local_border, dtype=dtype, **kwargs
     )
     distribution = new_ndarray.distribution
+    
     [
         remote_exec(
             i,
@@ -7434,6 +7465,10 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
 
     if dtype is None:
         dtype = x.dtype
+
+    if isinstance(x, ndarray) and dtype == x.dtype:
+        return x
+
     return DAGshape(shape, dtype, False)
 
 
@@ -7461,7 +7496,7 @@ def asarray(x):
 def copy_executor(temp_array, arr, local_border=0):
     dprint(1, "copy_executor")
     new_ndarray = create_array_with_divisions(
-        arr.shape, arr.distribution, local_border=local_border
+        arr.shape, arr.distribution, local_border=local_border, dtype=temp_array.dtype
     )
     deferred_op.add_op(["", new_ndarray, " = ", arr, ""], new_ndarray)
     return new_ndarray
@@ -7469,7 +7504,7 @@ def copy_executor(temp_array, arr, local_border=0):
 
 @DAGapi
 def copy(arr, local_border=0):
-    dprint(1, "copy")
+    dprint(1, "copy", arr)
     return DAGshape(arr.shape, arr.dtype, False)
 
 
@@ -7477,7 +7512,6 @@ def copy(arr, local_border=0):
 def copy(arr, local_border=0):
     dprint(1, "copy")
     arr.instantiate()
-    breakpoint()
     new_ndarray = create_array_with_divisions(
         arr.shape, arr.distribution, local_border=local_border
     )
@@ -7590,6 +7624,35 @@ class MgridGen:
 
 mgrid = MgridGen()
 
+
+def meshgrid_executor(temp_array, *xi, copy=True, sparse=False, indexing='xy'):
+    dim_sizes = temp_array.shape
+    res_dist = shardview.default_distribution(dim_sizes, dims_do_not_distribute=[0])
+    res = empty(dim_sizes, dtype=temp_array.dtype, distribution=res_dist, no_defer=True)
+    reshape_workers = remote_call_all("meshgrid", res.gid, res.shape, res.distribution, *xi)
+    return res
+
+@DAGapi
+def meshgrid(*xi, copy=True, sparse=False, indexing='xy'):
+    dprint(1, "meshgrid:", type(xi), len(xi), indexing)
+    if indexing != 'ij':
+        raise ValueError("Unsupported meshgrid indexing option %s" % (indexing,))
+    if sparse != False:
+        raise ValueError("Unsupported meshgrid sparse option %s" % (sparse,))
+    if copy != True:
+        raise ValueError("Unsupported meshgrid copy option %s" % (copy,))
+    xi = list(xi)
+    xi = [np.asarray(x) if isinstance(x, ndarray) else x for x in xi]
+
+    if any([not (isinstance(x, np.ndarray) and x.ndim == 1) for x in xi]):
+        raise ValueError("Unsupported argument to meshgrid")
+    dtypes = [x.dtype for x in xi]
+    if not all([x == dtypes[0] for x in dtypes]):
+        raise ValueError("Mis-matching dtypes to meshgrid")
+
+    num_dim = len(xi)
+    dim_sizes = [num_dim] + [x.shape[0] for x in xi]
+    return DAGshape(tuple(dim_sizes), dtypes[0], False, replaced_args=xi)
 
 
 # Array creation routines -- building matrices
@@ -8470,6 +8533,7 @@ def scumulative(local_func, final_func, array, axis, dtype=None, out=None):
     array.instantiate()
     shape = array.shape
     assert isinstance(axis, numbers.Number) and axis >= 0 and axis < array.ndim
+    dprint(2, "scumulative:", shape, axis)
     if dtype is None:
         dtype = array.dtype
 
