@@ -8314,7 +8314,7 @@ def where_executor(temp_array, cond, a, b):
 @implements("where", False)
 @DAGapi
 def where(cond, a, b):
-    dprint(2, "where:", cond.shape, a.shape, b.shape, cond, a, b)
+    dprint(2, "where:", getattr(cond, "shape", type(cond)), getattr(a, "shape", type(a)), getattr(b, "shape", type(b)), cond, a, b)
     ab_shape = numpy_broadcast_shape(a, b)
     condab_shape = numpy_broadcast_shape(cond, ab_shape)
     return DAGshape(condab_shape, a.dtype, False)
