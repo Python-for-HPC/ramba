@@ -9036,8 +9036,7 @@ class RambaGroupby:
             beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
         min_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
-        # Should this be builtins.min?  TODD.  TODO FIX ME
-        min_func_txt +=  "    minout[groupid] = min(value, minout[groupid])\n"
+        min_func_txt +=  "    minout[groupid] = builtins.min(value, minout[groupid])\n"
         min_func_txt +=  "    return minout\n"
         ldict = {}
         gdict = globals()
@@ -9071,8 +9070,7 @@ class RambaGroupby:
             beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
         max_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
-        # Should this be builtins.max?  TODD TODO FIX ME
-        max_func_txt +=  "    maxout[groupid] = max(value, maxout[groupid])\n"
+        max_func_txt +=  "    maxout[groupid] = builtins.max(value, maxout[groupid])\n"
         max_func_txt +=  "    return maxout\n"
         ldict = {}
         gdict = globals()
