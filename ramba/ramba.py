@@ -32,6 +32,7 @@ import pickle as pickle
 import gc
 import inspect
 import atexit
+import builtins
 
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
@@ -1122,9 +1123,9 @@ class LocalNdarray:
                 this_dim = self.global_space[i]
                 extra = 0
                 if this_dim[0] != 0:
-                    extra -= min(0, neighborhood[i][0])
+                    extra -= builtins.min(0, neighborhood[i][0])
                 if this_dim[1] != self.whole_size[i]:
-                    extra += max(0, neighborhood[i][1])
+                    extra += builtins.max(0, neighborhood[i][1])
                 bounded_needed.append(extra)
         else:
             return self.bcontainer
@@ -2266,7 +2267,7 @@ class RemoteState:
         )
 
         def to_flat(index):
-            return sum(index * arr_cumul)
+            return builtins.sum(index * arr_cumul)
 
         def to_out_index(flat):
             out_index = []
@@ -2491,7 +2492,7 @@ class RemoteState:
             partial_numpy = clocal.bcontainer
             alocal = a.get_view(a_distribution[self.worker_num])
             blocal = b.get_partial_view(b_slice, b_distribution[self.worker_num])
-            nothing_to_do = all([x == 0 for x in alocal.shape]) or all(
+            nothing_to_do = builtins.all([x == 0 for x in alocal.shape]) or builtins.all(
                 [x == 0 for x in blocal.shape]
             )
             if not nothing_to_do and alocal.shape[1] != blocal.shape[0]:
@@ -2757,8 +2758,8 @@ class RemoteState:
                     bstartcol = bdata[0][0, 1]
                     bendcol = bdata[0][1, 1] + 1
 
-                kstart = max(astartcol, bstartrow)
-                kend = min(aendcol, bendrow)
+                kstart = builtins.max(astartcol, bstartrow)
+                kend = builtins.min(aendcol, bendrow)
 
                 if kend > kstart:
                     try:
@@ -2955,8 +2956,8 @@ class RemoteState:
                 bstartcol = bdata[0][0,1]
                 bendcol = bdata[0][1,1] + 1
 
-            kstart = max(astartcol, bstartrow)
-            kend = min(aendcol, bendrow)
+            kstart = builtins.max(astartcol, bstartrow)
+            kend = builtins.min(aendcol, bendrow)
 
             if kend > kstart:
                 try:
@@ -3164,8 +3165,8 @@ class RemoteState:
 
         worker_neighborhood = [
             (
-                min(0, int(shardview.get_start(lnd.subspace)[x] + neighborhood[x][0])),
-                max(
+                builtins.min(0, int(shardview.get_start(lnd.subspace)[x] + neighborhood[x][0])),
+                builtins.max(
                     2 * lnd.border,
                     int(
                         shardview.get_start(lnd.subspace)[x]
@@ -3744,7 +3745,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
             if ntiming >= 1:
                 print(
                     "control message size: ",
-                    sum(
+                    builtins.sum(
                         [
                             len(i.raw())
                             if isinstance(i, pickle.PickleBuffer)
@@ -4274,8 +4275,8 @@ class DAG:
             assert len(stack_arrays) == len(stack_preds)
             # If all the arrays part of stack have not been constructed yet and they are all for nanmean calls.
             stack_parts = ["nanmean", "ndarray.nanmean", "mean", "ndarray.mean"]
-            dprint(2, "stack", all([x.name in stack_parts for x in stack_preds]), [x.name for x in stack_preds])
-            if all([x.name in stack_parts for x in stack_preds]) and all([x.name == stack_preds[0].name for x in stack_preds]):
+            dprint(2, "stack", builtins.all([x.name in stack_parts for x in stack_preds]), [x.name for x in stack_preds])
+            if builtins.all([x.name in stack_parts for x in stack_preds]) and builtins.all([x.name == stack_preds[0].name for x in stack_preds]):
                 nanmeans = stack_preds
                 assert isinstance(nanmeans[0], DAG)
                 stack_op_name = nanmeans[0].name
@@ -4284,13 +4285,13 @@ class DAG:
 
                 # Get the first array's join axis
                 join_axis = nanmeans[0].kwargs["axis"]
-                dprint(3, "join_axis:", join_axis, nanmeans, all([x.kwargs["axis"] == join_axis for x in nanmeans]), all([DAG.one_creator(x) for x in nanmeans]))
+                dprint(3, "join_axis:", join_axis, nanmeans, builtins.all([x.kwargs["axis"] == join_axis for x in nanmeans]), builtins.all([DAG.one_creator(x) for x in nanmeans]))
                 # If all the arrays use the same join axis in nanmean
-                if (all([x.kwargs["axis"] == join_axis for x in nanmeans]) and
-                    all([len(x.backward_deps) == 2 for x in nanmeans]) and
-                    all([x.backward_deps[0].name in ["getitem_array", "ndarray.getitem_array"] or x.backward_deps[1].name in ["getitem_array", "ndarray.getitem_array"] for x in nanmeans])
-                    #all([DAG.one_creator(x) for x in nanmeans]) and
-                    #all([DAG.creator(x).name in ["getitem_array", "ndarray.getitem_array"] for x in nanmeans])
+                if (builtins.all([x.kwargs["axis"] == join_axis for x in nanmeans]) and
+                    builtins.all([len(x.backward_deps) == 2 for x in nanmeans]) and
+                    builtins.all([x.backward_deps[0].name in ["getitem_array", "ndarray.getitem_array"] or x.backward_deps[1].name in ["getitem_array", "ndarray.getitem_array"] for x in nanmeans])
+                    #builtins.all([DAG.one_creator(x) for x in nanmeans]) and
+                    #builtins.all([DAG.creator(x).name in ["getitem_array", "ndarray.getitem_array"] for x in nanmeans])
                 ):
                     dprint(3, "All axis match and each nanmean array has one creator that is a getitem_array")
                     getitem_ops = [DAG.get_creator(x, ["getitem_array", "ndarray.getitem_array"]) for x in nanmeans]
@@ -4300,14 +4301,14 @@ class DAG:
                     getitem_axis = get_advindex_dim(getitem_ops[0].args[1])
                     dprint(3, "getitem_axis:", getitem_axis)
                     # If all the getitems have the same axis
-                    if all([get_advindex_dim(x.args[1]) == getitem_axis for x in getitem_ops]):
+                    if builtins.all([get_advindex_dim(x.args[1]) == getitem_axis for x in getitem_ops]):
                         dprint(3, "All getitems operate on the same axis")
                         getitem_arrays = [x.args[0] for x in getitem_ops]
                         assert isinstance(getitem_arrays[0], ndarray)
                         # Get the array on which getitem operates for the first stack array
                         orig_array = getitem_arrays[0]
                         # If all the getitems operate on the same array
-                        if all([x is orig_array for x in getitem_arrays]):
+                        if builtins.all([x is orig_array for x in getitem_arrays]):
                             dprint(3, "All getitems operate on the same array")
                             slot_indices = [x.args[1][getitem_axis] for x in getitem_ops]
                             dprint(3, "slot_indices:", slot_indices)
@@ -4357,7 +4358,7 @@ class DAG:
                 binops = concat_node.backward_deps
 
                 # If all the arrays to concat are uninstantiated from one array and the result of an array_binop.
-                if all([x.name in ["array_binop", "ndarray.array_binop"] for x in binops]):
+                if builtins.all([x.name in ["array_binop", "ndarray.array_binop"] for x in binops]):
                     dprint(2, "All concat operations are array_binop")
                     # Get the array_binop operators for each array to concat.
                     # Get the internal operator (e.g., sub) for the first binop.
@@ -4365,29 +4366,29 @@ class DAG:
                     binoptext = binops[0].args[3]
                     dprint(2, "binop", binop, binoptext, binops, [x.args[2] == binop for x in binops], [len(x.backward_deps) for x in binops])
                     # If all the binops have the same operation and have 2 ndarray predecessors.
-                    if (all([x.args[2] == binop for x in binops]) and
-                        all([len(x.backward_deps) == 4 for x in binops])
+                    if (builtins.all([x.args[2] == binop for x in binops]) and
+                        builtins.all([len(x.backward_deps) == 4 for x in binops])
                     ):
                         lhs_getitem_ops = [x.backward_deps[0] for x in binops]
                         remapped_ops = [x.backward_deps[2] for x in binops]
-                        dprint(2, "All binops use the same operation", binop, lhs_getitem_ops, all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]), remapped_ops, all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]), [len(x.backward_deps) for x in lhs_getitem_ops], [len(x.backward_deps) for x in remapped_ops])
+                        dprint(2, "All binops use the same operation", binop, lhs_getitem_ops, builtins.all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]), remapped_ops, builtins.all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]), [len(x.backward_deps) for x in lhs_getitem_ops], [len(x.backward_deps) for x in remapped_ops])
                         # If all the lhs arrays are uninstantiated and derived from getitem_array and all
                         # the rhs arrays are uninstantiated and derived from remapped_axis.
-                        if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]) and
-                            all([DAG.one_creator(x) for x in lhs_getitem_ops])
-                            #all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and
-                            #all([len(x.backward_deps) == 2 for x in remapped_ops])
-                            #all([DAG.one_creator(x) for x in remapped_ops])
+                        if (builtins.all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in lhs_getitem_ops]) and
+                            builtins.all([DAG.one_creator(x) for x in lhs_getitem_ops])
+                            #builtins.all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and
+                            #builtins.all([len(x.backward_deps) == 2 for x in remapped_ops])
+                            #builtins.all([DAG.one_creator(x) for x in remapped_ops])
                         ):
                             # Get the axis that the first getitem operates on
                             getitem_axis = get_advindex_dim(lhs_getitem_ops[0].args[1])
                             lhs_getitem_sources = [DAG.creator(x) for x in lhs_getitem_ops]
                             dprint(2, "All lhs are getitem_array")
-                            if (((all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and all([remapped_ops[0].args[1] == x.args[1] for x in remapped_ops])) or
-                                 all([x.name in ["reshape", "ndarray.reshape"] for x in remapped_ops])) and
-                                all([len(x.backward_deps) == 2 for x in remapped_ops])
+                            if (((builtins.all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]) and builtins.all([remapped_ops[0].args[1] == x.args[1] for x in remapped_ops])) or
+                                 builtins.all([x.name in ["reshape", "ndarray.reshape"] for x in remapped_ops])) and
+                                builtins.all([len(x.backward_deps) == 2 for x in remapped_ops])
                             ):
-                                if all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]):
+                                if builtins.all([x.name in ["remapped_axis", "ndarray.remapped_axis"] for x in remapped_ops]):
                                     reshape_ops = [x.backward_deps[0] for x in remapped_ops]
                                     dprint(2, "All rhs are remapped_axis", [remapped_ops[0].args[1] == x.args[1] for x in remapped_ops], [getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops], [x is lhs_getitem_sources[0] for x in lhs_getitem_sources], [x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops], [len(x.backward_deps) for x in reshape_ops], [reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
                                     gio_bd = 2
@@ -4401,12 +4402,12 @@ class DAG:
                                 # If all the getitems operate on the same base array and
                                 # all the remapped_axis are sourced from reshape calls.
                                 # If all the reshape have the same newshape.
-                                if (all([getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops]) and
-                                    all([x is lhs_getitem_sources[0] for x in lhs_getitem_sources]) and
-                                    all([x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]) and
-                                    all([len(x.backward_deps) == 2 for x in reshape_ops]) and
-                                    #all([DAG.one_creator(x) for x in reshape_ops]) and
-                                    all([reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
+                                if (builtins.all([getitem_axis == get_advindex_dim(x.args[1]) for x in lhs_getitem_ops]) and
+                                    builtins.all([x is lhs_getitem_sources[0] for x in lhs_getitem_sources]) and
+                                    builtins.all([x.name in ["reshape", "ndarray.reshape"] for x in reshape_ops]) and
+                                    builtins.all([len(x.backward_deps) == 2 for x in reshape_ops]) and
+                                    #builtins.all([DAG.one_creator(x) for x in reshape_ops]) and
+                                    builtins.all([reshape_ops[0].args[1] == x.args[1] for x in reshape_ops])
                                 ):
                                     dprint(2, "All remapped_ops have the same newmap, all remapped derive from reshape")
                                     rhs_getitem_ops = [x.backward_deps[0] for x in reshape_ops]
@@ -4414,15 +4415,15 @@ class DAG:
                                     orig_array_lhs = lhs_getitem_sources[0].output()
                                     dprint(2, "All reshapes have the same newshape", [x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops], [len(x.backward_deps) for x in rhs_getitem_ops])
 
-                                    if (all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops]) and
-                                        all([len(x.backward_deps) == gio_bd for x in rhs_getitem_ops])
-                                        #all([DAG.one_creator(x) for x in rhs_getitem_ops])
+                                    if (builtins.all([x.name in ["getitem_array", "ndarray.getitem_array"] for x in rhs_getitem_ops]) and
+                                        builtins.all([len(x.backward_deps) == gio_bd for x in rhs_getitem_ops])
+                                        #builtins.all([DAG.one_creator(x) for x in rhs_getitem_ops])
                                     ):
                                         dprint(2, "All reshape bases are derived from getitem_array")
                                         # A check for index of getitem_ops?
                                         getitem_bases = [x.backward_deps[0] for x in rhs_getitem_ops]
                                         #getitem_bases = [DAG.creator(x) for x in rhs_getitem_ops]
-                                        if all([getitem_bases[0] is x for x in getitem_bases]):
+                                        if builtins.all([getitem_bases[0] is x for x in getitem_bases]):
                                             dprint(2, "All reshape bases are the same")
                                             rhs = getitem_bases[0].output()
                                             dprint(2, "rhs", id(rhs), rhs.shape)
@@ -4702,7 +4703,7 @@ class gid_dist:
 
 def apply_index(shape, index):
     cindex = canonical_index(index, shape)
-    dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
+    dim_shapes = tuple([builtins.max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
     axismap = [
         i
         for i in range(len(dim_shapes))
@@ -5085,7 +5086,7 @@ class ndarray:
         sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
         sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
         k = np.array(self.shape)[axis]
-        if all(k == 1):  # done, just get the slice with axes removed
+        if builtins.all(k == 1):  # done, just get the slice with axes removed
             return self[sl1]
         # need global reduction
         arr = empty_like(self[sl2])
@@ -5107,7 +5108,7 @@ class ndarray:
 
     @classmethod
     def internal_reduction2b_executor(cls, temp_array, self, op, dtype, asarray):
-        if all([i==1 for i in self.shape]):  # done, just return the single element / array with all but one axis removed
+        if builtins.all([i==1 for i in self.shape]):  # done, just return the single element / array with all but one axis removed
             sl = (0,)*self.ndim if not asarray else (slice(0,1),)+(0,)*(self.ndim-1)
             return self[sl]
         # need global reduction -- should be small (1 elem per worker)
@@ -5216,7 +5217,7 @@ class ndarray:
         new_dims = len(shape) - len(self.shape)
         sslice = shape[-len(self.shape) :]
         z1 = zip(sslice, self.shape)
-        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+        if builtins.any([a > 1 and b > 1 and a != b for a, b in z1]):
             return False
         return True
 
@@ -5229,7 +5230,7 @@ class ndarray:
         dprint(4, "sslice:", sslice)
         z1 = zip(sslice, self.shape)
         dprint(4, "zip check:", z1)
-        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+        if builtins.any([a > 1 and b > 1 and a != b for a, b in z1]):
             raise ValueError("Non-broadcastable.")
 
         bd = [
@@ -5253,7 +5254,7 @@ class ndarray:
     def broadcast_to(self, shape):
         sslice = shape[-len(self.shape) :]
         z1 = zip(sslice, self.shape)
-        if any([a > 1 and b > 1 and a != b for a, b in z1]):
+        if builtins.any([a > 1 and b > 1 and a != b for a, b in z1]):
             raise ValueError("Non-broadcastable.")
         return DAGshape(shape, self.dtype, False)
 
@@ -5345,7 +5346,7 @@ class ndarray:
             dprint(4, "BINARY_OP:", optext)
             return self
         else:
-            lb = max(
+            lb = builtins.max(
                 self.local_border, rhs.local_border if isinstance(rhs, ndarray) else 0
             )
             new_array_shape, selfview, rhsview = ndarray.broadcast(self, rhs)
@@ -5424,7 +5425,7 @@ class ndarray:
         elif not isinstance(key, tuple):
             key = (key,)
 
-        if is_mask or any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
+        if is_mask or builtins.any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex, np.generic)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
@@ -5457,7 +5458,7 @@ class ndarray:
         key2 = tuple(i for i in key if i is not Ellipsis)
         if len(key2)+1<len(key):
             raise IndexError("an index can only have a single ellipsis ('...')")
-        if all([isinstance(i, numbers.Integral) for i in key2]):
+        if builtins.all([isinstance(i, numbers.Integral) for i in key2]):
             if len(key2) > self.ndim:
                 raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(key2)} were indexed")
             elif len(key2) == self.ndim:
@@ -5513,8 +5514,8 @@ class ndarray:
             return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
 
-        index_has_slice = any([isinstance(i, slice) for i in index])
-        index_has_array = any([isinstance(i, np.ndarray) for i in index])
+        index_has_slice = builtins.any([isinstance(i, slice) for i in index])
+        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
@@ -5527,7 +5528,7 @@ class ndarray:
             if self.bdarray.flex_dist or not self.bdarray.remote_constructed:
                 deferred_op.do_ops()
             num_dim = len(self.shape)
-            dim_shapes = tuple([max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
+            dim_shapes = tuple([builtins.max(0, int(np.ceil((x.stop - x.start)/(1 if x.step is None else x.step)))) for x in cindex])
             dprint(2, "getitem slice:", cindex, dim_shapes)
 
             sdistribution = shardview.slice_distribution(cindex, self.distribution)
@@ -5567,8 +5568,8 @@ class ndarray:
         if len(index) > self.ndim:
             raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
 
-        index_has_slice = any([isinstance(i, slice) for i in index])
-        index_has_array = any([isinstance(i, np.ndarray) for i in index])
+        index_has_slice = builtins.any([isinstance(i, slice) for i in index])
+        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
@@ -5603,7 +5604,7 @@ class ndarray:
             index = preind + tuple( slice(None) for _ in range(self.ndim - len(index) + 1 + index.count(None)) ) + postind
 
         # Handle None;  np.newaxis is an alias for None
-        if any([x is None for x in index]):
+        if builtins.any([x is None for x in index]):
             newdims = [i for i in range(len(index)) if index[i] is None]
             newindex = tuple([i if i is not None else slice(None) for i in index])
             expanded_array = expand_dims(self, newdims)
@@ -5611,7 +5612,7 @@ class ndarray:
             return expanded_array[newindex]
 
         # If all the indices are integers and the number of indices equals the number of array dimensions.
-        if all([isinstance(i, numbers.Integral) for i in index]):
+        if builtins.all([isinstance(i, numbers.Integral) for i in index]):
             if len(index) > len(self.shape):
                 raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
             elif len(index) == len(self.shape):
@@ -6092,13 +6093,13 @@ def matmul_internal(a, b, reduction=False, out=None):
             add_sub_time(
                 "matmul_b_c_not_dist",
                 "compute_comm",
-                max([x[2] for x in worker_timings]),
+                builtins.max([x[2] for x in worker_timings]),
             )
             add_sub_time(
-                "matmul_b_c_not_dist", "comm", max([x[3] for x in worker_timings])
+                "matmul_b_c_not_dist", "comm", builtins.max([x[3] for x in worker_timings])
             )
             add_sub_time(
-                "matmul_b_c_not_dist", "exec", max([x[6] for x in worker_timings])
+                "matmul_b_c_not_dist", "exec", builtins.max([x[6] for x in worker_timings])
             )
 
             if aextend:
@@ -6220,12 +6221,12 @@ def matmul_internal(a, b, reduction=False, out=None):
             add_sub_time(
                 "matmul_c_not_dist_a_b_dist_match",
                 "reduction",
-                max([x[3] for x in worker_timings]),
+                builtins.max([x[3] for x in worker_timings]),
             )
             add_sub_time(
                 "matmul_c_not_dist_a_b_dist_match",
                 "exec",
-                max([x[6] for x in worker_timings]),
+                builtins.max([x[6] for x in worker_timings]),
             )
 
             if aextend:
@@ -6474,10 +6475,10 @@ def matmul_internal(a, b, reduction=False, out=None):
         )
         add_sub_time("matmul_general", "launch", launch_total)
         add_sub_time(
-            "matmul_general", "compute_comm", max([x[2] for x in worker_timings])
+            "matmul_general", "compute_comm", builtins.max([x[2] for x in worker_timings])
         )
-        add_sub_time("matmul_general", "comm", max([x[3] for x in worker_timings]))
-        add_sub_time("matmul_general", "exec", max([x[6] for x in worker_timings]))
+        add_sub_time("matmul_general", "comm", builtins.max([x[3] for x in worker_timings]))
+        add_sub_time("matmul_general", "exec", builtins.max([x[6] for x in worker_timings]))
 
         if aextend:
             return reshape(out_ndarray, (out_shape[1],))
@@ -6546,7 +6547,7 @@ def dim_sizes_from_index(index, size):
             newindex.append(1)
         elif isinstance(ti, slice):
             tmp = canonical_slice(ti, size[i])
-            newindex.append( max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
+            newindex.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
         elif isinstance(ti, np.ndarray):
             newindex.append(len(ti))
         else:
@@ -6583,7 +6584,12 @@ def numpy_broadcast_shape(a, b):
     if isinstance(a, tuple):
         rev_ashape = a[::-1]
     else:
-        rev_ashape = a.shape[::-1]
+        if isinstance(a, (ndarray, np.ndarray)):
+            rev_ashape = a.shape[::-1]
+        elif isinstance(a, numbers.Number):
+            rev_ashape = ()
+        else:
+            rev_ashape = (1,)
 
     if isinstance(b, tuple):
         rev_bshape = b[::-1]
@@ -6695,8 +6701,8 @@ array_binop_funcs = {
     "__truediv__": op_info(" / ", dtype="float"),
     "__mod__": op_info(" % "),
     "__pow__": op_info(" ** "),
-    "minimum": op_info(",", "min"),
-    "maximum": op_info(",", "max"),
+    "minimum": op_info(",", "builtins.min"),
+    "maximum": op_info(",", "builtins.max"),
     "__gt__": op_info(" > ", dtype=np.bool_),
     "__lt__": op_info(" < ", dtype=np.bool_),
     "__ge__": op_info(" >= ", dtype=np.bool_),
@@ -6763,6 +6769,7 @@ array_unaryop_funcs = {
     "isneginf": op_info(" numpy.isneginf", imports=["numpy"], dtype=np.bool_),
     "isposinf": op_info(" numpy.isposinf", imports=["numpy"], dtype=np.bool_),
     "logical_not": op_info(" numpy.logical_not", imports=["numpy"], dtype=np.bool_),
+    "__invert__": op_info(" ~ "),
 }
 
 for (abf, code) in array_unaryop_funcs.items():
@@ -6774,8 +6781,8 @@ for (abf, code) in array_unaryop_funcs.items():
 array_simple_reductions = {
     "sum":op_info("+","",0),
     "prod":op_info("*","",1),
-    "min":op_info(",","min",2),
-    "max":op_info(",","max",-2),
+    "min":op_info(",","builtins.min",2),  # Is this 2 right?
+    "max":op_info(",","builtins.max",-2),
     "all":op_info(" * ","",True,dtype=np.bool_),
     "any":op_info(" + ","",False,dtype=np.bool_),
 }
@@ -6784,6 +6791,25 @@ for (abf, code) in array_simple_reductions.items():
         abf, "np."+abf, unary=True, reduction=True, optext2=code.func, opsep=code.code, initval=code.init, dtype=code.dtype
     )
     setattr(ndarray, abf, new_func)
+
+
+def sum(x):
+    return x.sum()
+
+def prod(x):
+    return x.prod()
+
+def min(x):
+    return x.min()
+
+def max(x):
+    return x.max()
+
+def all(x):
+    return x.all()
+
+def any(x):
+    return x.any()
 
 
 class deferred_op:
@@ -6968,7 +6994,7 @@ class deferred_op:
             ]
             print("Deferred Ops execution", times)
             tprint(2, "deferred_ops::execute code", code)
-            add_time("driver_deferred_op", sum(times) / 1000)
+            add_time("driver_deferred_op", builtins.sum(times) / 1000)
 
     # TODO: There may be a race condition here.  Need to check and fix.
     # deferred (if needed) deletions of the remote arrays
@@ -7079,7 +7105,7 @@ class deferred_op:
             cls.ramba_deferred_ops.do_ops()
 
         # Alias check 1;  op reads/writes shifted version of an array that was written previously
-        if ( cls.ramba_deferred_ops is not None and any([
+        if ( cls.ramba_deferred_ops is not None and builtins.any([
                 isinstance(o, ndarray) and o.gid==wgid and wdist is not None and not shardview.dist_is_eq(wdist, o.distribution)
                 for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
             dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
@@ -7090,7 +7116,7 @@ class deferred_op:
         #    NOTE:  works only for assignment / inplace operators, not general functions
         if (write_array is not None) and (
                 any ([ isinstance(o, ndarray) and o.gid==write_array.gid and not shardview.dist_is_eq(o.distribution, write_array.distribution) for o in operands ])
-                or (cls.ramba_deferred_ops is not None and any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
+                or (cls.ramba_deferred_ops is not None and builtins.any([ rgid==write_array.gid and (rdist is not None) and not shardview.dist_is_eq(rdist, write_array.distribution) for (rgid,rdist) in cls.ramba_deferred_ops.read_arrs])) ):
             assert codes[0]==''
             dprint(2, "Write after read with mismatched distributions detected. Will not fuse, adding temporary array.")
             # make temp, assign computation to temp, do ops, then assign temp to write array
@@ -7644,10 +7670,10 @@ def meshgrid(*xi, copy=True, sparse=False, indexing='xy'):
     xi = list(xi)
     xi = [np.asarray(x) if isinstance(x, ndarray) else x for x in xi]
 
-    if any([not (isinstance(x, np.ndarray) and x.ndim == 1) for x in xi]):
+    if builtins.any([not (isinstance(x, np.ndarray) and x.ndim == 1) for x in xi]):
         raise ValueError("Unsupported argument to meshgrid")
     dtypes = [x.dtype for x in xi]
-    if not all([x == dtypes[0] for x in dtypes]):
+    if not builtins.all([x == dtypes[0] for x in dtypes]):
         raise ValueError("Mis-matching dtypes to meshgrid")
 
     num_dim = len(xi)
@@ -7748,8 +7774,28 @@ def reshape_executor(temp_array, arr, newshape):
 @DAGapi
 def reshape(arr, newshape):
     # first check if this is just for adding / removing dinmensions of size 1 -- this will require no data movement
+    dprint(2, "reshape:", newshape)
     realshape = tuple([i for i in arr.shape if i != 1])
-    realnewshape = tuple([i for i in newshape if i != 1])
+    prodshape = prod(arr.shape)
+    if isinstance(newshape, numbers.Integral):
+        newshape = (newshape,) 
+    if any([x < -1 or x == 0 for x in newshape]):
+        raise ValueError("Illegal dimension size in reshape.")
+
+    neg_one_count = newshape.count(-1)
+    if neg_one_count == 0:
+        realnewshape = tuple([i for i in newshape if i != 1])
+    elif neg_one_count == 1:
+        # Drop the -1 dimension and get the product.
+        newshapeprod = prod([i for i in newshape if i != -1])
+        quotient, remainder = divmod(prodshape, newshapeprod)
+        if remainder != 0:
+            raise ValueError("Incompatible shape given to reshape.")
+        newshape = tuple([i if i != -1 else quotient for i in newshape])
+        realnewshape = tuple([i for i in newshape if i != 1])
+    else:
+        raise ValueError("Too many -1 dimensions given to reshape.")
+
     dprint(2, arr.shape, realshape, newshape, realnewshape)
     if realshape == realnewshape:
         dprint(1, "reshape can be done")
@@ -7913,7 +7959,7 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
             ret = []
             for i in range(ndim):
                 if i == dim:
-                    adjusted_pad = min(pad_len, in_shape[i])
+                    adjusted_pad = builtins.min(pad_len, in_shape[i])
                     diff = pad_len - adjusted_pad
                     if is_start_pad:
                         sstart = in_shape[i] + diff
@@ -8004,7 +8050,7 @@ def squeeze(a, axis=None):
     # Normalize axes, check for range
     axis = np.core.numeric.normalize_axis_tuple( axis, a.ndim )
     # Make sure all the indices they try to remove have length 1
-    if not all([ashape[x] == 1 for x in axis]):
+    if not builtins.all([ashape[x] == 1 for x in axis]):
         raise ValueError("cannot squeeze out an axis with size not equal to 1")
     new_shape = [ashape[i] for i in range(len(ashape)) if i not in axis]
     return reshape(a, tuple(new_shape))
@@ -8121,7 +8167,7 @@ def stack_executor(temp_array, arrays, axis=0, out=None):
 def stack(arrays, axis=0, out=None):
     dprint(1, "stack", len(arrays), type(arrays), axis)
     first_array = arrays[0]
-    assert(all([x.shape == first_array.shape for x in arrays]))
+    assert(builtins.all([x.shape == first_array.shape for x in arrays]))
     res_size = first_array.shape[:axis] + (len(arrays),) + first_array.shape[axis:]
     return DAGshape(res_size, first_array.dtype, False)
 
@@ -8275,14 +8321,20 @@ def where_executor(temp_array, cond, a, b):
         a = fromarray(cond)
     if isinstance(a, np.ndarray):
         a = fromarray(a)
+    elif isinstance(a, numbers.Number):
+        a = full((1,), a)
+
     if isinstance(b, np.ndarray):
         b = fromarray(b)
+    elif isinstance(b, numbers.Number):
+        b = full((1,), b)
+
     assert (
         isinstance(cond, ndarray) and isinstance(a, ndarray) and isinstance(b, ndarray)
     )
     dprint(2, "where:", cond.shape, a.shape, b.shape, cond, a, b)
 
-    lb = max(a.local_border, b.local_border)
+    lb = builtins.max(a.local_border, b.local_border)
     ab_new_array_shape, ab_aview, ab_bview = ndarray.broadcast(a, b)
     conda_new_array_shape, conda_condview, conda_aview = ndarray.broadcast(
         cond, ab_aview
@@ -8317,9 +8369,27 @@ def where(cond, a, b):
     dprint(2, "where:", getattr(cond, "shape", type(cond)), getattr(a, "shape", type(a)), getattr(b, "shape", type(b)), cond, a, b)
     ab_shape = numpy_broadcast_shape(a, b)
     condab_shape = numpy_broadcast_shape(cond, ab_shape)
-    return DAGshape(condab_shape, a.dtype, False)
 
+    if isinstance(a, (ndarray, np.ndarray)):
+        atype = a.dtype
+    elif isinstance(a, numbers.Number):
+        atype = np.dtype(type(a))
+    else:
+        raise ValueError("Unsupported arg-type in where %s" % (type(a),))
 
+    if isinstance(b, (ndarray, np.ndarray)):
+        btype = b.dtype
+    elif isinstance(b, numbers.Number):
+        btype = np.dtype(type(b))
+    else:
+        raise ValueError("Unsupported arg-type in where %s" % (type(b),))
+
+    if atype == btype:
+        utype = atype
+    else:
+        print(atype.descr, btype.descr, type(atype), type(btype))
+        utype = np.dtype(atype.descr + btype.descr)
+    return DAGshape(condab_shape, utype, False)
 
 
 @implements("result_type", False)
@@ -8476,8 +8546,8 @@ def sstencil(func, *args, **kwargs):
     dprint(2, "sstencil driver:", neighborhood)
     nmax = 0
     for n in neighborhood:
-        nmax = max(nmax, abs(n[0]))
-        nmax = max(nmax, abs(n[1]))
+        nmax = builtins.max(nmax, abs(n[0]))
+        nmax = builtins.max(nmax, abs(n[1]))
 
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
@@ -8519,10 +8589,10 @@ def sstencil(func, *args, **kwargs):
     add_sub_time("sstencil", "before_remote", sstencil_before_remote - sstencil_start)
     add_sub_time("sstencil", "remote_call", sstencil_after_remote - sstencil_before_remote)
     add_sub_time("sstencil", "get_results", sstencil_end - sstencil_after_remote)
-    add_sub_time("sstencil", "max_remote_prep", max([x[0] for x in worker_timings]))
-    add_sub_time("sstencil", "max_remote_compile", max([x[1] for x in worker_timings]))
-    add_sub_time("sstencil", "max_remote_exec", max([x[2] for x in worker_timings]))
-    add_sub_time("sstencil", "max_remote_total", max([x[3] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_prep", builtins.max([x[0] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_compile", builtins.max([x[1] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_exec", builtins.max([x[2] for x in worker_timings]))
+    add_sub_time("sstencil", "max_remote_total", builtins.max([x[3] for x in worker_timings]))
 
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     return new_ndarray
@@ -8966,6 +9036,7 @@ class RambaGroupby:
             beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
         min_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
+        # Should this be builtins.min?  TODD.  TODO FIX ME
         min_func_txt +=  "    minout[groupid] = min(value, minout[groupid])\n"
         min_func_txt +=  "    return minout\n"
         ldict = {}
@@ -9000,6 +9071,7 @@ class RambaGroupby:
             beforedim += ","
         afterdim = ",".join([f"idx[{nd}]" for nd in range(self.dim+1, self.array_to_group.ndim)])
         max_func_txt += f"    groupid = ({beforedim} group_array[idx[{self.dim}]],{afterdim})\n"
+        # Should this be builtins.max?  TODD TODO FIX ME
         max_func_txt +=  "    maxout[groupid] = max(value, maxout[groupid])\n"
         max_func_txt +=  "    return maxout\n"
         ldict = {}
