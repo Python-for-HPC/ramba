@@ -7774,7 +7774,7 @@ def reshape_executor(temp_array, arr, newshape):
 @DAGapi
 def reshape(arr, newshape):
     # first check if this is just for adding / removing dinmensions of size 1 -- this will require no data movement
-    dprint(2, "reshape:", newshape)
+    dprint(2, "reshape:", newshape, type(arr))
     realshape = tuple([i for i in arr.shape if i != 1])
     prodshape = prod(arr.shape)
     if isinstance(newshape, numbers.Integral):
@@ -7789,6 +7789,7 @@ def reshape(arr, newshape):
         # Drop the -1 dimension and get the product.
         newshapeprod = prod([i for i in newshape if i != -1])
         quotient, remainder = divmod(prodshape, newshapeprod)
+        quotient = int(quotient)
         if remainder != 0:
             raise ValueError("Incompatible shape given to reshape.")
         newshape = tuple([i if i != -1 else quotient for i in newshape])
@@ -7836,17 +7837,21 @@ def reshape(arr, newshape):
 
 def reshape_copy_executor(temp_array, arr, newshape):
     assert np.prod(arr.shape) == np.prod(newshape)
-    new_arr = empty(newshape, dtype=arr.dtype, no_defer=True)
 
     dprint(
         2,
-        "reshape_copy",
+        "reshape_copy before empty",
         arr.shape,
         temp_array.bdarray.gid,
         arr.bdarray.gid,
-        new_arr.bdarray.gid,
         newshape,
         shardview.distribution_to_divisions(arr.distribution),
+    )
+    new_arr = empty(newshape, dtype=arr.dtype, no_defer=True)
+    dprint(
+        2,
+        "reshape_copy after empty",
+        new_arr.bdarray.gid,
         shardview.distribution_to_divisions(new_arr.distribution),
     )
     reshape_workers = remote_call_all(
@@ -7864,6 +7869,7 @@ def reshape_copy_executor(temp_array, arr, newshape):
 
 @DAGapi
 def reshape_copy(arr, newshape):
+    dprint(2, "reshape_copy:", type(arr), newshape)
     assert np.prod(arr.shape) == np.prod(newshape)
     return DAGshape(newshape, arr.dtype, False)
 
