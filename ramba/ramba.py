@@ -4834,6 +4834,14 @@ class ndarray:
         # Add this fake DAG node to DAG.dag_nodes?
         return self.idag
 
+    def item(self, *args):
+        if len(args) == 0:
+            assert self.shape == ()
+            return self[()]
+        else:
+            assert len(args) == 1
+            return self.__getitem__(*args)
+
     def aliases_another(self):
         return np.array_equal(self.distribution, self.bdarray.distribution)
 
@@ -4944,7 +4952,7 @@ class ndarray:
         ndims = self.ndim
         axis = np.core.numeric.normalize_axis_index(axis,ndims)
         if not isinstance(start,numbers.Integral):
-            raise TypeError("integfer argument expected")
+            raise TypeError("integer argument expected")
         if start<-ndims or start>ndims:
             raise np.AxisError(f"`start` arg requires {-ndims} <= start < {ndims+1} but {start} was passed in")
         if start<0:
@@ -5425,6 +5433,8 @@ class ndarray:
         elif not isinstance(key, tuple):
             key = (key,)
 
+        key = tuple([self.handle_0d_index(ind) for ind in key])
+
         if is_mask or builtins.any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
             view = self[key]
             if isinstance(value, (int, bool, float, complex, np.generic)):
@@ -5451,10 +5461,12 @@ class ndarray:
 
     @DAGapi
     def setitem(self, key, value):
+        key = self.handle_0d_index(key)
         if isinstance(key, (ndarray, np.ndarray)):
             return DAGshape(self.shape, self.dtype, self)
         if not isinstance(key, tuple):
             key = (key,)
+        key = tuple([self.handle_0d_index(ind) for ind in key])
         key2 = tuple(i for i in key if i is not Ellipsis)
         if len(key2)+1<len(key):
             raise IndexError("an index can only have a single ellipsis ('...')")
@@ -5474,12 +5486,12 @@ class ndarray:
                 tmp[()] = value
                 value = tmp[()]
 
+                self.instantiate()
                 if self.shape == (): # 0d case
                     dprint(2,"setitem 0d:", key, type(key))
                     self.distribution = tmp
                     return
 
-                self.instantiate()
                 if self.readonly:
                     raise ValueError("assignment destination is read-only")
 
@@ -5584,6 +5596,14 @@ class ndarray:
         print("Don't know how to get index", index, type(index), " of dist array of shape", self.shape)
         assert 0  # Handle other types
 
+    # Convert 0d indices in index into integers.
+    def handle_0d_index(self, ind):
+        if isinstance(ind, (ndarray, np.ndarray)) and ind.shape == ():
+            ind.instantiate()
+            return ind[()]
+        else:
+            return ind
+
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
         # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
@@ -5592,6 +5612,14 @@ class ndarray:
 
         if not isinstance(index, tuple):
             index = (index,)
+
+        if index == (): # 0d case
+            assert self.shape == ()
+            self.instantiate()
+            return self.distribution[()]
+
+        index = tuple([self.handle_0d_index(ind) for ind in index])
+        print("updated index:", index)
 
         # Handle Ellipsis -- it can occur in any position, and may be combined with np.newzxis/None
         ellpos = [i for i,x in enumerate(index) if x is Ellipsis]
@@ -5638,6 +5666,26 @@ class ndarray:
 
         return self.getitem_array(index)
 
+    def __float__(self):
+        if self.shape == ():
+            self.instantiate()
+            return float(self.distribution)
+        raise TypeError("ndarray is not castable to float")
+
+    def __int__(self):
+        if self.shape == ():
+            self.instantiate()
+            return int(self.distribution)
+        raise TypeError("ndarray is not castable to int")
+
+    def __complex__(self):
+        if self.shape == ():
+            self.instantiate()
+            return complex(self.distribution)
+        raise TypeError("ndarray is not castable to complex")
+
+    def __index__(self):
+        return int(self)
 
     def get_remote_ranges(self, required_division):
         return get_remote_ranges(self.distribution, required_division)
@@ -7499,8 +7547,8 @@ def fromarray(x, local_border=0, dtype=None, **kwargs):
 
 
 @implements("array", False)
-def array(*args):
-    return fromarray(*args)
+def array(*args, **kwargs):
+    return fromarray(*args, **kwargs)
 
 
 # Note -- this is a bit redefined: converts ramba ndarray to a numpy array

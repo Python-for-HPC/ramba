@@ -636,6 +636,62 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_0d_getitem(self):
+        def impl(app):
+            a = app.array(7)
+            return a[()]
+
+        run_both(impl)
+
+    def test_0d_singular_index(self):
+        def impl(app):
+            a = app.arange(200)
+            b = app.array(7, dtype=int)
+            return a[b]
+
+        run_both(impl)
+
+    def test_0d_slice_index(self):
+        def impl(app):
+            a = app.ones((20,20))
+            b = app.array(7, dtype=int)
+            return a[:, b]
+
+        run_both(impl)
+
+    def test_0d_setitem(self):
+        def impl(app):
+            a = app.array(7)
+            a[()] = 3
+            return a[()]
+
+        run_both(impl)
+
+    def test_0d_setitem_singular_index(self):
+        def impl(app):
+            a = app.arange(200)
+            b = app.array(7, dtype=int)
+            a[b] = 0
+            return a[b]
+
+        run_both(impl)
+
+    def test_0d_setitem_slice_index(self):
+        def impl(app):
+            a = app.ones((20,20))
+            b = app.array(7, dtype=int)
+            a[:, b] = 0
+            return a[:, b]
+
+        run_both(impl)
+
+    def test_0d_float_cast(self):
+        def impl(app):
+            a = app.array(7)
+            return float(a)
+
+        run_both(impl)
+
     def test_setitem(self):
         def impl(app):
             a = app.ones((10,20))
