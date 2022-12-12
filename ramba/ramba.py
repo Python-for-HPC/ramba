@@ -6805,6 +6805,9 @@ array_unaryop_funcs = {
     "sin": op_info(" numpy.sin", imports=["numpy"], dtype="float"),
     "cos": op_info(" numpy.cos", imports=["numpy"], dtype="float"),
     "tan": op_info(" numpy.tan", imports=["numpy"], dtype="float"),
+    "sinh": op_info(" numpy.sinh", imports=["numpy"], dtype="float"),
+    "cosh": op_info(" numpy.cosh", imports=["numpy"], dtype="float"),
+    "tanh": op_info(" numpy.tanh", imports=["numpy"], dtype="float"),
     "arcsin": op_info(" numpy.arcsin", imports=["numpy"], dtype="float"),
     "arccos": op_info(" numpy.arccos", imports=["numpy"], dtype="float"),
     "arctan": op_info(" numpy.arctan", imports=["numpy"], dtype="float"),
@@ -6816,7 +6819,10 @@ array_unaryop_funcs = {
     "isnan": op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_),
     "isneginf": op_info(" numpy.isneginf", imports=["numpy"], dtype=np.bool_),
     "isposinf": op_info(" numpy.isposinf", imports=["numpy"], dtype=np.bool_),
+    "logical_and": op_info(" numpy.logical_and", imports=["numpy"], dtype=np.bool_),
     "logical_not": op_info(" numpy.logical_not", imports=["numpy"], dtype=np.bool_),
+    "logical_or": op_info(" numpy.logical_or", imports=["numpy"], dtype=np.bool_),
+    "logical_xor": op_info(" numpy.logical_xor", imports=["numpy"], dtype=np.bool_),
     "__invert__": op_info(" ~ "),
 }
 
@@ -7924,8 +7930,6 @@ def reshape_copy(arr, newshape):
 
 def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
     dprint(2, "Starting pad_executor:", arr.distribution, arr.distribution.shape, arr.shape, temp_array.shape)
-    if arr.ndim == 1:
-        pad_width = (pad_width, )
 
     arr_shape = arr.shape
     new_dist = shardview.clean_dist(arr.distribution)
@@ -8047,16 +8051,21 @@ def pad_executor(temp_array, arr, pad_width, mode='constant', **kwargs):
 def pad(arr, pad_width, mode='constant', **kwargs):
     assert arr.ndim >= 1
     dprint(2, "pad:", pad_width, arr.shape)
-    if arr.ndim == 1:
-        assert len(pad_width) == 2
-        pad_width = (pad_width, )
+    if isinstance(pad_width, numbers.Integral):
+        pad_width = (pad_width, pad_width)
+
+    assert len(pad_width) > 0
+    # FIX ME. TODO.  Need to check case where they give a heterogenuous tuple.
+    if not isinstance(pad_width[0], (tuple, list)):
+        pad_width = tuple(pad_width for _ in range(arr.ndim))
 
     assert arr.ndim == len(pad_width)
+
     newshape = tuple([x[0] + x[1][0] + x[1][1] for x in zip(arr.shape, pad_width)])
 
     assert mode in ["constant", "empty", "edge", "wrap"] # We will add more modes later.
 
-    return DAGshape(newshape, arr.dtype, False)
+    return DAGshape(newshape, arr.dtype, False, replaced_args=[arr, pad_width])
 
 
 # Array manipulation -- transpose-like ops
@@ -8330,6 +8339,9 @@ mod_to_array = [
     "sin",
     "cos",
     "tan",
+    "sinh",
+    "cosh",
+    "tanh",
     "arcsin",
     "arccos",
     "arctan",
@@ -8345,6 +8357,7 @@ mod_to_array = [
     "all",
     "any",
     "logical_and",
+    "logical_not",
     "logical_or",
     "logical_xor",
     "isclose",
