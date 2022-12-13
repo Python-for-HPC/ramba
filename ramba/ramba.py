@@ -5433,7 +5433,8 @@ class ndarray:
         elif not isinstance(key, tuple):
             key = (key,)
 
-        key = tuple([self.handle_0d_index(ind) for ind in key])
+        if not is_mask:
+            key = tuple([self.handle_0d_index(ind) for ind in key])
 
         if is_mask or builtins.any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
             view = self[key]
@@ -5619,7 +5620,6 @@ class ndarray:
             return self.distribution[()]
 
         index = tuple([self.handle_0d_index(ind) for ind in index])
-        print("updated index:", index)
 
         # Handle Ellipsis -- it can occur in any position, and may be combined with np.newzxis/None
         ellpos = [i for i,x in enumerate(index) if x is Ellipsis]
