@@ -3217,9 +3217,11 @@ class RemoteState:
             return tuple(base)
 
         start_index = fill_axis(base, 0, axis)
+        dprint(2, "scumulative_worker:", self.worker_num, in_array.shape, axis, in_gid_dist.gid, out_gid_dist.gid, start_index, base, new_bcontainer, new_bcontainer.shape if isinstance(new_bcontainer, np.ndarray) else type(new_bcontainer))
+        if in_array.shape[axis] <= 0:
+            return
         new_bcontainer[start_index] = in_array[start_index]
 
-        dprint(2, "scumulative_worker:", self.worker_num, in_array.shape, axis, in_gid_dist.gid, out_gid_dist.gid)
         # Do the purely local portion on the chunk of the array we have.
         for index in range(1, in_array.shape[axis]):
             cur_index = fill_axis(base, index, axis)
@@ -6819,10 +6821,7 @@ array_unaryop_funcs = {
     "isnan": op_info(" numpy.isnan", imports=["numpy"], dtype=np.bool_),
     "isneginf": op_info(" numpy.isneginf", imports=["numpy"], dtype=np.bool_),
     "isposinf": op_info(" numpy.isposinf", imports=["numpy"], dtype=np.bool_),
-    "logical_and": op_info(" numpy.logical_and", imports=["numpy"], dtype=np.bool_),
     "logical_not": op_info(" numpy.logical_not", imports=["numpy"], dtype=np.bool_),
-    "logical_or": op_info(" numpy.logical_or", imports=["numpy"], dtype=np.bool_),
-    "logical_xor": op_info(" numpy.logical_xor", imports=["numpy"], dtype=np.bool_),
     "__invert__": op_info(" ~ "),
 }
 
