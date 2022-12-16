@@ -1158,9 +1158,41 @@ class TestBasic:
                     print(f"Fail: mode={mode}, pad={one_test}")
                 assert np.array_equal(bnp, bl)
 
+    # TODO
     # Test pad with reduced dimension, increased dimension, transpose.
     # reduced dimension = a[slice, slice, constant]
     # increased dimension = a[slice, slice, np.newaxis] or expand_dims
+
+    def test_clip1(self):
+        def impl(app):
+            a = app.arange(200)
+            return a.clip(30, 50)
+
+        run_both(impl)
+
+    def test_clip2(self):
+        def impl(app):
+            a = app.arange(200)
+            return app.clip(a, 30, 50)
+
+        run_both(impl)
+
+    def test_clip3(self):
+        def impl(app):
+            a = app.arange(200)
+            b = app.empty(200, dtype=int)
+            a.clip(30, 50, out=b)
+            return b
+
+        run_both(impl)
+
+    def test_clip4(self):
+        def impl(app):
+            a = app.arange(200)
+            a.clip(30, 50, out=a)
+            return a
+
+        run_both(impl)
 
 class TestReduction:
     ops = ["sum", "prod", "min", "max"]

@@ -4922,7 +4922,7 @@ class ndarray:
             #    raise ValueError("repeated axis in transpose")
         return self.remapped_axis(axes)
 
-    def swapaxes(self,a1,a2):
+    def swapaxes(self, a1, a2):
         ndims = self.ndim
         a1 = np.core.numeric.normalize_axis_index(a1,ndims)
         a2 = np.core.numeric.normalize_axis_index(a2,ndims)
@@ -4934,7 +4934,7 @@ class ndarray:
         axes[a1],axes[a2] = axes[a2],axes[a1]
         return self.remapped_axis(axes)
 
-    def moveaxis(self,source,destination):
+    def moveaxis(self, source, destination):
         ndims = self.ndim
         s = np.core.numeric.normalize_axis_tuple(source,ndims,'source')
         d = np.core.numeric.normalize_axis_tuple(destination,ndims,'destination')
@@ -4950,7 +4950,7 @@ class ndarray:
                 axes[i] = axesleft.pop(0)
         return self.remapped_axis(axes)
 
-    def rollaxis(self,axis,start=0):
+    def rollaxis(self, axis, start=0):
         ndims = self.ndim
         axis = np.core.numeric.normalize_axis_index(axis,ndims)
         if not isinstance(start,numbers.Integral):
@@ -4963,6 +4963,24 @@ class ndarray:
             start-=1
         return self.moveaxis(axis,start)
 
+    @classmethod
+    def clip_executor(cls, temp_array, self, a_min, a_max, out=None, **kwargs):
+        deferred_op.add_op(
+            ["", temp_array, " = builtins.min(", a_max, ", builtins.max(", self, ",", a_min, "))"],
+            temp_array
+        )
+
+        return temp_array
+
+    @DAGapi
+    def clip(self, a_min, a_max, out=None, **kwargs):
+        if len(kwargs) != 0:
+            raise ValueError("clip does not handle kwargs yet.")
+
+        if out is not None:
+            return DAGshape(self.shape, self.dtype, out)
+        else:
+            return DAGshape(self.shape, self.dtype, False)
 
     @property
     def T(self):
@@ -6834,8 +6852,8 @@ for (abf, code) in array_unaryop_funcs.items():
 array_simple_reductions = {
     "sum":op_info("+","",0),
     "prod":op_info("*","",1),
-    "min":op_info(",","builtins.min",2),  # Is this 2 right?
-    "max":op_info(",","builtins.max",-2),
+    "min":op_info(",","builtins.min",2),  # this  2 really means  inf
+    "max":op_info(",","builtins.max",-2), # this -2 really means -inf
     "all":op_info(" * ","",True,dtype=np.bool_),
     "any":op_info(" + ","",False,dtype=np.bool_),
 }
@@ -8364,6 +8382,7 @@ mod_to_array = [
     "swapaxes",
     "moveaxis",
     "rollaxis",
+    "clip",
 ]
 for mfunc in mod_to_array:
     mcode = "def " + mfunc + "(the_array, *args, **kwargs):\n"
