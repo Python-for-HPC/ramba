@@ -2,13 +2,11 @@ import ramba
 import numpy as np
 
 # Activation functions
-class relu:
-    def forward(self, A):
-        return ramba.minimum(A,0)
+def relu(A):
+    return ramba.maximum(A,0)
 
-class sigmoid:
-    def forward(self, A):
-        return ramba.smap("lambda x: 1/(1+numpy.e^(-x))", A, imports=['numpy'])
+def sigmoid(A):
+    return ramba.smap("lambda x: 1/(1+numpy.e^(-x))", A, imports=['numpy'])
 
 
 # Dropout layer
@@ -82,18 +80,19 @@ class pool:
 # Output size is nframes * nfilters * xout_0 * xout_1 * ... * xout_ndim-1
 #   where xout_i = (x_i - k ) // stride + 1
 class conv:
-    def __init__(self, k, in_channels, ndim=2, nfilters=1, stride=1, has_bias=False, weights=None, bias=None):
+    def __init__(self, k, in_channels, ndim=2, nfilters=1, stride=1, padding=0, has_bias=False, weights=None, bias=None, dtype=np.float32):
         if weights is None:
-            self.W = ramba.zeros((nfilters, in_channels)+(k,)*ndim)
+            self.W = ramba.zeros((nfilters, in_channels)+(k,)*ndim, dtype=dtype)
         else:
-            self.W = ramba.empty((nfilters, in_channels)+(k,)*ndim)
-            self.W[:] = weights
+            self.W = ramba.empty((nfilters, in_channels)+(k,)*ndim, dtype=dtype)
+            self.W[:] = ramba.fromarray(weights)
         if bias is None:
-            self.bias = ramba.zeros(nfilters) if has_bias else None
+            self.bias = ramba.zeros(nfilters, dtype=dtype) if has_bias else None
         else:
-            self.bias = ramba.empty(nfilters)
-            self.bias[:] = bias
+            self.bias = ramba.empty(nfilters, dtype=dtype)
+            self.bias[:] = ramba.fromarray(bias)
         self.stride = stride
+        self.padding = padding
 
     @classmethod
     def _conv__fwd(cls, W, A, n, s, j=0, o=None):
@@ -118,13 +117,17 @@ class conv:
                 o = o+W[(...,i)+extra] * A[(...,i)+extra]
         return o
 
-    def forward(self, A, stride=None):
+    def forward(self, A, stride=None, padding=None):
+        if isinstance(A, np.ndarray):
+            A = ramba.fromarray(A)
         nfilters = self.W.shape[0]
         in_channels = self.W.shape[1]
         k = self.W.shape[2]
         ndim = self.W.ndim-2
         if stride is None:
             stride = self.stride
+        if padding is None:
+            padding = self.padding
         if A.ndim<ndim:
             raise ValueError("Insufficient number of dimensions in input")
         if in_channels >1:
@@ -141,21 +144,23 @@ class conv:
             A = ramba.moveaxis(A, 0, -(ndim+2))
         else: # remove nfilters dimension from weights if it is 1
             W = W[0]
+        if padding>0:
+            A = ramba.pad(A, ((0,0),)*(A.ndim-ndim)+((padding,padding),)*ndim)
         out = self.__fwd(W,A,ndim,stride)
         if self.bias is not None:
-            bias = ramba.expand_dims(self.bias, tuple(range(1,ndim)))
+            bias = ramba.expand_dims(self.bias, tuple(range(1,ndim+1)))
             out = out + bias
         return out
 
 
 class dense:
-    def __init__(self, inshape, k):
+    def __init__(self, inshape, k, dtype=np.float32):
         self.inshape = inshape
         self.k = k
         if k>1:
-            self.W = ramba.zeros((k,)+inshape)
+            self.W = ramba.zeros((k,)+inshape, dtype=dtype)
         else:
-            self.W = ramba.zeros(inshape)
+            self.W = ramba.zeros(inshape, dtype=dtype)
 
     def forward(self, A):
         W = self.W
