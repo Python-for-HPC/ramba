@@ -144,6 +144,8 @@ class TestFusion:
         exec10 = runtime10-overhead10
         print (runtime1, runtime10, overhead1, overhead10, exec1, exec10, exec10/exec1)
         assert(exec10<2*exec1)
+        a=ramba.ones(1)  # WORKAROUND: ensure large mem released
+        ramba.sync()     # Ideally, should work without these
 
     def test_nofuse(self):
         a = ramba.zeros(1000,dtype=float)
@@ -181,11 +183,15 @@ class TestFusion:
         exec10 = runtime10-overhead10
         print (runtime1, runtime10, overhead1, overhead10, exec1, exec10, exec10/exec1)
         assert(exec10>5*exec1)
+        a=ramba.ones(1)  # WORKAROUND: ensure large mem released
+        ramba.sync()     # Ideally, should work without these
 
     def test_fuse2(self):
         a = ramba.ones(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
         a += (7*a-3)+(4*a+5*a)      # Should continue to fit if fused, no temporaries materialized
         assert a[0]==14
+        a=ramba.ones(1)  # WORKAROUND: ensure large mem released
+        ramba.sync()     # Ideally, should work without these
 
 class TestBroadcast:
     def test1(self):
