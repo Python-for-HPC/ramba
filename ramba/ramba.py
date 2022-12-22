@@ -101,6 +101,21 @@ else:
     import numpy as gnp
 
 from numba import prange
+from numba import core as numba_core
+
+try:
+    @numba.njit
+    def try_bool_min(v1, v2):
+        return min(v1, v2)
+    try_bool_min(True, False)
+except:
+    @numba_core.extending.overload(min)
+    def bool_min(v1, v2):
+        if isinstance(v1, numba_core.types.scalars.Boolean) and isinstance(v2, numba_core.types.scalars.Boolean):
+            def bool_min_impl(v1, v2):
+                return v1 and v2
+            return bool_min_impl
+
 
 # Get a reference to the current module to be used for dynamic code generation.
 ramba_module = __import__(__name__)
@@ -4122,6 +4137,9 @@ class DAG:
     constraints = []
     dot_number = 0
     dag_count = 0
+    dag_unexecuted_count = 0
+    count_history = []
+    instantiate_callsites = []
 
     def __init__(self, name, executor, inplace, dag_deps, args, caller, kwargs, aliases=None, executed=False, *, output=None):
         self.name = name
@@ -4191,6 +4209,10 @@ class DAG:
         the_stack = inspect.stack()
         caller = get_non_ramba_callsite(the_stack)
         dag = DAG(name, executor, delayed.inplace, dag_deps, args, caller, kwargs, delayed.aliases)
+        cls.dag_unexecuted_count += 1
+        if ndebug >= 2 or debug_dag_history:
+            #cls.count_history.append(cls.dag_unexecuted_count)
+            cls.count_history.append((cls.dag_unexecuted_count, len(cls.dag_nodes)))
 
         if delayed.inplace:
             nres = delayed.inplace
@@ -4522,6 +4544,10 @@ class DAG:
         self.args = None
         self.kwargs = None
         self.backward_deps = []
+        DAG.dag_unexecuted_count -= 1
+        if ndebug >= 2 or debug_dag_history:
+            #DAG.count_history.append(DAG.dag_unexecuted_count)
+            DAG.count_history.append((DAG.dag_unexecuted_count, len(DAG.dag_nodes)))
 
     def replaced(self, replacement):
         self.name += " Replaced"
@@ -4558,6 +4584,9 @@ class DAG:
             assert len(dag_node.backward_deps) == 0
             deferred_op.do_ops()
             return
+
+        if do_ops and (ndebug >= 2 or debug_dag_history):
+            DAG.instantiate_callsites.append(get_non_ramba_callsite(inspect.stack()))
 
         cls.in_evaluate += 1
         depth_first_nodes = []
@@ -4598,13 +4627,34 @@ class DAG:
 
     @classmethod
     def execute_all(cls):
+        # Find all the leaf nodes such that no operation currently depends on them.
         nodeps = list(filter(lambda x: len(x.forward_deps) == 0 and not x.executed, cls.dag_nodes))
         nodeps.sort(key=lambda x: x.seq_no)
         dprint(2, "execute_all:", len(nodeps))
-        #print("In dag-execute-all:  leaf dag nodes:", nodeps)
         for dag_node in nodeps:
             cls.instantiate_dag_node(dag_node, do_ops=False)
         deferred_op.do_ops()
+        if ndebug >= 2 or debug_dag_history:
+            DAG.instantiate_callsites.append(get_non_ramba_callsite(inspect.stack()))
+
+    def __del__(self):
+        if not self.executed:
+            DAG.dag_unexecuted_count -= 1
+            if ndebug >= 2 or debug_dag_history:
+                #DAG.count_history.append(DAG.dag_unexecuted_count)
+                DAG.count_history.append((DAG.dag_unexecuted_count, len(DAG.dag_nodes)))
+
+    @staticmethod
+    def atexit():
+        if ndebug >= 2 or debug_dag_history:
+            with open("ramba_dag_history.txt", "w") as f:
+                for val in DAG.count_history:
+                    f.write(f"{val[0]} {val[1]}\n")
+            with open("ramba_dag_triggers.txt", "w") as f:
+                for val in DAG.instantiate_callsites:
+                    f.write(f"{val}\n")
+
+atexit.register(DAG.atexit)
 
 
 class DAGshape:
@@ -5316,7 +5366,7 @@ class ndarray:
         dprint(1, "astype executor:", self.dtype, type(self.dtype), dtype, type(dtype), copy)
         if dtype == self.dtype:
             assert copy
-            return copy(self)
+            return globals()['copy'](self)
 
         if copy:
             new_ndarray = create_array_with_divisions(
@@ -7525,7 +7575,7 @@ def fromarray_executor(temp_array, x, local_border=0, dtype=None, **kwargs):
         shape, None, local_border=local_border, dtype=dtype, **kwargs
     )
     distribution = new_ndarray.distribution
-    
+
     [
         remote_exec(
             i,
@@ -7849,7 +7899,7 @@ def reshape(arr, newshape):
     realshape = tuple([i for i in arr.shape if i != 1])
     prodshape = prod(arr.shape)
     if isinstance(newshape, numbers.Integral):
-        newshape = (newshape,) 
+        newshape = (newshape,)
     if any([x < -1 or x == 0 for x in newshape]):
         raise ValueError("Illegal dimension size in reshape.")
 
