@@ -975,7 +975,7 @@ class bdarray:
         return self.idag
 
     def __del__(self):
-        dprint(2, "Deleting bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self), flush=False)
+        dprint(2, "bdarray:__del__", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed, id(self), flush=False)
         #if self.remote_constructed:  # check remote constructed flag
         #    deferred_op.del_remote_array(self.gid)
 
@@ -990,7 +990,8 @@ class bdarray:
     @staticmethod
     def atexit():
         def alternate_del(self):
-            dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
+            pass
+            #dprint(2, "Deleting (at exit) bdarray", self.gid, self, "refcount is", len(self.nd_set), self.remote_constructed)
 
         dprint(2,"at exit -- disabling del handing")
         bdarray.__del__ = alternate_del
@@ -1478,7 +1479,7 @@ def get_do_fill_non_tuple(filler: FillerFunc, num_dim):
 smap_func = 0
 
 @functools.lru_cache()
-def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
+def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True, axis=None):
     filler = filler.func
     dprint(2, "get_smap_fill", filler, num_dim, ramba_array_args)
     #njfiller = filler
@@ -1497,14 +1498,25 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True):
     smap_func += 1
     arg_names = ",".join([f"arg{i}" for i in range(len(ramba_array_args))])
     fill_txt  = f"def {fname}(A, sz, {arg_names}):\n"
-    arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
+    if axis is None:
+        arg_list = [ f"arg{idx}[i]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
 
-    if num_dim > 1:
-        fill_txt += "    for i in numba.pndindex(sz[0]):\n"
+        if num_dim > 1:
+            fill_txt += "    for i in numba.pndindex(sz[0]):\n"
+        else:
+            fill_txt += "    for i in numba.prange(sz[0]):\n"
+
+        fill_txt += f"        A[i] = {fillername}(" + ",".join(arg_list) + ")\n"
     else:
-        fill_txt += "    for i in numba.prange(sz[0]):\n"
+        arg_list = [ f"arg{idx}[" + \
+            ",".join([":" if i != axis else "i" for i in range(axis + 1)]) + \
+            "]" if ramba_array_args[idx] else f"arg{idx}" for idx in range(len(ramba_array_args)) ]
 
-    fill_txt += f"        A[i] = {fillername}(" + ",".join(arg_list) + ")\n"
+        fill_txt += f"    for i in numba.prange(sz[{axis}]):\n"
+        fill_txt += f"        A[" + \
+            ",".join([":" if i != axis else "i" for i in range(axis + 1)]) +  \
+            f"] = {fillername}(" + ",".join(arg_list) + ")\n"
+
     dprint(2, "fill_txt:")
     dprint(2, fill_txt)
     ldict = {}
@@ -2044,7 +2056,7 @@ class RemoteState:
             #    print("after unaryop array_unary_op", timer())
             return ret
 
-    def smap(self, out_gid, first_gid, args, func, dtype, parallel):
+    def smap(self, out_gid, first_gid, args, func, dtype, parallel, axis):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         lnd = first.init_like(out_gid, dtype=dtype)
@@ -2053,7 +2065,7 @@ class RemoteState:
         unpickle_args(args)
 
         ramba_array_args = [isinstance(x, gid_dist) for x in args]
-        do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel)
+        do_fill = get_smap_fill(FillerFunc(func), len(first.dim_lens), tuple(ramba_array_args), parallel=parallel, axis=axis)
         def fix_args(x):
             if isinstance(x, gid_dist):
                 return self.numpy_map[x.gid].get_view(x.dist[self.worker_num])
@@ -2069,10 +2081,11 @@ class RemoteState:
                 if ffirst is None:
                     ffirst = farg
                     break
+        dprint(2, "Before smap do_fill", ffirst.shape)
         do_fill(new_bcontainer, ffirst.shape, *fargs)
 
     # TODO: should use get_view for output array?
-    def smap_index(self, out_gid, first_gid, args, func, dtype, parallel):
+    def smap_index(self, out_gid, first_gid, args, func, dtype, parallel, axis):
         func = func_loads(func)
         first = self.numpy_map[first_gid]
         self.numpy_map[out_gid] = first.init_like(out_gid, dtype=dtype)
@@ -4162,6 +4175,26 @@ class DAG:
         self.output = output
         DAG.dag_nodes.add(self)
 
+    @classmethod
+    def print_unexecuted_referrers(cls):
+        verify_count = 0
+        print("print_unexecuted_referrers:", cls.dag_unexecuted_count, verify_count)
+        for dag_node in cls.dag_nodes:
+            if not dag_node.executed:
+                print("unexecuted node:", dag_node)
+                verify_count += 1
+                referrers = gc.get_referrers(dag_node)
+                for referrer in referrers:
+                    if type(referrer).__name__ != "frame": #not isinstance(referrer, builtins.frame):
+                        print("++++++++", type(referrer))
+                    #print("        ", referrer, type(referrer))
+                    if isinstance(referrer, (list, dict)):
+                        lreferrers = gc.get_referrers(referrer)
+                        for lreferrer in lreferrers:
+                            print("------------", lreferrer, type(lreferrer))
+                            #if isinstance(lreferrer, bdarray)
+        print("print_unexecuted_referrers:", cls.dag_unexecuted_count, verify_count)
+
     def get_dot_name(self):
         exec_str = "T" if self.executed else "F"
         return f"{self.name}, {str(self.caller)}, {exec_str}"
@@ -4212,6 +4245,7 @@ class DAG:
         cls.dag_unexecuted_count += 1
         if ndebug >= 2 or debug_dag_history:
             #cls.count_history.append(cls.dag_unexecuted_count)
+            #gc.collect()
             cls.count_history.append((cls.dag_unexecuted_count, len(cls.dag_nodes)))
 
         if delayed.inplace:
@@ -4547,6 +4581,7 @@ class DAG:
         DAG.dag_unexecuted_count -= 1
         if ndebug >= 2 or debug_dag_history:
             #DAG.count_history.append(DAG.dag_unexecuted_count)
+            #gc.collect()
             DAG.count_history.append((DAG.dag_unexecuted_count, len(DAG.dag_nodes)))
 
     def replaced(self, replacement):
@@ -4638,11 +4673,17 @@ class DAG:
             DAG.instantiate_callsites.append(get_non_ramba_callsite(inspect.stack()))
 
     def __del__(self):
+        dprint(2, "DAG::__del__", id(self), self, flush=False)
         if not self.executed:
+            if DAG is None:
+                return
             DAG.dag_unexecuted_count -= 1
             if ndebug >= 2 or debug_dag_history:
                 #DAG.count_history.append(DAG.dag_unexecuted_count)
+                #gc.collect()
                 DAG.count_history.append((DAG.dag_unexecuted_count, len(DAG.dag_nodes)))
+        if ndebug >= 3:
+            DAG.output_dot()
 
     @staticmethod
     def atexit():
@@ -4879,7 +4920,6 @@ class ndarray:
 
     @property
     def dag(self):
-        #return self.bdarray.dag
         if self.idag is None:
             dprint(2, "idag is None in dag")
             self.idag = DAG("Unknown", None, False, [], (), ("Unknown DAG", 0), {}, executed=True, output=weakref.ref(self))
@@ -5041,17 +5081,33 @@ class ndarray:
         dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
         #ndarray_gids[self.gid][0]-=1
         self.bdarray.ndarray_del_callback()
-    """
+        """
         #if ndarray_gids[self.gid][0] <=0:
         #    if ndarray_gids[self.gid][1]:  # check remote constructed flag
         #        deferred_op.del_remote_array(self.gid)
         #    del ndarray_gids[self.gid]
-    """
+        """
+        del_dag = self.dag
+        del_back_deps = del_dag.backward_deps
+        del_fwd_deps = del_dag.forward_deps
+        for bdep in del_back_deps:
+            if del_dag in bdep.forward_deps:
+                bdep.forward_deps.remove(del_dag)
+            for fdep in del_fwd_deps:
+                if fdep not in bdep.forward_deps:
+                    bdep.forward_deps.add(fdep)
+        for fdep in del_fwd_deps:
+            if del_dag in fdep.backward_deps:
+                fdep.backward_deps.remove(del_dag)
+            for bdep in del_back_deps:
+                if bdep not in fdep.backward_deps:
+                    fdep.backward_deps.add(bdep)
 
     @staticmethod
     def atexit():
         def alternate_del(self):
-            dprint(2, "Deleting (at exit) ndarray", self.gid, self)
+            pass
+            #dprint(2, "Deleting (at exit) ndarray", self.gid, self)
 
         dprint(2,"at exit -- disabling ndarray del handing")
         ndarray.__del__ = alternate_del
@@ -8552,14 +8608,14 @@ def sync():
 ##### Skeletons ######
 
 
-def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=True, imports=[]):
+def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=True, axis=None, imports=[]):
     # TODO: should see if this can be converted into a deferred op
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
     assert len(partitioned) > 0
     shape = partitioned[0].shape
     dist = partitioned[0].distribution
     for arg in partitioned:
-        assert shardview.dist_is_eq(arg.distribution, dist)
+        assert shardview.dist_is_eq(arg.distribution, dist, axis=axis)
 
     if dtype is None:
         dtype = partitioned[0].dtype
@@ -8587,29 +8643,40 @@ def smap_internal_executor(temp_array, func, attr, *args, dtype=None, parallel=T
     args_to_remote = [gid_dist(x.gid, x.distribution) if isinstance(x, ndarray) else x for x in args]
     # [getattr(remote_states[i], attr).remote(new_ndarray.gid, partitioned[0].gid, args_to_remote, func) for i in range(num_workers)]
     remote_exec_all(
-        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel
+        attr, new_ndarray.gid, partitioned[0].gid, args_to_remote, func_dumps(func), dtype, parallel, axis
     )
     new_ndarray.bdarray.remote_constructed = True  # set remote_constructed = True
     dprint(2, "smap_internal done")
     return new_ndarray
 
 @DAGapi
-def smap_internal(func, attr, *args, dtype=None, parallel=True, imports=[]):
+def smap_internal(func, attr, *args, dtype=None, parallel=True, axis=None, imports=[]):
     # TODO: should see if this can be converted into a deferred op
+    # Get the Ramba arrays passed to smap.
     partitioned = list(filter(lambda x: isinstance(x, ndarray), args))
+    # There has to be at least one.
     assert len(partitioned) > 0
+    # The output will be the same size as the first input.
     shape = partitioned[0].shape
     if dtype is None:
         dtype = partitioned[0].dtype
+    if axis is not None:
+        # If axis is not None then add a constraint to all the involved arrays that
+        # they are split the same way in the axis dimension but not split in any
+        # other dimension.
+        constraint = []
+        for arr in partitioned:
+            constraint.append((arr, [-1 if i != axis else 1 for i in range(arr.ndim)]))
+        add_constraint(constraint)
     return DAGshape(shape, dtype, False)
 
 
-def smap(func, *args, dtype=None, parallel=True, imports=[]):
-    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel, imports=imports)
+def smap(func, *args, dtype=None, parallel=True, axis=None, imports=[]):
+    return smap_internal(func, "smap", *args, dtype=dtype, parallel=parallel, axis=axis, imports=imports)
 
 
 def smap_index(func, *args, dtype=None, parallel=True, imports=[]):
-    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel, imports=imports)
+    return smap_internal(func, "smap_index", *args, dtype=dtype, parallel=parallel, axis=None, imports=imports)
 
 
 class SreduceReducer:
