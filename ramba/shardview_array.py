@@ -158,6 +158,16 @@ def is_eq(sv, other):
         and (_steps(sv) == _steps(other)).all()
     )
 
+@numba.njit(cache=True)
+def is_eq_axis(sv, other, axis):
+    return (
+        (_size(sv)[axis] == _size(other)[axis])
+        and (_index_start(sv)[axis] == _index_start(other)[axis])
+        and (_base_offset(sv)[axis] == _base_offset(other)[axis])
+        and (_axis_map(sv)[axis] == _axis_map(other)[axis])
+        and (_steps(sv)[axis] == _steps(other)[axis])
+    )
+
 
 @numba.njit(cache=True)
 def is_empty(sv):
@@ -667,13 +677,17 @@ def compatible_distributions(d1, d2):
 
 
 @numba.njit(cache=True)
-def dist_is_eq(d1, d2):
+def dist_is_eq(d1, d2, axis=None):
     # return len(d1)==len(d2) and all([ is_eq(d1[i],d2[i]) for i in range(len(d1))])
     if not len(d1) == len(d2):
         return False
     for i in range(len(d1)):
-        if not is_eq(d1[i], d2[i]):
-            return False
+        if axis is None:
+            if not is_eq(d1[i], d2[i]):
+                return False
+        else:
+            if not is_eq_axis(d1[i], d2[i], axis):
+                return False
     return True
 
 
