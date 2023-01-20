@@ -106,7 +106,7 @@ Thus the requirements are:
 
 Optional packages:
 - h5py
-- PIL
+- pillow
 
 ## Installation process
 Create conda virtual environment and install common prerequisites
@@ -137,10 +137,10 @@ python setup.py install
 # Usage
 Ramba is intended to be a drop-in replacement for NumPy.  To use Ramba, simply import ramba instead of NumPy (see [Example](#example) above).  Most array construction and operations will work as is, but will be parallelized and distributed if possible.  No special restructuring of code is necessary to use Ramba.  As with NumPy, best performance usually comes from vector-style code using operations on whole arrays or slices of arrays.  Iteration through arrays using Python loops is not recommended.  As this is the case for NumPy as well, good NumPy code should work well with Ramba, with some exceptions (e.g., reshape is not efficient in a distributed context;  see also [NumPy Compatibility](#numpy-compatibility)).
 
-Ramba arrays are partitioned across all available workers.  Whole array operations are run concurrently on all workers, typically on local data.  If remote data is needed, this is detected and the necessary communications performed automatically.  Operations are not typically exectured imediately.  Rather, they are deferred, and multiple operations collected together, optimized and JIT-compiled into a single larger function, which is then executed on the workers.  This serves 4 main purposes: 
+Ramba arrays are partitioned across all available workers.  Whole array operations are run concurrently on all workers, typically on local data.  If remote data is needed, this is detected and the necessary communications performed automatically.  Operations are not typically executed immediately.  Rather, they are deferred, and multiple operations collected together, optimized, and JIT-compiled into a single larger function, which is then executed on the workers.  This serves 4 main purposes: 
 1) allows fusion of operations so the array may be iterated fewer times, 
 2) allows parallel, multithreaded execution on each worker, 
-3) can avoid the need to materialize temporary arrays to stroe intermeidate results, and 
+3) can avoid the need to materialize temporary arrays to store intermediate results, and 
 4) executes a native binary rather than slower Python code.  
 
 ## Usage on Ray clusters
@@ -174,6 +174,11 @@ Here, NUM PROCS indicates the total number of processes to use, and must be grea
 When running with MPI, the RAMBA_WORKERS environment variable is ignored.  RAMBA_NUM_THREADS can be used to indicate the number of threads to use per worker (defaults to 1).  
 
 NOTE:  Early versions of Ramba MPI support did not implement a SPMD model.  Instead, they used a controller-worker model, where one of the processes is for the driver/controller that steps through the Ramba program.  The remaining processes are used for remote workers which do not directly run the source program.  To reproduce the prior Ramba MPI behavior, set environment variables RAMBA_USE_CW=1 and RAMBA_USE_ZMQ=1.  
+
+## Use in Notebooks
+Ramba can be run in Jupyter Lab / Notebook as well.  Both Ray and MPI backends are supported.  Importing Ramba in a notebook will cause it to try to connect to a Ray cluster, creating a local one if needed.  An example of this mode of operation, showing how to set any needed environment variables is available in [sample/test.pynb](sample/test.ipynb).
+
+To use Ramba with MPI in a notebook, we need the ipyparallel package, which allows us to start and control a set of MPI processes.  An example of using Ramba/MPI from a notebook is found in [sample/test-mpi.ipynb](sample/test-mpi.ipynb).
 
 
 ## Environment Variables Summary
