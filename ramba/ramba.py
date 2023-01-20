@@ -5567,7 +5567,9 @@ class ndarray:
             if isinstance(value, (int, bool, float, complex, np.generic)):
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
-            elif value.broadcastable_to(view.shape):
+            if isinstance(value, np.ndarray):
+                value = fromarray(value)
+            if value.broadcastable_to(view.shape):
                 if (value.shape!=view.shape):
                     value = value.broadcast_to(view.shape)
                 # avoid adding code in case of inplace operations
