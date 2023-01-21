@@ -4179,10 +4179,37 @@ class DAG:
     def print_unexecuted_referrers(cls):
         verify_count = 0
         print("print_unexecuted_referrers:", cls.dag_unexecuted_count, verify_count)
+        clusters = {}
+        last_cluster_id = 0
         for dag_node in cls.dag_nodes:
             if not dag_node.executed:
+                cluster_ids = []
+                for fdep in dag_node.forward_deps:
+                    if id(fdep) in clusters:
+                        cluster_ids.append(clusters[id(fdep)][0])
+                clusters[id(dag_node)] = (last_cluster_id, dag_node)
+                for k,v in clusters.items():
+                    if v[0] in cluster_ids:
+                        clusters[k] = (last_cluster_id, v[1])
+                last_cluster_id += 1
+
+        csets = {}
+        for v in clusters.values():
+            if v[0] in csets:
+                csets[v[0]].append(v[1])
+            else:
+                csets[v[0]] = [v[1]]
+
+        clusters = list(csets.values())
+        clusters.sort(reverse=True, key=lambda x: len(x))
+
+        print("number of clusters:", len(clusters))
+        for i, val in enumerate(clusters):
+            print(f"----- cluster {i} size {len(val)} ----- ")
+            for dag_node in val:
                 print("unexecuted node:", dag_node)
                 verify_count += 1
+                """
                 referrers = gc.get_referrers(dag_node)
                 for referrer in referrers:
                     if type(referrer).__name__ != "frame": #not isinstance(referrer, builtins.frame):
@@ -4193,6 +4220,7 @@ class DAG:
                         for lreferrer in lreferrers:
                             print("------------", lreferrer, type(lreferrer))
                             #if isinstance(lreferrer, bdarray)
+                """
         print("print_unexecuted_referrers:", cls.dag_unexecuted_count, verify_count)
 
     def get_dot_name(self):
@@ -4513,7 +4541,7 @@ class DAG:
 
     @classmethod
     def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
-        dprint(2, "dag_node:", id(dag_node.output()), dag_node.name, dag_node.args)
+        dprint(2, "dag_node:", id(dag_node.output()), type(dag_node.output()), dag_node.name, dag_node.args)
         if dag_node in dag_node_processed:
             return
         dag_node_processed.add(dag_node)
@@ -4914,6 +4942,20 @@ class ndarray:
         if ndebug >= 3:
             ndarray.all_arrays.add(self)
 
+    def __getstate__(self):
+        ret = np.array(self)
+        return ret
+
+    def __setstate__(self, d):
+        dprint(2, "in __setstate__", d.shape, d.dtype, d, type(d))
+
+        dag = DAG("__setstate__", fromarray_executor, False, [], [d], "", {}, None)
+        self.__init__(d.shape, dtype=d.dtype, dag=dag)
+        dag.output = weakref.ref(self)
+
+        dprint(2, "self:", id(self), self, type(self), self.shape, self.dag, self.bdarray.dag)
+        dprint(2, "in __setstate__ done")
+
     @property
     def flags(self):
         return ndarray_flags(self)
@@ -4940,11 +4982,12 @@ class ndarray:
     def instantiate(self, **kwargs):
         DAG.instantiate(self, **kwargs)
 
-    def assign(self, other):
-        assert(isinstance(other, ndarray))
-        if self.shape != other.shape:
-            print("assign failure shape difference", self.shape, other.shape)
-        assert(self.shape == other.shape)
+    def assign(self, other, check=True):
+        if check:
+            assert(isinstance(other, ndarray))
+            if self.shape != other.shape:
+                print("assign failure shape difference", self.shape, other.shape)
+            assert(self.shape == other.shape)
         # maybe assign_bdarray?
         self.distribution = other.distribution
         self.local_border = other.local_border
@@ -4956,6 +4999,7 @@ class ndarray:
         orig_idag = self.bdarray.idag
         (self.bdarray,other.bdarray) = (other.bdarray,self.bdarray)
         self.bdarray.idag = orig_idag
+        #self.idag = other.idag
         if hasattr(other, "internal_numpy"):
             self.internal_numpy = other.internal_numpy
         dprint(2,"assign complete", id(self), id(other), id(self.bdarray), id(other.bdarray))
