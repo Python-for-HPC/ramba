@@ -160,11 +160,11 @@ class FillerFunc:
 
 
 @functools.lru_cache()
-def get_fm(func: FillerFunc, parallel):
+def get_fm(func: FillerFunc, parallel, cache=False):
     real_func = func.func
     dprint(2, "get_fm for function", real_func.__name__, "parallel =", parallel)
     assert isinstance(real_func, types.FunctionType)
-    return numba.njit(parallel=parallel)(real_func)
+    return numba.njit(parallel=parallel, cache=cache)(real_func)
 
 
 class FunctionMetadata:
@@ -213,15 +213,24 @@ class FunctionMetadata:
             else:
                 args_for_numba.append(arg)
 
+        """
+            if ramba_cache:
+                cache_dir = "__ramba_cache__"
+                code_hash = hash(code)
+                if not os.path.exists(cache_dir):
+                    os.makedirs(cache_dir)
+                if 
+        """
+
         if not self.numba_pfunc:
             if len(self.numba_args) == 0 and not self.no_global_cache:
-                self.numba_pfunc = get_fm(FillerFunc(self.func), True)
-                self.numba_func = get_fm(FillerFunc(self.func), False)
+                self.numba_pfunc = get_fm(FillerFunc(self.func), True, cache=ramba_cache)
+                self.numba_func = get_fm(FillerFunc(self.func), False, cache=ramba_cache)
             else:
-                self.numba_pfunc = numba.njit(parallel=True, **self.numba_args)(
+                self.numba_pfunc = numba.njit(parallel=True, cache=ramba_cache, **self.numba_args)(
                     self.func
                 )
-                self.numba_func = numba.njit(**self.numba_args)(self.func)
+                self.numba_func = numba.njit(cache=ramba_cache, **self.numba_args)(self.func)
 
         if gpu_present and self.parallel:
             dprint(1, "using gpu context")

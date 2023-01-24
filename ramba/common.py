@@ -181,6 +181,15 @@ else:
     ramba_big_data = False
 
 
+# If RAMBA_CACHE environment variable is non-zero then deferred operations will
+# create files with the Numba cache option.
+ramba_cache = int(os.environ.get("RAMBA_CACHE", "0"))
+if ramba_cache != 0:
+    ramba_cache = True
+else:
+    ramba_cache = False
+
+
 def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
