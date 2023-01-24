@@ -8649,6 +8649,12 @@ def sync():
     tprint(1, "sync_func_time", sync_end_time - sync_start_time)
 
 
+# Miscellaneous Functions
+
+def isscalar(x):
+    if isinstance(x, ndarray):
+        return x.ndim == 0
+    return np.isscalar(x)
 
 
 ##### Skeletons ######
