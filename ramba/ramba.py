@@ -33,6 +33,7 @@ import gc
 import inspect
 import atexit
 import builtins
+import hashlib
 
 if pickle.HIGHEST_PROTOCOL < 5:
     import pickle5 as pickle
@@ -159,6 +160,66 @@ class FillerFunc:
                 self.func.__code__.co_names == other.func.__code__.co_names)
 
 
+# Caching related items.
+
+class RambaCacheLocatorForNumba(numba.core.caching._CacheLocator):
+    """
+    A locator that always point to the user provided directory in
+    `numba.config.CACHE_DIR`
+    """
+    def __init__(self, py_func, py_file):
+        self._py_file = py_file
+        cache_subpath = self.get_suitable_cache_subpath(py_file)
+        if ramba_cache_dir:
+            self._cache_path = os.path.join(ramba_cache_dir, ".ramba_numba_cache", cache_subpath)
+        else:
+            self._cache_path = os.path.join(os.path.expanduser('~'), ".ramba_numba_cache", cache_subpath)
+        source = inspect.getsource(py_func)
+        if isinstance(source, bytes):
+            self._bytes_source = source
+        else:
+            self._bytes_source = source.encode('utf-8')
+
+    def get_cache_path(self):
+        return self._cache_path
+
+    def get_source_stamp(self):
+        return hashlib.sha256(self._bytes_source).hexdigest()
+
+    def get_disambiguator(self):
+        # Heuristic: we don't want too many variants being saved, but
+        # we don't want similar named functions (e.g. "f") to compete
+        # for the cache, so we hash the first two lines of the function
+        # source (usually this will be the @jit decorator + the function
+        # signature).
+        firstlines = b''.join(self._bytes_source.splitlines(True)[:2])
+        return hashlib.sha256(firstlines).hexdigest()[:10]
+
+    @classmethod
+    def from_function(cls, py_func, py_file):
+        dprint(2, "RambaCacheLocator::from_function", type(py_func), py_file)
+        if not py_file.startswith("<ramba-"):
+            return
+        self = cls(py_func, py_file)
+        try:
+            self.ensure_cache_path()
+        except OSError:
+            # Cannot ensure the cache directory exists
+            return
+        return self
+
+
+numba.core.caching.CacheImpl._locator_classes.append(RambaCacheLocatorForNumba)
+
+
+def ramba_exec(fname, code, gdict, ldict):
+    exec(code, gdict, ldict)
+    func = ldict[fname]
+    func.__code__ = func.__code__.replace(co_filename=f"<ramba-{fname}")
+    #func.__code__ = func.__code__.replace(co_filename=f"<ipython-{fname}")
+    return func
+
+
 @functools.lru_cache()
 def get_fm(func: FillerFunc, parallel, cache=False):
     real_func = func.func
@@ -212,15 +273,6 @@ class FunctionMetadata:
                 #args_for_numba.append(numba.njit(arg))
             else:
                 args_for_numba.append(arg)
-
-        """
-            if ramba_cache:
-                cache_dir = "__ramba_cache__"
-                code_hash = hash(code)
-                if not os.path.exists(cache_dir):
-                    os.makedirs(cache_dir)
-                if 
-        """
 
         if not self.numba_pfunc:
             if len(self.numba_args) == 0 and not self.no_global_cache:
@@ -770,8 +822,7 @@ if not USE_MPI:
                     gdict["curmod"] = ramba_module
                 else:
                     gdict[deobj_func_name] = deobj_func  # numba.njit(deobj_func)
-                exec(new_func, gdict, ldict)
-                nfunc = ldict[fname]
+                nfunc = ramba_exec(fname, new_func, gdict, ldict)
                 dprint(
                     2,
                     "nfunc:",
@@ -1531,8 +1582,8 @@ def get_smap_fill(filler: FillerFunc, num_dim, ramba_array_args, parallel=True, 
     ldict = {}
     gdict = globals()
     gdict[fillername] = njfiller
-    exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    ffunc = ramba_exec(fname, fill_txt, gdict, ldict)
+    return FunctionMetadata(ffunc, [], {}, no_global_cache=True, parallel=parallel)
 
 
 @functools.lru_cache()
@@ -1577,11 +1628,11 @@ def get_smap_fill_index(filler: FillerFunc, num_dim, ramba_array_args, parallel=
     ldict = {}
     gdict = globals()
     gdict[fillername] = njfiller
-    exec(fill_txt, gdict, ldict)
+    ffunc = ramba_exec(fname, fill_txt, gdict, ldict)
     if compiled:
-        return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+        return FunctionMetadata(ffunc, [], {}, no_global_cache=True, parallel=parallel)
     else:
-        return ldict[fname]
+        return ffunc
 
 
 @functools.lru_cache()
@@ -1628,8 +1679,8 @@ def get_sreduce_fill(filler: FillerFunc, reducer: FillerFunc, num_dim, ramba_arr
     gdict = globals()
     gdict[fillername] = njfiller
     gdict[reducername] = njreducer
-    exec(fill_txt, gdict, ldict)
-    return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+    ffunc = ramba_exec(fname, fill_txt, gdict, ldict)
+    return FunctionMetadata(ffunc, [], {}, no_global_cache=True, parallel=parallel)
 
 
 @functools.lru_cache()
@@ -1685,11 +1736,11 @@ def get_sreduce_fill_index(filler: FillerFunc, reducer: FillerFunc, num_dim, ram
     gdict = globals()
     gdict[fillername] = njfiller
     gdict[reducername] = njreducer
-    exec(fill_txt, gdict, ldict)
+    ffunc = ramba_exec(fname, fill_txt, gdict, ldict)
     if compiled:
-        return FunctionMetadata(ldict[fname], [], {}, no_global_cache=True, parallel=parallel)
+        return FunctionMetadata(ffunc, [], {}, no_global_cache=True, parallel=parallel)
     else:
-        return ldict[fname]
+        return ffunc
 
 
 def rec_buf_summary(rec_buf):
@@ -3395,8 +3446,8 @@ class RemoteState:
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
             dprint(2, "function does not exist, creating it\n", code)
-            exec(code, gdict, ldict)
-            gdict[fname] = FunctionMetadata(ldict[fname], [], {})
+            ffunc = ramba_exec(fname, code, gdict, ldict)
+            gdict[fname] = FunctionMetadata(ffunc, [], {})
         func = gdict[fname]
         times.append(timer())
 
@@ -3526,7 +3577,7 @@ class RemoteState:
                 expected_parts,
                 gfilter=lambda x: x[0] == uuid,
                 timeout=5,
-                print_times=(ntiming >= 1 and self.worker_num == timing_debug_worker),
+                print_times=(ntiming >= 2 and self.worker_num == timing_debug_worker),
                 msginfo=lambda x: "[from " + str(x[1]) + "]",
             )
             msgs += m
@@ -3596,13 +3647,13 @@ class RemoteState:
         times.append(tnow)
         self.deferred_ops_time += tnow - times[0]
         self.deferred_ops_count += 1
-        if ntiming >= 1 and self.worker_num == timing_debug_worker:
+        if ntiming >= 2 and self.worker_num == timing_debug_worker:
             times = [
                 int((times[i] - times[i - 1]) * 1000000) / 1000
                 for i in range(1, len(times))
             ]
             tprint(
-                1,
+                2,
                 "Deferred execution",
                 (tnow - self.tlast) * 1000,
                 times,
@@ -3781,7 +3832,7 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
         rvid = str(uuid.uuid4()) if has_retval else None
         if USE_ZMQ or not USE_BCAST:
             msg = ramba_queue.pickle(("RPC", method, rvid, args, kwargs))
-            if ntiming >= 1:
+            if ntiming >= 2:
                 print(
                     "control message size: ",
                     builtins.sum(
@@ -6194,7 +6245,7 @@ def matmul_internal(a, b, reduction=False, out=None):
     # If the output is not distributed then do the compute localized and then reduce.
     if not reduction and do_not_distribute(out_shape):
         dprint(2, "matmul output is not distributed and is not recursive")
-        if ntiming >= 1:
+        if ntiming >= 2:
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
@@ -6257,7 +6308,7 @@ def matmul_internal(a, b, reduction=False, out=None):
                 out_ndarray[:] = fromarray(redres)
                 fromarray_end_time = timer()
 
-                if ntiming >= 1:
+                if ntiming >= 2:
                     sync()
                 sync_end_time = timer()
                 tprint(
@@ -6380,7 +6431,7 @@ def matmul_internal(a, b, reduction=False, out=None):
                 out_ndarray[:] = fromarray(redres)
                 fromarray_end_time = timer()
 
-                if ntiming >= 1:
+                if ntiming >= 2:
                     sync()
                 sync_end_time = timer()
                 tprint(
@@ -6545,7 +6596,7 @@ def matmul_internal(a, b, reduction=False, out=None):
                     print("partial result:", p)
             out_ndarray[:] = functools.reduce(operator.add, partials)
 
-            if ntiming >= 1:
+            if ntiming >= 2:
                 sync()
 
             matmul_end_time = timer()
@@ -6602,7 +6653,7 @@ def matmul_internal(a, b, reduction=False, out=None):
                 return out_ndarray
 
     if not reduction:
-        if ntiming >= 1:
+        if ntiming >= 2:
             sync_start_time = timer()
             sync()
             sync_end_time = timer()
@@ -6715,14 +6766,14 @@ def matmul_internal(a, b, reduction=False, out=None):
             return out_ndarray
 
 
-def matmul_summary():
+def timing_summary():
     print("Timing summary")
     print(get_timing_str(details=True))
 
 
 if ntiming > 0:
-    print("registering matmul_summary")
-    atexit.register(matmul_summary)
+    print("registering timing_summary")
+    atexit.register(timing_summary)
 
 
 def canonical_dim(dim, dim_size, end=False, neg_slice=False, checkbounds=False, axis=0):
@@ -7187,7 +7238,9 @@ class deferred_op:
                     ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
         else:
             code = ""
-        fname = "ramba_deferred_ops_func_" + str(len(args)) + str(abs(hash(code)))
+        # Use hashlib here so that hash is same every time so that caching works.
+        code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
+        fname = "ramba_deferred_ops_func_" + str(len(args)) + str(code_hash)
         code = "def " + fname + "(global_start," + ",".join(args) + "):" + code + "\n  pass"
         if (debug_showcode or ndebug>=2) and is_main_thread:
             print("Executing code:\n" + code)
@@ -7219,7 +7272,7 @@ class deferred_op:
                 ).remote_constructed = True  # set remote_constructed
                 bdarray.get_by_gid(k).flex_dist = False  # not flexible anymore
         times.append(timer())
-        if ntiming >= 1:
+        if ntiming >= 2:
             times = [
                 int((times[i] - times[i - 1]) * 1000000) / 1000
                 for i in range(1, len(times))
@@ -8655,7 +8708,7 @@ def sync():
     #deferred_op.do_ops()
     remote_call_all("nop")
     sync_end_time = timer()
-    tprint(1, "sync_func_time", sync_end_time - sync_start_time)
+    tprint(2, "sync_func_time", sync_end_time - sync_start_time)
 
 
 
@@ -9108,7 +9161,7 @@ class RambaGroupby:
         mean_func_txt +=  "    return (sumout, countout)\n"
         ldict = {}
         gdict = globals()
-        exec(mean_func_txt, gdict, ldict)
+        ffunc = ramba_exec("mean_func", mean_func_txt, gdict, ldict)
         dprint(2, "mean_func:", mean_func_txt)
 
         def mean_reducer_driver(result, fres):
@@ -9117,7 +9170,7 @@ class RambaGroupby:
         def mean_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["mean_func"],
+        res = sreduce_index(ffunc,
                             SreduceReducer(mean_reducer_worker, mean_reducer_driver),
                             mean_identity(drop_groupdim, self.array_to_group.dtype),
                             self.array_to_group,
@@ -9156,7 +9209,7 @@ class RambaGroupby:
         mean_func_txt +=  "    return (sumout, countout)\n"
         ldict = {}
         gdict = globals()
-        exec(mean_func_txt, gdict, ldict)
+        ffunc = ramba_exec("mean_func", mean_func_txt, gdict, ldict)
 
         def mean_reducer_driver(result, fres):
             return (result[0] + fres[0], result[1] + fres[1])
@@ -9165,7 +9218,7 @@ class RambaGroupby:
             return fres
 
         #res = sreduce_index(ldict["mean_func"], SreduceReducer(lambda x, y: y, lambda x, y: (x[0] + y[0], x[1] + y[1])), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim))
-        res = sreduce_index(ldict["mean_func"], SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(mean_reducer_worker, mean_reducer_driver), mean_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, mean_sum(drop_groupdim, self.array_to_group.dtype), mean_count(drop_groupdim), parallel=False)
         tprint(2, "groupby mean time:", timer() - mean_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res[0])
@@ -9195,7 +9248,7 @@ class RambaGroupby:
         sum_func_txt +=  "    return sumout\n"
         ldict = {}
         gdict = globals()
-        exec(sum_func_txt, gdict, ldict)
+        ffunc = ramba_exec("sum_func", sum_func_txt, gdict, ldict)
 
         def sum_reducer_driver(result, fres):
             return result + fres
@@ -9203,7 +9256,7 @@ class RambaGroupby:
         def sum_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["sum_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby sum time:", timer() - sum_start)
         #with np.printoptions(threshold=np.inf):
         #    print("sum last:", res)
@@ -9229,7 +9282,7 @@ class RambaGroupby:
         count_func_txt +=  "    return countout\n"
         ldict = {}
         gdict = globals()
-        exec(count_func_txt, gdict, ldict)
+        ffunc = ramba_exec("count_func", count_func_txt, gdict, ldict)
 
         def count_reducer_driver(result, fres):
             return result + fres
@@ -9237,7 +9290,7 @@ class RambaGroupby:
         def count_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["count_func"], SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_identity(drop_groupdim), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(count_reducer_worker, count_reducer_driver), count_identity(drop_groupdim), self.array_to_group, self.np_group, count_identity(drop_groupdim), parallel=False)
         tprint(2, "groupby count time:", timer() - count_start)
         #with np.printoptions(threshold=np.inf):
         #    print("count last:", res)
@@ -9263,7 +9316,7 @@ class RambaGroupby:
         prod_func_txt +=  "    return prodout\n"
         ldict = {}
         gdict = globals()
-        exec(prod_func_txt, gdict, ldict)
+        ffunc = ramba_exec("prod_func", prod_func_txt, gdict, ldict)
 
         def prod_reducer_driver(result, fres):
             return result * fres
@@ -9271,7 +9324,7 @@ class RambaGroupby:
         def prod_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["prod_func"], SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(prod_reducer_worker, prod_reducer_driver), prod_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, prod_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby prod time:", timer() - prod_start)
         #with np.printoptions(threshold=np.inf):
         #    print("prod last:", res)
@@ -9297,7 +9350,7 @@ class RambaGroupby:
         min_func_txt +=  "    return minout\n"
         ldict = {}
         gdict = globals()
-        exec(min_func_txt, gdict, ldict)
+        ffunc = ramba_exec("min_func", min_func_txt, gdict, ldict)
 
         def min_reducer_driver(result, fres):
             return np.minimum(result, fres)
@@ -9305,7 +9358,7 @@ class RambaGroupby:
         def min_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["min_func"], SreduceReducer(min_reducer_worker, min_reducer_driver), min_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, min_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(min_reducer_worker, min_reducer_driver), min_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, min_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby min time:", timer() - min_start)
         #with np.printoptions(threshold=np.inf):
         #    print("min last:", res)
@@ -9331,7 +9384,7 @@ class RambaGroupby:
         max_func_txt +=  "    return maxout\n"
         ldict = {}
         gdict = globals()
-        exec(max_func_txt, gdict, ldict)
+        ffunc = ramba_exec("max_func", max_func_txt, gdict, ldict)
 
         def max_reducer_driver(result, fres):
             return np.maximum(result, fres)
@@ -9339,7 +9392,7 @@ class RambaGroupby:
         def max_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["max_func"], SreduceReducer(max_reducer_worker, max_reducer_driver), max_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, max_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(max_reducer_worker, max_reducer_driver), max_identity(drop_groupdim, self.array_to_group.dtype), self.array_to_group, self.np_group, max_identity(drop_groupdim, self.array_to_group.dtype), parallel=False)
         tprint(2, "groupby max time:", timer() - max_start)
         #with np.printoptions(threshold=np.inf):
         #    print("max last:", res)
@@ -9369,7 +9422,7 @@ class RambaGroupby:
         sqr_mean_diff_func_txt +=  "    return sumout\n"
         ldict = {}
         gdict = globals()
-        exec(sqr_mean_diff_func_txt, gdict, ldict)
+        ffunc = ramba_exec("sqr_mean_diff_func", sqr_mean_diff_func_txt, gdict, ldict)
 
         def sum_reducer_driver(result, fres):
             return result + fres
@@ -9377,7 +9430,7 @@ class RambaGroupby:
         def sum_reducer_worker(result, fres):
             return fres
 
-        res = sreduce_index(ldict["sqr_mean_diff_func"], SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, mean_groupby.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, mean_groupby.dtype), mean_groupby, parallel=False)
+        res = sreduce_index(ffunc, SreduceReducer(sum_reducer_worker, sum_reducer_driver), sum_identity(drop_groupdim, mean_groupby.dtype), self.array_to_group, self.np_group, sum_identity(drop_groupdim, mean_groupby.dtype), mean_groupby, parallel=False)
         res_var = res / mean_groupby_count
         tprint(2, "groupby var time:", timer() - var_start)
         #with np.printoptions(threshold=np.inf):
@@ -9415,6 +9468,7 @@ def groupby_attr(item, itxt, imports, dtype):
     func_txt +=  "    return res\n"
     ldict = {}
     gdict = globals()
+    # ramba_exec here?  FIX ME? TODO?
     exec(func_txt, gdict, ldict)
     return ldict[f"gba{item}"]
 

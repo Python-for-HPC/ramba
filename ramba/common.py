@@ -190,6 +190,12 @@ else:
     ramba_cache = False
 
 
+ramba_cache_dir = os.environ.get("RAMBA_CACHE_DIR", "")
+if ramba_cache_dir:
+    cache_dir_exists = os.path.exists(ramba_cache_dir)
+    assert cache_dir_exists
+
+
 def do_not_distribute(size):
     return np.prod(size) < distribute_min_size
 
