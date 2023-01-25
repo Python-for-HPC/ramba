@@ -220,8 +220,8 @@ if ramba_cache:
 def ramba_exec(fname, code, gdict, ldict):
     exec(code, gdict, ldict)
     func = ldict[fname]
-    func.__code__ = func.__code__.replace(co_filename=f"<ramba-{fname}")
-    #func.__code__ = func.__code__.replace(co_filename=f"<ipython-{fname}")
+    if ramba_cache:
+        func.__code__ = func.__code__.replace(co_filename=f"<ramba-{fname}")
     return func
 
 
