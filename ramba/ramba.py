@@ -209,7 +209,12 @@ class RambaCacheLocatorForNumba(numba.core.caching._CacheLocator):
         return self
 
 
-numba.core.caching.CacheImpl._locator_classes.append(RambaCacheLocatorForNumba)
+if ramba_cache:
+    if hasattr(numba.core.caching, "CacheImpl"):
+        numba.core.caching.CacheImpl._locator_classes.append(RambaCacheLocatorForNumba)
+    else:
+        ramba_cache = False
+        print("Ramba caching disabled due to old version of Numba.")
 
 
 def ramba_exec(fname, code, gdict, ldict):
