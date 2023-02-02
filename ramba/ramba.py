@@ -30,7 +30,6 @@ import operator
 import copy as libcopy
 import pickle as pickle
 import gc
-import inspect
 import atexit
 import builtins
 import hashlib
@@ -3868,16 +3867,23 @@ def _real_remote(nodeid, method, has_retval, args, kwargs):
     return rvid + str(nodeid) if has_retval else None
 
 
-def get_results(refs):
+def get_results(refs, timing=True):
     if (USE_MPI and not USE_MPI_CW) or USE_NON_DIST:
         if USE_NON_DIST: assert isinstance(refs, list)
         return refs
     if USE_RAY_CALLS:
-        return ray.get(refs)
+        get_start = timer()
+        rv = ray.get(refs)
+        get_end = timer()
+        add_time("get_results", get_end - get_start)
+        return rv
     if isinstance(refs, list):
-        rv = [get_results(v) for v in refs]
+        rv = [get_results(v, timing=False) for v in refs]
     else:
+        get_start = timer()
         rv = retval_queue.get(gfilter=lambda x: x[0] == refs or x[0] == "ERROR")
+        get_end = timer()
+        add_time("get_results", get_end - get_start)
         if rv[0] == "ERROR":
             raise Exception("Exception in Remote Worker " + str(rv[1]) + "\n" + rv[2])
         rv = rv[1]
@@ -4332,8 +4338,11 @@ class DAG:
         dag_deps = []
         get_ndarrays(list(args), dag_deps)
         get_ndarrays(list(kwargs.values()), dag_deps)
-        the_stack = inspect.stack()
-        caller = get_non_ramba_callsite(the_stack)
+        if ndebug >= 1:
+            the_stack = inspect.stack()
+            caller = get_non_ramba_callsite(the_stack)
+        else:
+            caller = ""
         dag = DAG(name, executor, delayed.inplace, dag_deps, args, caller, kwargs, delayed.aliases)
         cls.dag_unexecuted_count += 1
         if ndebug >= 2 or debug_dag_history:
@@ -4735,6 +4744,7 @@ class DAG:
         add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
         add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
         add_time("instantiate_dag_node_execute", exec_time)
+        add_sub_time("instantiate_dag_node_execute", op.name, exec_time)
 
     @classmethod
     def print_nodes(cls):
@@ -4845,6 +4855,7 @@ def DAGapi(func):
             ret = fres
         wrap_end = timer()
         add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
+        add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
         add_time("DAGapi_total", (wrap_end - wrap_start))
         return ret
     return wrapper
@@ -5437,21 +5448,29 @@ class ndarray:
                     raise np.AxisError("Error axis must be 0")
                 axis = None
             if axis is None or (axis == 0 and self.ndim == 1):
+                reduction2b_start = timer()
                 #if asarray:
                 #    return DAGshape((1,), dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
                 red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
-                return red_arr.internal_reduction2b(op, dtype, asarray)
+                redres = red_arr.internal_reduction2b(op, dtype, asarray)
+                reduction2b_end = timer()
+                add_sub_time("DAGapi", "unary_reduction2b", reduction2b_end - reduction2b_start)
+                return redres
             else:
+                reduction2_start = timer()
                 #outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
                 red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-                return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+                redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+                reduction2_end = timer()
+                add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
+                return redres
         else:
             return self.internal_array_unaryop(op, optext, imports, dtype)
 
@@ -7277,13 +7296,14 @@ class deferred_op:
                 ).remote_constructed = True  # set remote_constructed
                 bdarray.get_by_gid(k).flex_dist = False  # not flexible anymore
         times.append(timer())
-        if ntiming >= 2:
+        if ntiming >= 1:
             times = [
                 int((times[i] - times[i - 1]) * 1000000) / 1000
                 for i in range(1, len(times))
             ]
-            print("Deferred Ops execution", times)
-            tprint(2, "deferred_ops::execute code", code)
+            if ntiming >= 2:
+                print("Deferred Ops execution", times)
+                tprint(2, "deferred_ops::execute code", code)
             add_time("driver_deferred_op", builtins.sum(times) / 1000)
 
     # TODO: There may be a race condition here.  Need to check and fix.
@@ -7354,6 +7374,7 @@ class deferred_op:
         cls, oplist, write_array, imports=[], axis_reduce=None, precode=[], postcode=[]
     ):  # oplist is a list of alternating code string, variable reference, code ...
         t0 = timer()
+        do_op_time = 0
         dprint(1, "ADD_OP: time from last", (t0 - cls.last_add_time) * 1000)
         # get code and variables from oplist
         codes = oplist[::2]
@@ -7386,13 +7407,19 @@ class deferred_op:
                 cls.ramba_deferred_ops.distribution,
                 distribution,
             )
+            do_op_start = timer()
             cls.ramba_deferred_ops.do_ops()
+            do_op_end = timer()
+            do_op_time += (do_op_end - do_op_start)
 
         # Check if reductions on an axis (if any) are consistent
         if (cls.ramba_deferred_ops is not None and axis_reduce is not None and
                 len(cls.ramba_deferred_ops.axis_reductions)>0 and
                 cls.ramba_deferred_ops.axis_reductions[0][0] != axis_reduce[0]):
+            do_op_start = timer()
             cls.ramba_deferred_ops.do_ops()
+            do_op_end = timer()
+            do_op_time += (do_op_end - do_op_start)
 
         # Alias check 1;  op reads/writes shifted version of an array that was written previously
         if ( cls.ramba_deferred_ops is not None and builtins.any([
@@ -7400,7 +7427,10 @@ class deferred_op:
                 for o in operands for (wgid,wdist) in cls.ramba_deferred_ops.write_arrs]) ):
             dprint(2, "Read/write after write with mismatched distributions detected. Will not fuse.")
             # force prior stuff to execute
+            do_op_start = timer()
             cls.ramba_deferred_ops.do_ops()
+            do_op_end = timer()
+            do_op_time += (do_op_end - do_op_start)
 
         # Alias check 2:  op writes and reads from shifted versions of same array
         #    NOTE:  works only for assignment / inplace operators, not general functions
@@ -7415,7 +7445,10 @@ class deferred_op:
             oplist[1] = tmp_array
             oplist[2] = ' = '
             cls.add_op( oplist, tmp_array, imports, precode=precode )
+            do_op_start = timer()
             cls.ramba_deferred_ops.do_ops()
+            do_op_end = timer()
+            do_op_time += (do_op_end - do_op_start)
             precode=[]
             oplist = [ '', write_array, orig_op, tmp_array ]
             operands = [ write_array, tmp_array ]
@@ -7482,6 +7515,9 @@ class deferred_op:
         t1 = timer()
         cls.last_add_time = t0
         dprint(2, "Added line:", codeline, "Time:", (t1 - t0) * 1000)
+        add_time("deferred_ops::add_op", (t1 - t0) - do_op_time)
+        if do_op_time != 0:
+            add_time("deferred_ops::add_op_do_op", do_op_time)
 
 
 
