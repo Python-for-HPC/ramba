@@ -132,6 +132,7 @@ class Filler:
     PER_ELEMENT = 0
     WHOLE_ARRAY_NEW = 1
     WHOLE_ARRAY_INPLACE = 2
+    __slots__ = ('func', 'mode', 'do_compile')
 
     def __init__(self, func, mode=PER_ELEMENT, do_compile=False):
         self.func = func
@@ -140,6 +141,8 @@ class Filler:
 
 
 class FillerFunc:
+    __slots__ = ('func',)
+
     def __init__(self, func):
         self.func = func
 
@@ -162,6 +165,7 @@ class FillerFunc:
 # Caching related items.
 
 class RambaCacheLocatorForNumba(numba.core.caching._CacheLocator):
+    __slots__ = ('_py_file', '_cache_path', '_bytes_source')
     """
     A locator that always point to the user provided directory in
     `numba.config.CACHE_DIR`
@@ -233,6 +237,8 @@ def get_fm(func: FillerFunc, parallel, cache=False):
 
 
 class FunctionMetadata:
+    __slots__ = ('func', 'dargs', 'dkwargs', 'numba_args', 'numba_func', 'numba_pfunc', 'nfunc', 'npfunc', 'ngfunc', 'no_global_cache', 'parallel')
+
     def __init__(self, func, dargs, dkwargs, no_global_cache=False, parallel=True):
         self.func = func
         self.dargs = dargs
@@ -1014,17 +1020,19 @@ class bdarray:
         weakref.WeakValueDictionary()
     )  # global map from gid to weak references of bdarrays
 
+    __slots__ = ('shape', 'gid', 'pad', 'distribution', 'nd_set', 'nrefs', 'remote_constructed', 'flex_dist', 'dtype', 'idag', '__weakref__')
+
     def __init__(self, shape, distribution, gid, pad, fdist, dtype):
         self.shape = shape
         self.gid = gid
         self.pad = pad
         self.distribution = distribution
         self.nd_set = weakref.WeakSet()
-        self.nrefs=0
+        self.nrefs = 0
         self.remote_constructed = False
         self.flex_dist = fdist
-        assert gid not in self.gid_map
-        self.gid_map[gid] = self
+        assert gid not in bdarray.gid_map
+        bdarray.gid_map[gid] = self
         self.dtype = dtype
         self.idag = None
         #self.idag = DAG("Unknown", None, False, [], (), ("Unknown DAG", 0), {}, executed=True, output=weakref.ref(self))
@@ -1128,6 +1136,8 @@ def make_padded_shard(core, boundary):
 
 
 class LocalNdarray:
+    __slots__ = ('gid', 'remote', 'subspace', 'dim_lens', 'core_slice', 'whole', 'border', 'allocated_size', 'whole_space', 'from_border', 'to_border', 'dtype', 'bcontainer')
+
     def __init__(
         self,
         gid,
@@ -1804,6 +1814,8 @@ def external_set_common_state(st):
     set_common_state(st, globals())
 
 class RemoteState:
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'comm_queues', 'control_queues', 'is_aggregator')
+
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
         z = numa.set_affinity(worker_num, numa_zones)
@@ -4224,6 +4236,7 @@ class DAG:
     dag_unexecuted_count = 0
     count_history = []
     instantiate_callsites = []
+    __slots__ = ('name', 'seq_no', 'executor', 'inplace', 'args', 'caller', 'kwargs', 'aliases', 'forward_deps', 'backward_deps', 'executed', 'output', '__weakref__')
 
     def __init__(self, name, executor, inplace, dag_deps, args, caller, kwargs, aliases=None, executed=False, *, output=None):
         self.name = name
@@ -4632,7 +4645,7 @@ class DAG:
                 break
 
         if dag_node.output() is None:
-            dag_output_shape=None
+            dag_output_shape = None
         else:
             dag_output_shape = dag_node.output().shape
         matching_shape = list(filter(lambda x: x.output() is not None and x.output().shape == dag_output_shape, dag_node.backward_deps))
@@ -4802,6 +4815,8 @@ atexit.register(DAG.atexit)
 
 
 class DAGshape:
+    __slots__ = ('shape', 'dtype', 'inplace', 'aliases', 'extra_ndarray_opts', 'replaced_args', 'replaced_kwargs')
+
     def __init__(self, shape, dtype, inplace, aliases=None, extra_ndarray_opts={}, replaced_args=None, replaced_kwargs=None):
         self.shape = shape
         self.dtype = dtype
@@ -4893,6 +4908,8 @@ def instantiate_all(*args, **kwargs):
 
 
 class gid_dist:
+    __slots__ = ('gid', 'dist')
+
     def __init__(self, gid, dist):
         self.gid = gid
         self.dist = dist
@@ -4929,6 +4946,8 @@ def set_writeable_executor(temp_array, flags, input_arr, val):
     temp_array.readonly = not val
 
 class ndarray_flags:
+    __slots__ = ('arr', )
+
     def __init__(self, arr):
         self.arr = arr
 
@@ -4951,6 +4970,8 @@ class ndarray_flags:
 
 class ndarray:
     all_arrays = weakref.WeakSet()
+
+    __slots__ = ('base', 'bdarray', 'shape', 'distribution', 'local_border', 'getitem_cache', 'from_border', 'to_border', 'readonly', 'idag', 'maskarray', 'constraints', 'once', 'internal_numpy', '__weakref__')
 
     def __init__(
         self,
@@ -5017,6 +5038,7 @@ class ndarray:
             self.once = False
         if ndebug >= 3:
             ndarray.all_arrays.add(self)
+        self.internal_numpy = None
 
     def __getstate__(self):
         ret = np.array(self)
@@ -5076,8 +5098,7 @@ class ndarray:
         (self.bdarray,other.bdarray) = (other.bdarray,self.bdarray)
         self.bdarray.idag = orig_idag
         #self.idag = other.idag
-        if hasattr(other, "internal_numpy"):
-            self.internal_numpy = other.internal_numpy
+        self.internal_numpy = other.internal_numpy
         dprint(2,"assign complete", id(self), id(other), id(self.bdarray), id(other.bdarray))
         self.once = True
 
@@ -6989,6 +7010,8 @@ def make_method(
 
 
 class op_info:
+    __slots__ = ('code', 'func', 'init', 'imports', 'dtype')
+
     def __init__(self, code, func="", init=None, imports=[], dtype=None):
         self.code = code
         self.func = func
@@ -7124,6 +7147,8 @@ class deferred_op:
     count = 0
     last_call_time = timer()
     last_add_time = timer()
+
+    __slots__ = ('shape', 'distribution', 'flex_dist', 'delete_gids', 'read_arrs', 'write_arrs', 'use_gids', 'preconstructed_gids', 'use_other', 'temp_vars', 'codelines', 'precode', 'postcode', 'imports', 'axis_reductions', 'varcount', 'keepalives', 'uuid')
 
     def __init__(self, shape, distribution, fdist):
         self.shape = shape
@@ -8835,6 +8860,8 @@ def smap_index(func, *args, dtype=None, parallel=True, imports=[]):
 
 
 class SreduceReducer:
+    __slots__ = ('worker_func', 'driver_func')
+
     def __init__(self, worker_func, driver_func):
         self.worker_func = worker_func
         self.driver_func = driver_func
@@ -9084,6 +9111,8 @@ def spmd(func, *args, **kwargs):
 #-------------------------------------------------------------------------------
 
 class mean_identity:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9092,6 +9121,8 @@ class mean_identity:
         return (np.zeros(self.drop_groupdim, dtype=self.dtype), np.zeros(self.drop_groupdim, dtype=int))
 
 class mean_sum:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9100,6 +9131,8 @@ class mean_sum:
         return np.zeros(self.drop_groupdim, dtype=self.dtype)
 
 class mean_count:
+    __slots__ = ('drop_groupdim', )
+
     def __init__(self, drop_groupdim):
         self.drop_groupdim = drop_groupdim
 
@@ -9109,6 +9142,8 @@ class mean_count:
 #-------------------------------------------------------------------------------
 
 class sum_identity:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9119,6 +9154,8 @@ class sum_identity:
 #-------------------------------------------------------------------------------
 
 class count_identity:
+    __slots__ = ('drop_groupdim', )
+
     def __init__(self, drop_groupdim):
         self.drop_groupdim = drop_groupdim
 
@@ -9128,6 +9165,8 @@ class count_identity:
 #-------------------------------------------------------------------------------
 
 class prod_identity:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9138,6 +9177,8 @@ class prod_identity:
 #-------------------------------------------------------------------------------
 
 class min_identity:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9154,6 +9195,8 @@ class min_identity:
 #-------------------------------------------------------------------------------
 
 class max_identity:
+    __slots__ = ('drop_groupdim', 'dtype')
+
     def __init__(self, drop_groupdim, dtype):
         self.drop_groupdim = drop_groupdim
         self.dtype = dtype
@@ -9173,6 +9216,8 @@ class max_identity:
 # aggregations to do: argmin, argmax, first, last, all, any
 
 class RambaGroupby:
+    __slots__ = ('array_to_group', 'dim', 'group_array', 'num_groups', 'np_group')
+
     def __init__(self, array_to_group, dim, group_array, num_groups=None):
         self.array_to_group = array_to_group
         self.dim = dim
