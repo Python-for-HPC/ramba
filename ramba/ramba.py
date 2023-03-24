@@ -104,7 +104,7 @@ from numba import prange
 from numba import core as numba_core
 
 try:
-    @numba.njit
+    @numba.njit(fastmath=fastmath)
     def try_bool_min(v1, v2):
         return min(v1, v2)
     try_bool_min(True, False)
@@ -233,7 +233,7 @@ def get_fm(func: FillerFunc, parallel, cache=False):
     real_func = func.func
     dprint(2, "get_fm for function", real_func.__name__, "parallel =", parallel)
     assert isinstance(real_func, types.FunctionType)
-    return numba.njit(parallel=parallel, cache=cache)(real_func)
+    return numba.njit(parallel=parallel, cache=cache, fastmath=fastmath)(real_func)
 
 
 class FunctionMetadata:
@@ -289,10 +289,10 @@ class FunctionMetadata:
                 self.numba_pfunc = get_fm(FillerFunc(self.func), True, cache=ramba_cache)
                 self.numba_func = get_fm(FillerFunc(self.func), False, cache=ramba_cache)
             else:
-                self.numba_pfunc = numba.njit(parallel=True, cache=ramba_cache, **self.numba_args)(
+                self.numba_pfunc = numba.njit(parallel=True, cache=ramba_cache, fastmath=fastmath, **self.numba_args)(
                     self.func
                 )
-                self.numba_func = numba.njit(cache=ramba_cache, **self.numba_args)(self.func)
+                self.numba_func = numba.njit(cache=ramba_cache, fastmath=fastmath, **self.numba_args)(self.func)
 
         if gpu_present and self.parallel:
             dprint(1, "using gpu context")
@@ -327,9 +327,9 @@ class FunctionMetadata:
                                         etes.sfunc
                                     )  # Rewrite the global to the Numba StencilFunc
                                     self.numba_pfunc = numba.njit(
-                                        parallel=True, **self.numba_args
+                                        parallel=True, fastmath=fastmath, **self.numba_args
                                     )(self.func)
-                                    self.numba_func = numba.njit(**self.numba_args)(
+                                    self.numba_func = numba.njit(fastmath=fastmath, **self.numba_args)(
                                         self.func
                                     )
                             if not try_again:
@@ -377,9 +377,9 @@ class FunctionMetadata:
                                 etes.sfunc
                             )  # Rewrite the global to the Numba StencilFunc
                             self.numba_pfunc = numba.njit(
-                                parallel=True, **self.numba_args
+                                parallel=True, fastmath=fastmath, **self.numba_args
                             )(self.func)
-                            self.numba_func = numba.njit(**self.numba_args)(self.func)
+                            self.numba_func = numba.njit(fastmath=fastmath, **self.numba_args)(self.func)
                     if not try_again:
                         self.npfunc[atypes] = False
                         dprint(
@@ -948,6 +948,17 @@ def get_timing(details=False):
     stats = remote_call_all("get_def_ops_stats")
     remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
     time_dict["remote_deferred_ops"] = {0: remote_maximum}
+    remote_exec_maximum = functools.reduce(lambda a, b: a if a[2] > b[2] else b, stats)
+    remote_exec_minimum = functools.reduce(lambda a, b: a if a[2] < b[2] else b, stats)
+    time_dict["remote_deferred_ops_exec_max"] = {0: remote_exec_maximum}
+    time_dict["remote_deferred_ops_exec_min"] = {0: remote_exec_minimum}
+    time_dict["worker_1_per_func"] = {0: stats[3]}
+    stats_per_func_1 = stats[1][3]
+    keys = list(stats_per_func_1.keys())
+    values = list(stats_per_func_1.values())
+    svi = np.argsort(values)
+    for i in svi:
+        print(keys[i], values[i])
 
     if details:
         return time_dict
@@ -1479,7 +1490,7 @@ def division_non_empty(x):
         assert 0
 
 
-@numba.njit(parallel=True, cache=True)
+@numba.njit(parallel=True, fastmath=fastmath, cache=True)
 def reduce_list(x):
     res = np.zeros(x[0].shape)
     for i in numba.prange(len(x)):
@@ -1814,7 +1825,7 @@ def external_set_common_state(st):
     set_common_state(st, globals())
 
 class RemoteState:
-    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'comm_queues', 'control_queues', 'is_aggregator')
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator')
 
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
@@ -1848,6 +1859,8 @@ class RemoteState:
             numba.core.event.register("numba:compile", self.compile_recorder)
         self.deferred_ops_time = 0
         self.deferred_ops_count = 0
+        self.deferred_exec_time = 0
+        self.per_func = {}
 
     def set_comm_queues(self, comm_queues, control_queues):
         self.comm_queues = comm_queues
@@ -3639,6 +3652,7 @@ class RemoteState:
         if len(ranges) > 1:
             dprint(2, "Ranges:", len(ranges))
 
+        total_elements = 0
         # execute function in each range
         for i, r in enumerate(ranges):
             arrvars = rangedvars[i]
@@ -3648,6 +3662,7 @@ class RemoteState:
                 for k, v in othervars.items():
                     dprint(4, "others:", k, v, type(v))
 
+                total_elements += sum([x.size for x in arrvars.values()]) 
                 func(shardview._index_start(r), **arrvars, **othervars)
                 for k, v in arrvars.items():
                     dprint(4, "results:", k, v, type(v))
@@ -3663,6 +3678,10 @@ class RemoteState:
         times.append(tnow)
         self.deferred_ops_time += tnow - times[0]
         self.deferred_ops_count += 1
+        self.deferred_exec_time += times[8]
+        if fname not in self.per_func:
+            self.per_func[fname] = 0
+        self.per_func[fname] += times[8]
         if ntiming >= 2 and self.worker_num == timing_debug_worker:
             times = [
                 int((times[i] - times[i - 1]) * 1000000) / 1000
@@ -3677,6 +3696,9 @@ class RemoteState:
                 int(getview_time * 1000000) / 1000,
                 int(arrview_time * 1000000) / 1000,
                 int(copy_time * 1000000) / 1000,
+                fname,
+                len(code),
+                total_elements,
             )
             tprint(2, code)
         self.tlast = tnow
@@ -3693,9 +3715,12 @@ class RemoteState:
     def reset_def_ops_stats(self):
         self.deferred_ops_time = 0
         self.deferred_ops_count = 0
+        self.deferred_exec_time = 0
+        self.per_func = {}
 
     def get_def_ops_stats(self):
-        return (self.deferred_ops_count, self.deferred_ops_time)
+        print("per_func remote:", type(self.per_func), self.per_func)
+        return (self.deferred_ops_count, self.deferred_ops_time, self.deferred_exec_time, self.per_func)
 
     def reset_compile_stats(self):
         if numba.version_info.short >= (0, 53):
@@ -4946,7 +4971,7 @@ def set_writeable_executor(temp_array, flags, input_arr, val):
     temp_array.readonly = not val
 
 class ndarray_flags:
-    __slots__ = ('arr', )
+    __slots__ = ('arr',)
 
     def __init__(self, arr):
         self.arr = arr
@@ -6961,7 +6986,7 @@ def numpy_broadcast_shape(a, b):
     return tuple(new_shape[::-1])
 
 
-@numba.njit
+@numba.njit(fastmath=fastmath)
 def internal_isclose(a,b,rtol=1e-5,atol=1e-8,equal_nan=False):
     return (
         (np.isfinite(a) and np.abs(a-b)<=(atol+rtol*np.abs(b))) or
@@ -7215,7 +7240,7 @@ class deferred_op:
 
     # Execute what we have now
     def execute(self):
-        gc.collect()  # Need to experiment if this is good or not.
+        #gc.collect()  # Need to experiment if this is good or not.
         times = [timer()]
         # Do stuff, then clear out list
         # print("Doing deferred ops", self.codelines)
@@ -7267,7 +7292,7 @@ class deferred_op:
         if len(self.codelines)>0 and len(live_gids)>0:
             an_array = list(live_gids.items())[0][1][0][0][0]
             precode.append( "  itershape = " + an_array + ".shape" )
-            if len(self.axis_reductions)>0:
+            if len(self.axis_reductions) > 0:
                 axis = self.axis_reductions[0][0]
                 if isinstance(axis, numbers.Integral):
                     axis = [axis]
