@@ -37,7 +37,7 @@ ramba_dummy_index = ramba_dist_dtype(0)
 #   item[i] is the m*k shardview corresponding to the portion on node/worker i
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def shardview(size, index_start=None, base_offset=None, axis_map=None, steps=None, dummy=ramba_dummy_index):
     m = 4 + (
         len(size) + (len(size) if base_offset is None else len(base_offset))
@@ -75,80 +75,80 @@ def shardview(size, index_start=None, base_offset=None, axis_map=None, steps=Non
 #        raise Exception("Should use is_eq or dist_is_eq")
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _size(s):
     return s[0]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _index_start(s):
     return s[1]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _stop(s):
     return s[0] + s[1]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _axis_map(s):
     return s[2]
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _steps(s):
     return s[3]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _base_offset(s):
     return s[4:].reshape(-1)[1 : s[4, 0] + 1]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def len_size(s):
     return s.shape[1]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def len_base_offset(s):
     return s[4, 0]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _start(s):
     return _index_start(s)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_start(sv):
     return _index_start(sv)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_size(sv):
     return _size(sv)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_base_offset(sv):
     return _base_offset(sv)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_axis_map(sv):
     return _axis_map(sv)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_stop(sv):
     return _stop(sv)
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_steps(sv):
     return _steps(sv)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def is_eq(sv, other):
     return (
         (_size(sv) == _size(other)).all()
@@ -158,7 +158,7 @@ def is_eq(sv, other):
         and (_steps(sv) == _steps(other)).all()
     )
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def is_eq_axis(sv, other, axis):
     return (
         (_size(sv)[axis] == _size(other)[axis])
@@ -169,19 +169,19 @@ def is_eq_axis(sv, other, axis):
     )
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def is_empty(sv):
     return (_size(sv) == 0).any()
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def is_compat(sv, other):
     return (_size(sv) == _size(other)).all() and (
         _index_start(sv) == _index_start(other)
     ).all()
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def overlaps(sv, other):
     return (
         np.logical_or(
@@ -191,14 +191,14 @@ def overlaps(sv, other):
     ).all()
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def contains(sv, other):
     return (not is_empty(other)) and (
         np.logical_and(_start(sv) <= _start(other), _stop(other) <= _stop(sv))
     ).all()
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def clean_range(sv):  # remove offset, axis_map, steps
     return shardview(_size(sv), _index_start(sv))
 
@@ -231,7 +231,7 @@ def index_to_base(sv, index, end=False):
     )
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def index_to_base_as_array(sv, index, end=False):
     assert len(index) == len_size(sv)
     offset = [index[i] - s for i,s in enumerate(_start(sv))]
@@ -337,7 +337,7 @@ import numba.cpython.unsafe.tuple as UT
 import ramba.numba_ext as UTx
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_base_slice(sv, arr):
     t = UTx.build_full_slice3_tuple(arr.ndim)
     s = _base_offset(sv)
@@ -356,7 +356,7 @@ def get_base_slice(sv, arr):
     return arr[t]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def has_index(sv, index):
     s = _index_start(sv)
     e = _stop(sv)
@@ -403,7 +403,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
     else:
         raise numba.core.errors.TypingError("ERR: slice contains something unexpected!", type(sl_i))
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def mapslice(sv, sl):
     # assert len(sl) == len_size(sv)  # This assert causes compilation failure at i+=1; likely due to Numba bug;  need to revisit
     sv_s = _start(sv)
@@ -425,7 +425,7 @@ def mapslice(sv, sl):
     return shardview(sz, si, b, _axis_map(sv), st)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def mapsv(sv, sl):
     assert len_size(sl) == len_size(sv)
     sv_s = _start(sv)
@@ -459,7 +459,7 @@ def mapsv(sv, sl):
 
 
 # Don't need to update for steps??
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def intersect(sv, sl):
     assert len_size(sv) == len_size(sl)
     sv_s = _index_start(sv)
@@ -472,7 +472,7 @@ def intersect(sv, sl):
     # return shardview(e-s, s, axis_map=_axis_map(sv))
 
 # Don't need to update for steps??
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def union(sv, sl):
     assert len_size(sv) == len_size(sl)
     sv_s = _index_start(sv)
@@ -547,7 +547,7 @@ def array_to_view(sv, arr):
     return outarr
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def to_division(sv):
     ret = np.full((2, len(_index_start(sv))), -1)
     ret[0] = _index_start(sv)
@@ -556,7 +556,7 @@ def to_division(sv):
     # return np.array([_index_start(sv), _stop(sv) - 1])
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def shape_to_div(shape, dummy=ramba_dummy_index):
     res = np.zeros((2, len(shape)), dtype=ramba_dist_dtype)
     for i in range(len(shape)):
@@ -565,14 +565,14 @@ def shape_to_div(shape, dummy=ramba_dummy_index):
 
 
 # still need?
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def slice_to_fortran(sl):
     ret = list(sl)
     ret.reverse()
     return tuple(ret)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def clean_dist(dist):
     first_clean = clean_range(dist[0])
     dshape = dist.shape
@@ -610,7 +610,7 @@ def clean_dist(dist):
 #    return s1_splits, s2_splits
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def cart_prod(r, shp):
     ndim = len(r)
     t = shp
@@ -626,7 +626,7 @@ def cart_prod(r, shp):
     return outarr.reshape(-1, ndim)
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_splits(r, v, shp):
     r_s = [x[:-1] for x in r]
     r_e = [x[1:] for x in r]
@@ -636,7 +636,7 @@ def get_splits(r, v, shp):
         v.append(shardview(el[i] - sl[i], sl[i]))
 
 
-@numba.njit(cache=True)  # doesn't work with cache=True
+@numba.njit(fastmath=fastmath, cache=True)  # doesn't work with cache=True
 def _get_range_splits_list(svl, shp):
     axis_ranges = [
         sorted(set([x for s in svl for x in [_start(s)[i], _stop(s)[i]]]))
@@ -653,7 +653,7 @@ def get_range_splits_list(svl):
     return _get_range_splits_list(svl, tuple([0] * svl[0].shape[1]))
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def _get_range_splits(s1, s2, shp):
     all_splits = get_range_splits_list([s1, s2], shp)
     s1_splits = [s for s in all_splits if contains(s1, s)]
@@ -665,7 +665,7 @@ def get_range_splits(s1, s2):
     return _get_range_splits(s1, s2, tuple([0] * s1.shape[1]))
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def compatible_distributions(d1, d2):
     if not len(d1) == len(d2):
         return False
@@ -676,7 +676,7 @@ def compatible_distributions(d1, d2):
     return True
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def dist_is_eq(d1, d2, axis=None):
     # return len(d1)==len(d2) and all([ is_eq(d1[i],d2[i]) for i in range(len(d1))])
     if not len(d1) == len(d2):
@@ -691,7 +691,7 @@ def dist_is_eq(d1, d2, axis=None):
     return True
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def slice_distribution(sl, dist):
     ret = np.empty_like(dist, dtype=ramba_dist_dtype)
     for i in range(dist.shape[0]):
@@ -700,7 +700,7 @@ def slice_distribution(sl, dist):
     # return np.array([ mapslice(dist[i],sl) for i in range(dist.shape[0]) ])
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def find_index(dist, index):
     for i in range(len(dist)):
         if has_index(dist[i], index):
@@ -708,7 +708,7 @@ def find_index(dist, index):
     return None
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def get_overlaps(k, dist1, dist2):
     return [
         i
@@ -718,7 +718,7 @@ def get_overlaps(k, dist1, dist2):
     # return [i  for i in range(dist1.shape[0])if (not is_empty(intersect(dist1[i],dist2[k]))) or (not is_empty(intersect(dist1[k],dist2[i])))]
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def divisions_to_distribution(divs, base_offset=None, axis_map=None, dummy=ramba_dummy_index):
     # dprint(4,"Divisions to convert:", divs, divs.shape, type(divs))
     divshape = divs.shape
@@ -767,7 +767,7 @@ def div_to_factors(divs):
         res.append(len(diffset))
     return res
 
-# @numba.njit(cache=True)
+# @numba.njit(fastmath=fastmath, cache=True)
 def global_to_divisions(dist):
     ret = np.empty((2, dist.shape[1]), dtype=ramba_dist_dtype)
     ret[0] = _index_start(dist)
@@ -775,7 +775,7 @@ def global_to_divisions(dist):
     return ret
 
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def distribution_to_divisions(dist):
     # return np.array([ [_index_start(d), _stop(d)-1] for d in dist ])
     ret = np.empty((dist.shape[0], 2, dist.shape[2]), dtype=ramba_dist_dtype)
@@ -922,7 +922,7 @@ def reduce_axes(size, dist, axes):
 def reduce_all_axes(size, dist):
     return reduce_axes_internal(size, dist, tuple(range(len(size))))
 
-@numba.njit(cache=True)
+@numba.njit(fastmath=fastmath, cache=True)
 def reduce_axes_internal(size, dist, axes):
     rdist = clean_dist(dist)
     bdist = clean_dist(dist)
