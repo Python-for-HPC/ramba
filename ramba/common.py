@@ -21,6 +21,7 @@ import copy as libcopy
 
 distribute_min_size = 100
 NUM_WORKERS_FOR_BCAST = 100
+fastmath = False
 
 non_dist_mode = int(os.environ.get("RAMBA_NON_DIST", "0"))
 
