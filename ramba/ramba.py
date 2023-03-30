@@ -67,16 +67,20 @@ import ramba.fileio as fileio
 
 try:
     import dpctl
+    import numba_dpex
+    import dpnp
 
-    dpctl_present = True
+    dpex_present = True
 except Exception:
-    dpctl_present = False
+    dpex_present = False
 
-dprint(3, "dpctl present =", dpctl_present)
+dprint(3, "dpex present =", dpex_present)
 
-if dpctl_present:
-    if dpctl.has_gpu_queues():
+if dpex_present:
+    if force_gpu == 1 or (force_gpu == -1 and dpctl.has_gpu_devices()):
         gpu_present = True
+        gpu_jit = numba_dpex.dpjit
+        shardview.bs_arr[dpnp.dpnp_array.dpnp_array] = gpu_jit
     else:
         gpu_present = False
 else:
@@ -84,9 +88,9 @@ else:
 
 dprint(3, "Ramba will use GPU =", gpu_present)
 
-if ndebug >= 3 and gpu_present:
-    os.environ["SYCL_PI_TRACE"] = "-1"
-    pass
+#if ndebug >= 3 and gpu_present:
+#    os.environ["SYCL_PI_TRACE"] = "-1"
+#    pass
 
 if ndebug >= 5:
     os.environ["NUMBA_DEBUG_ARRAY_OPT"] = "2"
@@ -96,7 +100,7 @@ import numpy as np
 newaxis = np.newaxis
 
 if gpu_present:
-    import dpctl.dptensor.numpy_usm_shared as gnp
+    import dpnp as gnp
 else:
     import numpy as gnp
 
@@ -284,103 +288,115 @@ class FunctionMetadata:
             else:
                 args_for_numba.append(arg)
 
-        if not self.numba_pfunc:
-            if len(self.numba_args) == 0 and not self.no_global_cache:
-                self.numba_pfunc = get_fm(FillerFunc(self.func), True, cache=ramba_cache)
-                self.numba_func = get_fm(FillerFunc(self.func), False, cache=ramba_cache)
-            else:
-                self.numba_pfunc = numba.njit(parallel=True, cache=ramba_cache, fastmath=fastmath, **self.numba_args)(
-                    self.func
-                )
-                self.numba_func = numba.njit(cache=ramba_cache, fastmath=fastmath, **self.numba_args)(self.func)
-
-        if gpu_present and self.parallel:
+        if gpu_present:
+        #if gpu_present and self.parallel:
             dprint(1, "using gpu context")
 
-            with dpctl.device_context("level0:gpu"):
-                while try_again and count < 2:
-                    count += 1
-                    try_again = False
-                    if self.ngfunc.get(atypes, True):
-                        try:
-                            ret = self.numba_pfunc(*args_for_numba, **kwargs)
-                            self.ngfunc[atypes] = True
-                            return ret
-                        except numba.core.errors.TypingError as te:
-                            tetxt = str(te)
-                            tesplit = tetxt.splitlines()
-                            for teline in tesplit:
-                                if (
-                                    "Untyped global name" in teline
-                                    and "ramba.StencilMetadata" in teline
-                                ):
-                                    try_again = True
-                                    # Name of global that is of type ramba.StencilMetadata
-                                    tes = teline[21:].split()[0][:-2]
-                                    outer_globals = self.func.__globals__
-                                    outer_locals = {}
-                                    etes = eval(tes, outer_globals, outer_locals)
-                                    etes.compile()  # Converts to a Numba StencilFunc
-                                    outer_globals[
-                                        tes
-                                    ] = (
-                                        etes.sfunc
-                                    )  # Rewrite the global to the Numba StencilFunc
-                                    self.numba_pfunc = numba.njit(
-                                        parallel=True, fastmath=fastmath, **self.numba_args
-                                    )(self.func)
-                                    self.numba_func = numba.njit(fastmath=fastmath, **self.numba_args)(
-                                        self.func
-                                    )
-                            if not try_again:
-                                self.ngfunc[atypes] = False
-                                dprint(
-                                    1,
-                                    "Numba GPU ParallelAccelerator attempt failed for",
-                                    self.func,
-                                )
-                        except Exception:
+            while try_again and count < 2:
+                count += 1
+                try_again = False
+                if self.ngfunc.get(atypes, True):
+                    try:
+                        if not self.numba_pfunc:
+                            self.numba_pfunc = gpu_jit(
+                                fastmath=fastmath, **self.numba_args
+                            )(self.func)
+                        ret = self.numba_pfunc(*args_for_numba, **kwargs)
+                        self.ngfunc[atypes] = True
+                        return ret
+                    except numba.core.errors.TypingError as te:
+                        tetxt = str(te)
+                        tesplit = tetxt.splitlines()
+                        for teline in tesplit:
+                            if (
+                                "Untyped global name" in teline
+                                and "ramba.StencilMetadata" in teline
+                            ):
+                                try_again = True
+                                # Name of global that is of type ramba.StencilMetadata
+                                tes = teline[21:].split()[0][:-2]
+                                outer_globals = self.func.__globals__
+                                outer_locals = {}
+                                etes = eval(tes, outer_globals, outer_locals)
+                                etes.compile()  # Converts to a Numba StencilFunc
+                                outer_globals[
+                                    tes
+                                ] = (
+                                    etes.sfunc
+                                )  # Rewrite the global to the Numba StencilFunc
+                                self.numba_pfunc = gpu_jit(
+                                    fastmath=fastmath, **self.numba_args
+                                )(self.func)
+                                self.numba_func = None 
+                        if not try_again:
                             self.ngfunc[atypes] = False
                             dprint(
                                 1,
                                 "Numba GPU ParallelAccelerator attempt failed for",
                                 self.func,
                             )
+                    except Exception:
+                        self.ngfunc[atypes] = False
+                        dprint(
+                            1,
+                            "Numba GPU ParallelAccelerator attempt failed for",
+                            self.func,
+                        )
+        else:
+            if not self.numba_pfunc:
+                if len(self.numba_args) == 0 and not self.no_global_cache:
+                    self.numba_pfunc = get_fm(FillerFunc(self.func), True, cache=ramba_cache)
+                    self.numba_func = get_fm(FillerFunc(self.func), False, cache=ramba_cache)
+                else:
+                    self.numba_pfunc = numba.njit(parallel=True, cache=ramba_cache, fastmath=fastmath, **self.numba_args)(
+                        self.func
+                    )
+                    self.numba_func = numba.njit(cache=ramba_cache, fastmath=fastmath, **self.numba_args)(self.func)
 
-        while try_again and count < 2 and self.parallel:
-        #while num_threads > 1 and try_again and count < 2:
-            count += 1
-            try_again = False
-            if self.npfunc.get(atypes, True):
-                try:
-                    ret = self.numba_pfunc(*args_for_numba, **kwargs)
-                    self.npfunc[atypes] = True
-                    return ret
-                except numba.core.errors.TypingError as te:
-                    tetxt = str(te)
-                    tesplit = tetxt.splitlines()
-                    for teline in tesplit:
-                        if (
-                            "Untyped global name" in teline
-                            and "ramba.StencilMetadata" in teline
-                        ):
-                            try_again = True
-                            # Name of global that is of type ramba.StencilMetadata
-                            tes = teline[21:].split()[0][:-2]
-                            outer_globals = self.func.__globals__
-                            outer_locals = {}
-                            etes = eval(tes, outer_globals, outer_locals)
-                            etes.compile()  # Converts to a Numba StencilFunc
-                            outer_globals[
-                                tes
-                            ] = (
-                                etes.sfunc
-                            )  # Rewrite the global to the Numba StencilFunc
-                            self.numba_pfunc = numba.njit(
-                                parallel=True, fastmath=fastmath, **self.numba_args
-                            )(self.func)
-                            self.numba_func = numba.njit(fastmath=fastmath, **self.numba_args)(self.func)
-                    if not try_again:
+            while try_again and count < 2 and self.parallel:
+            #while num_threads > 1 and try_again and count < 2:
+                count += 1
+                try_again = False
+                if self.npfunc.get(atypes, True):
+                    try:
+                        ret = self.numba_pfunc(*args_for_numba, **kwargs)
+                        self.npfunc[atypes] = True
+                        return ret
+                    except numba.core.errors.TypingError as te:
+                        tetxt = str(te)
+                        tesplit = tetxt.splitlines()
+                        for teline in tesplit:
+                            if (
+                                "Untyped global name" in teline
+                                and "ramba.StencilMetadata" in teline
+                            ):
+                                try_again = True
+                                # Name of global that is of type ramba.StencilMetadata
+                                tes = teline[21:].split()[0][:-2]
+                                outer_globals = self.func.__globals__
+                                outer_locals = {}
+                                etes = eval(tes, outer_globals, outer_locals)
+                                etes.compile()  # Converts to a Numba StencilFunc
+                                outer_globals[
+                                    tes
+                                ] = (
+                                    etes.sfunc
+                                )  # Rewrite the global to the Numba StencilFunc
+                                self.numba_pfunc = numba.njit(
+                                    parallel=True, fastmath=fastmath, **self.numba_args
+                                )(self.func)
+                                self.numba_func = numba.njit(fastmath=fastmath, **self.numba_args)(self.func)
+                        if not try_again:
+                            self.npfunc[atypes] = False
+                            dprint(
+                                1,
+                                "Numba ParallelAccelerator attempt failed for",
+                                self.func,
+                                atypes,
+                            )
+                    except Exception:
+                        if ndebug >= 2:
+                            traceback.print_exc()
                         self.npfunc[atypes] = False
                         dprint(
                             1,
@@ -388,36 +404,26 @@ class FunctionMetadata:
                             self.func,
                             atypes,
                         )
-                except Exception:
-                    if ndebug >= 2:
-                        traceback.print_exc()
-                    self.npfunc[atypes] = False
-                    dprint(
-                        1,
-                        "Numba ParallelAccelerator attempt failed for",
-                        self.func,
-                        atypes,
-                    )
-                    try:
-                        dprint(1, inspect.getsource(self.func))
-                    except Exception:
-                        pass
+                        try:
+                            dprint(1, inspect.getsource(self.func))
+                        except Exception:
+                            pass
 
-        if self.nfunc.get(atypes, True):
-            try:
-                dprint(3, "pre-running", self.func)
-                ret = self.numba_func(*args_for_numba, **kwargs)
-                self.nfunc[atypes] = True
-                dprint(3, "Numba attempt succeeded.")
-                return ret
-            except numba.core.errors.TypingError as te:
-                print("Ramba TypingError:", te, type(te))
-                self.npfunc[atypes] = False
-                dprint(1, "Numba attempt failed for", self.func, atypes)
-            except Exception:
-                self.nfunc[atypes] = False
-                dprint(1, "Numba attempt failed for", self.func, atypes)
-                raise
+            if self.nfunc.get(atypes, True):
+                try:
+                    dprint(3, "pre-running", self.func)
+                    ret = self.numba_func(*args_for_numba, **kwargs)
+                    self.nfunc[atypes] = True
+                    dprint(3, "Numba attempt succeeded.")
+                    return ret
+                except numba.core.errors.TypingError as te:
+                    print("Ramba TypingError:", te, type(te))
+                    self.npfunc[atypes] = False
+                    dprint(1, "Numba attempt failed for", self.func, atypes)
+                except Exception:
+                    self.nfunc[atypes] = False
+                    dprint(1, "Numba attempt failed for", self.func, atypes)
+                    raise
 
         dprint(3, "Falling back to pure Python", self.func)
         python_res = self.func(*args, **kwargs)
@@ -1180,6 +1186,11 @@ class LocalNdarray:
         else:
             gnpargs = {}
 
+        if gpu_present:
+            pass
+            # Set device and/or usm_type here.
+            #gnpargs[""] = 
+
         if border == 0 and creation_mode == Filler.WHOLE_ARRAY_NEW and not gpu_present:
             self.bcontainer = None
         else:
@@ -1314,7 +1325,10 @@ class LocalNdarray:
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
         # print("get_partial_view:", slice_index, local_slice, shard, self.bcontainer.shape, arr, type(arr), arr.dtype)
-        arr.flags.writeable = True  # Force enable writes -- TODO:  Need to check if safe!! May want to set only if ndarray is not readonly
+        if hasattr(arr.flags, "writeable"):
+            arr.flags.writeable = True  # Force enable writes -- TODO:  Need to check if safe!! May want to set only if ndarray is not readonly
+        else:
+            print("arr.flags has no writeable flag", arr.flags, type(arr.flags), dir(arr.flags))
         return arr
 
     def get_view(self, shard):
@@ -6183,7 +6197,7 @@ atexit.register(ndarray.atexit)
 ufunc_map = {
     "multiply": "mul",
     "subtract": "sub",
-    "divide": "div",
+    "divide": "truediv",
     "true_divide": "truediv",
     "floor_divide": "floordiv",
 }

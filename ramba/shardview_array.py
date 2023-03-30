@@ -303,8 +303,8 @@ def to_slice(sv):
     e = s + (_size(sv)-1)*abs(_steps(sv))+1
     st = _steps(sv)
     return tuple([slice(
-        s[i] if st[i]>0 else e[i]-1, 
-        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        s[i] if st[i]>0 else e[i]-1,
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
         st[i] ) for i in range(len(s))])
 
 # Note: subtle difference between to_slice and as_slice;  as_slice assumes length = slice end-start
@@ -313,8 +313,8 @@ def as_slice(sv):
     e = s + _size(sv)
     st = _steps(sv)
     return tuple([slice(
-        s[i] if st[i]>0 else e[i]-1, 
-        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        s[i] if st[i]>0 else e[i]-1,
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
         st[i] ) for i in range(len(s))])
 
 
@@ -328,8 +328,8 @@ def to_base_slice(sv):
             st[v] = _steps(sv)[i]
     e += s
     return tuple([slice(
-        s[i] if st[i]>0 else e[i]-1, 
-        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+        s[i] if st[i]>0 else e[i]-1,
+        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
         st[i] ) for i in range(len(s))])
 
 
@@ -337,8 +337,7 @@ import numba.cpython.unsafe.tuple as UT
 import ramba.numba_ext as UTx
 
 
-@numba.njit(fastmath=fastmath, cache=True)
-def get_base_slice(sv, arr):
+def get_base_slice_internal(sv, arr):
     t = UTx.build_full_slice3_tuple(arr.ndim)
     s = _base_offset(sv)
     e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
@@ -350,10 +349,23 @@ def get_base_slice(sv, arr):
     e += s
     for i in range(arr.ndim):
         t = UT.tuple_setitem(t, i, slice(
-            s[i] if st[i]>0 else e[i]-1, 
-            e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None), 
+            s[i] if st[i]>0 else e[i]-1,
+            e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
             st[i] ) )
     return arr[t]
+
+# This global will hold which numba jit variant to use for a given array type.
+# As new types are supported they are expected to add to this dictionary.
+bs_arr = {np.ndarray : numba.njit}
+
+@functools.lru_cache()
+def get_jitted_internal(atyp):
+    jitter = bs_arr[atyp]
+    return jitter(get_base_slice_internal, fastmath=fastmath, cache=True)
+
+
+def get_base_slice(sv, arr):
+    return get_jitted_internal(type(arr))(sv, arr)
 
 
 @numba.njit(fastmath=fastmath, cache=True)

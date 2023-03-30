@@ -23,6 +23,8 @@ distribute_min_size = 100
 NUM_WORKERS_FOR_BCAST = 100
 fastmath = False
 
+force_gpu = int(os.environ.get("RAMBA_FORCE_GPU", "-1"))
+
 non_dist_mode = int(os.environ.get("RAMBA_NON_DIST", "0"))
 
 if non_dist_mode != 0:
