@@ -26,6 +26,7 @@ fastmath = False
 force_gpu = int(os.environ.get("RAMBA_FORCE_GPU", "-1"))
 
 non_dist_mode = int(os.environ.get("RAMBA_NON_DIST", "0"))
+NO_DAG = int(os.environ.get("RAMBA_NO_DAG", "0"))>0
 
 if non_dist_mode != 0:
     USE_NON_DIST = True

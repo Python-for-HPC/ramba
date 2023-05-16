@@ -3671,15 +3671,17 @@ class RemoteState:
         for i, r in enumerate(ranges):
             arrvars = rangedvars[i]
             if not shardview.is_empty(r):
-                for k, v in arrvars.items():
-                    dprint(4, "inputs:", k, v, type(v))
-                for k, v in othervars.items():
-                    dprint(4, "others:", k, v, type(v))
+                if ndebug>3:
+                    for k, v in arrvars.items():
+                        dprint(4, "inputs:", k, v, type(v))
+                    for k, v in othervars.items():
+                        dprint(4, "others:", k, v, type(v))
 
                 total_elements += sum([x.size for x in arrvars.values()]) 
                 func(shardview._index_start(r), **arrvars, **othervars)
-                for k, v in arrvars.items():
-                    dprint(4, "results:", k, v, type(v))
+                if ndebug>3:
+                    for k, v in arrvars.items():
+                        dprint(4, "results:", k, v, type(v))
         times.append(timer())
 
         # delete arrays no longer needed
@@ -4895,7 +4897,7 @@ def DAGapi(func):
         if isinstance(fres, DAGshape):
             executor = eval(name + "_executor")
             nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
-            if DAG.in_evaluate > 0:
+            if DAG.in_evaluate > 0 or NO_DAG:
                 dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
                 inline_start = timer()
                 dag.execute()
