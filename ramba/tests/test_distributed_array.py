@@ -7,7 +7,7 @@ import os
 
 full_test = int(os.environ.get("RAMBA_FULL_TEST", "0"))
 
-@ramba.stencil
+#@ramba.stencil
 def stencil1(a):
     return a[-2, -2] + a[0, 0] + a[2, 2]
 
@@ -15,7 +15,8 @@ def stencil1(a):
 class TestStencil:
     def test_skeleton(self):                # Stencil skeleton
         a = ramba.ones((20, 20), local_border=3)
-        b = ramba.sstencil(stencil1, a)
+        rstencil = ramba.stencil(stencil1)
+        b = ramba.sstencil(rstencil1, a)
         c = ramba.copy(b)
 
     def test_weighted_subarrays(self):                # Stencil using weighted subarrays
