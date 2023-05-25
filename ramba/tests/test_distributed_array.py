@@ -15,7 +15,7 @@ def stencil1(a):
 class TestStencil:
     def test_skeleton(self):                # Stencil skeleton
         a = ramba.ones((20, 20), local_border=3)
-        rstencil = ramba.stencil(stencil1)
+        rstencil1 = ramba.stencil(stencil1)
         b = ramba.sstencil(rstencil1, a)
         c = ramba.copy(b)
 
