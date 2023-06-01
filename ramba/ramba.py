@@ -464,8 +464,10 @@ class StencilMetadata:
             fsrc = inspect.getsource(self.func)
             dprint(3, "fsrc:\n", fsrc)
             fsrc_tokens = fsrc.split("\n")
-            varlist = fsrc_tokens[1][
-                fsrc_tokens[1].find("(") + 1 : fsrc_tokens[1].find(")")
+            start_token = next(filter(lambda x: x.startswith("def "), fsrc_tokens), None)
+            assert start_token is not None
+            varlist = start_token[
+                start_token.find("(") + 1 : start_token.find(")")
             ]
             # code = "@numba.njit(parallel=True)\n"
             code = "def " + self.hashname + "_wrap(" + varlist + ",out=None):\n"
@@ -473,7 +475,7 @@ class StencilMetadata:
             code += "        return " + self.hashname + "(" + varlist + ",out=out)\n"
             code += "    else:\n"
             code += "        return " + self.hashname + "(" + varlist + ")\n"
-            # print(code)
+            dprint(3, code)
             exec(code, gdict, ldict)
             # self.sfunc_wrap = ldict[self.hashname+"_wrap"]
             self.sfunc_wrap = FunctionMetadata(ldict[self.hashname + "_wrap"], [], {})
