@@ -5566,14 +5566,21 @@ class ndarray:
         return red_arr
 
     @classmethod
-    def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
+    def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis, keepdims):
         if isinstance(axis, numbers.Integral):
             axis = [axis]
-        sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
-        sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
+        if keepdims:
+            sl1 = tuple(slice(None) for i in range(self.ndim))
+            sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
+        else:
+            sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
+            sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
         k = np.array(self.shape)[axis]
         if builtins.all(k == 1):  # done, just get the slice with axes removed
-            return self[sl1]
+            if keepdims:
+                return self
+            else:
+                return self[sl1]
         # need global reduction
         arr = empty_like(self[sl2])
         code = ["", arr, " = " + optext + "( np.array(["]
@@ -5611,8 +5618,11 @@ class ndarray:
         return DAGshape(self.shape, self.dtype, self)
 
     @DAGapi
-    def internal_reduction2(self, op, optext, imports, dtype, axis):
-        outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
+    def internal_reduction2(self, op, optext, imports, dtype, axis, keepdims=False):
+        if keepdims:
+            outshape = tuple( [ self.shape[i] if i not in axis else 1 for i in range(self.ndim) ] )
+        else:
+            outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
         return DAGshape(outshape, dtype, False)
 
     @DAGapi
@@ -5658,7 +5668,7 @@ class ndarray:
 
     @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
+        self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
         if dtype is None:
             dtype = self.dtype
@@ -5697,9 +5707,9 @@ class ndarray:
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-                redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+                redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
                 add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
                 return redres
@@ -7202,7 +7212,7 @@ def make_method(
             if "dtype" not in kwargs:
                 kwargs["dtype"] = dtype
             retval = self.array_unaryop(
-                name, optext, reduction, imports=imports, **kwargs_m, **kwargs
+                name, optext, reduction=reduction, imports=imports, **kwargs_m, **kwargs
             )
             return retval
 
@@ -7946,11 +7956,16 @@ def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
 
 
 @implements("zeros_like", False)
-def zeros_like(other_ndarray):
+def zeros_like(other_ndarray, dtype=None, order='K', subok=True, shape=None):
+    if dtype is None:
+        dtype = other_ndarray.dtype
+    if shape is None:
+        shape = other_ndarray.shape
+    local_border = getattr(other_ndarray, "local_border", 0)
     return zeros(
-        other_ndarray.shape,
-        local_border=other_ndarray.local_border,
-        dtype=other_ndarray.dtype,
+        shape,
+        local_border=local_border,
+        dtype=dtype,
     )
 
 
