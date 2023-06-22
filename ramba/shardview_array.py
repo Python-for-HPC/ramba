@@ -702,6 +702,48 @@ def dist_is_eq(d1, d2, axis=None):
                 return False
     return True
 
+@numba.njit(fastmath=fastmath, cache=True)
+def dist_has_neg_step(dist):
+    am = _axis_map(dist[0])
+    s = _steps(dist[0])
+    for i in range(am.shape[0]):
+        if am[i]>=0 and s[i]<0: return True
+    return False
+
+# This is still not quite right; to be comparable, all views need to be based on a common node i;
+# may not be the case if index [0,0,..] is right near the boundary of a node
+@numba.njit(fastmath=fastmath, cache=True)
+def dist_to_view(sz,d,bd):
+    am = _axis_map(d[0])
+    zero_idx = _size(d[0])*0
+    i = int(find_index(d,zero_idx))
+    bo = _base_offset(d[i])
+    st = _steps(d[0])
+    return shardview(np.array(sz), index_start=None, base_offset=bo, axis_map=am, steps=st)
+
+# assumes non-zero size, positive steps
+@numba.njit(fastmath=fastmath, cache=True)
+def view_base_size(v):
+    mapv = _axis_map(v)
+    szv = _size(v)
+    stv = _steps(v)
+    sz = _base_offset(v) * 0 + 1
+    for i,j in enumerate(mapv):
+        if j>=0:
+            sz[j] = (szv[i]-1)*stv[i]+1
+    return sz
+
+# assumes non-zero size, positive steps
+@numba.njit(fastmath=fastmath, cache=True)
+def view_union(u,v):
+    bo1 = _base_offset(u)
+    bo2 = _base_offset(v)
+    eo1 = bo1+view_base_size(u)
+    eo2 = bo2+view_base_size(v)
+    bo = np.minimum(bo1, bo2)
+    eo = np.maximum(eo1, eo2)
+    sz = eo-bo
+    return shardview(sz, base_offset=bo)
 
 @numba.njit(fastmath=fastmath, cache=True)
 def slice_distribution(sl, dist):
