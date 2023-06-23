@@ -3670,6 +3670,35 @@ class RemoteState:
                     tmp = shardview.mapsv(vpart, rpart)
                     varlist[varname] = shardview.get_base_slice(tmp, data)
                     localranges[i] = localranges[i] and local
+        for j, r in enumerate(ranges):
+            if not shardview.is_empty(r) and localranges[j]:
+                arrvars = {}
+                for i, (k, v) in enumerate(arrays.items()):
+                    did_once=False
+                    did_more_than_once=False
+                    vtr = ""
+                    unionview = None
+                    for (vn, ai) in v[0]:
+                        if shardview.dist_has_neg_step(ai[1]):  # use separate argument for views with negative steps
+                            #arrvars[vn] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
+                            arrvars[vn] = rangedvars[j][vn]
+                        else:
+                            if not did_once:
+                                vtr = vn
+                                did_once=True
+                                unionview = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
+                            else:
+                                view = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
+                                unionview = shardview.view_union( view, unionview )
+                                did_more_than_once=True
+                    if did_more_than_once:
+                        #print ("HERE: ",vtr, unionview, shardview.to_base_slice(unionview))
+                        arrvars[vtr] = self.get_partial_view( k, shardview.to_base_slice(unionview)) #, ai[1][self.worker_num] )
+                    elif did_once:
+                        #print ("HERE: ",vtr, unionview, shardview.to_base_slice(unionview))
+                        #arrvars[vtr] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
+                        arrvars[vtr] = rangedvars[j][vtr]
+                rangedvars[j] = arrvars
 
         times.append(timer())
         if len(ranges) > 1:
@@ -3679,33 +3708,9 @@ class RemoteState:
         # execute function in each range
         for i, r in enumerate(ranges):
             if not shardview.is_empty(r):
+                arrvars = rangedvars[i]
                 #print ("EXECUTION: itershape ",shardview._size(r), " is local?", localranges[i])
                 if localranges[i]: # and False:
-                    arrvars = {}
-                    for i, (k, v) in enumerate(arrays.items()):
-                        did_once=False
-                        did_more_than_once=False
-                        vtr = ""
-                        unionview = None
-                        # precode.append("  "+v+" = arrays["+str(i)+"]")
-                        for (vn, ai) in v[0]:
-                            if shardview.dist_has_neg_step(ai[1]):  # use separate argument for views with negative steps
-                                arrvars[vn] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
-                            else:
-                                if not did_once:
-                                    vtr = vn
-                                    did_once=True
-                                    unionview = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
-                                else:
-                                    view = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
-                                    unionview = shardview.view_union( view, unionview )
-                                    did_more_than_once=True
-                        if did_more_than_once:
-                            #print ("HERE: ",vtr, unionview, shardview.to_base_slice(unionview))
-                            arrvars[vtr] = self.get_partial_view( k, shardview.to_base_slice(unionview)) #, ai[1][self.worker_num] )
-                        elif did_once:
-                            #print ("HERE: ",vtr, unionview, shardview.to_base_slice(unionview))
-                            arrvars[vtr] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
                     #print ("run: ")
                     #for k, v in arrvars.items():
                     #    dprint(0, "inputs:", k, v, type(v))
@@ -3714,7 +3719,6 @@ class RemoteState:
                     func2(shardview._index_start(r), tuple(shardview._size(r).astype(np.int64)), **arrvars, **othervars)
                     #print ("run done : ")
                 else:
-                    arrvars = rangedvars[i]
                     if ndebug>3:
                         for k, v in arrvars.items():
                             dprint(4, "inputs:", k, v, type(v))
