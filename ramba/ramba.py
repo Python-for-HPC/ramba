@@ -3473,13 +3473,13 @@ class RemoteState:
             self.create_array(
                 g,
                 subspace,
-                info[0],
+                info.shape,
                 None,
-                info[2],
-                info[5],
-                info[1],
-                None if info[3] is None else info[3][self.worker_num],
-                None if info[4] is None else info[4][self.worker_num],
+                info.local_border,
+                info.dtype,
+                info.distribution,
+                None if info.from_border is None else info.from_border[self.worker_num],
+                None if info.to_border is None else info.to_border[self.worker_num],
             )
 
         times.append(timer())
@@ -3514,43 +3514,43 @@ class RemoteState:
             for (v, info) in l:
                 arr_parts[v] = []
                 if shardview.is_compat(
-                    subspace, info[1][self.worker_num]
+                    subspace, info.distribution[self.worker_num]
                 ):  # whole compute range is local
-                    sl = self.get_view(g, info[1][self.worker_num])
+                    sl = self.get_view(g, info.distribution[self.worker_num])
                     arr_parts[v].append((subspace, sl))
                     continue
                 overlap_time -= timer()
                 overlap_workers = shardview.get_overlaps(
-                    self.worker_num, info[1], exec_dist
+                    self.worker_num, info.distribution, exec_dist
                 )
                 overlap_time += timer()
                 # for i in range(num_workers):
                 for i in overlap_workers:
                     if i != self.worker_num:
-                        # part = shardview.intersect(exec_dist[self.worker_num],info[1][i])  # part of what we need but located at worker i
+                        # part = shardview.intersect(exec_dist[self.worker_num],info.distribution[i])  # part of what we need but located at worker i
                         part = shardview.intersect(
-                            info[1][i], exec_dist[self.worker_num]
+                            info.distribution[i], exec_dist[self.worker_num]
                         )  # part of what we need but located at worker i
                         if not shardview.is_empty(part):
                             if v in expected_bits:
-                                expected_bits[v] += [(part, info[1][self.worker_num])]
+                                expected_bits[v] += [(part, info.distribution[self.worker_num])]
                             else:
-                                expected_bits[v] = [(part, info[1][self.worker_num])]
+                                expected_bits[v] = [(part, info.distribution[self.worker_num])]
                             from_set[i] = 1
-                    # part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
+                    # part = shardview.intersect(exec_dist[i],info.distribution[self.worker_num])  # part of what we have needed at worker i
                     part = shardview.intersect(
-                        info[1][self.worker_num], exec_dist[i]
+                        info.distribution[self.worker_num], exec_dist[i]
                     )  # part of what we have needed at worker i
                     if shardview.is_empty(part):
                         continue
                     getview_time -= timer()
-                    #sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                    #sl = self.get_partial_view( g, shardview.to_slice(part), info.distribution[self.worker_num], remap_view=False,)
                     getview_time += timer()
                     if i == self.worker_num:
                         # arr_parts[v].append( (part, sl) )
                         # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                         arrview_time -= timer()
-                        sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                        sl = self.get_partial_view( g, shardview.to_slice(part), info.distribution[self.worker_num], remap_view=False,)
                         arr_parts[v].append( ( shardview.clean_range(part), shardview.array_to_view(part, sl),) )
                         arrview_time += timer()
                         dprint(
@@ -3560,7 +3560,7 @@ class RemoteState:
                             "Keeping local part",
                             part,
                             sl,
-                            info[1],
+                            info.distribution,
                         )
                     else:
                         # deferred send data to worker i
@@ -3571,7 +3571,7 @@ class RemoteState:
                         # to_send[i].append( (v, part, sl) )
                         # to_send[i].append( (v, part, sl.copy()))  # pickling a slice is slower than copy+pickle !!
                         merge = False
-                        base_part = shardview.as_base(info[1][self.worker_num], part)
+                        base_part = shardview.as_base(info.distribution[self.worker_num], part)
                         for j in range(len(to_send[i])):
                             if to_send[i][j][0] == g:
                                 # TODO:  should check if worth merging or sending separately
@@ -3590,7 +3590,7 @@ class RemoteState:
                             i,
                             part,
                             #sl,
-                            info[1],
+                            info.distribution,
                         )
         times.append(timer())
 
@@ -5181,6 +5181,18 @@ class ndarray_flags:
         # Have to do DAG.in_evaluate check?  FIX ME. TODO.
 
 
+class ndarray_details:
+    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__')
+
+    def __init__(self, shape, distribution, local_border, from_border, to_border, dtype):
+        self.shape = shape
+        self.distribution = distribution
+        self.local_border = local_border
+        self.from_border = from_border
+        self.to_border = to_border
+        self.dtype = dtype
+
+
 class ndarray:
     all_arrays = weakref.WeakSet()
 
@@ -5317,16 +5329,13 @@ class ndarray:
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
-        return tuple(
-            [
-                self.shape,
-                self.distribution,
-                self.local_border,
-                self.from_border,
-                self.to_border,
-                self.dtype,
-            ]
-        )
+        return ndarray_details(
+                   self.shape,
+                   self.distribution,
+                   self.local_border,
+                   self.from_border,
+                   self.to_border,
+                   self.dtype)
 
     @property
     def gid(self):
@@ -7413,10 +7422,10 @@ class deferred_op:
             self.use_gids[gid] = ([], bd_info, pad, flex_dist)
             self.keepalives.add(bdarray.get_by_gid(gid))  # keep bdarrays alive
         for (v, ai) in self.use_gids[gid][0]:
-            if shardview.dist_is_eq(arr_info[1], ai[1]):
+            if shardview.dist_is_eq(arr_info.distribution, ai.distribution):
                 return v
         v = self.get_var_name()
-        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info[1])
+        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info.distribution)
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
@@ -8665,6 +8674,7 @@ def squeeze(a, axis=None):
 # concatenate, stack, block, vstack, hstack, dstack, column_stack, row_stack
 
 def concatenate_executor(temp_array, arrayseq, axis=0, out=None, **kwargs):
+    deferred_op.do_ops()
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
     first_dtype = arrayseq[0].dtype
