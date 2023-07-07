@@ -5904,9 +5904,16 @@ class ndarray:
     def array_binop(
         self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
-        dprint(1, "array_binop", id(self), op, optext)
+        dprint(1, "array_binop", id(self), op, type(op), optext, type(rhs))
         new_shape = numpy_broadcast_shape(self, rhs)
         new_dtype = unify_args(self.dtype, rhs, dtype)
+        if op == "__truediv__":
+            # Convert division into multiplication by reciprocal.
+            op = "__mul__"
+            optext = " * "
+            rhs = 1.0 / rhs
+            dprint(1, "Converted div into mul")
+
         if new_shape is None:
             new_shape = ()
             DAG.instantiate(self)
@@ -5914,10 +5921,11 @@ class ndarray:
             return ndarray.array_binop_executor(None, self, rhs, op, optext, extra_args=extra_args, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
             #add_constraint([(self, list(range(1, self.ndim + 1))), (rhs, list(range(1, rhs.ndim + 1)))])
+            # We might need replaced_args below due to the div-to-mul rewrite above.
             if inplace:
-                return DAGshape(new_shape, new_dtype, self)
+                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext])
             else:
-                return DAGshape(new_shape, new_dtype, False)
+                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext])
 
 
     @classmethod
@@ -7532,7 +7540,7 @@ class deferred_op:
             print("with")
             for g,l in live_gids.items():
                 for t in l[0]:
-                    print ("  ",t[0],t[1][0],g)
+                    print ("  ",t[0],t[1].shape,g)
             for n,s in self.use_other.items():
                 print ("  ",n,pickle.loads(s))
             print()
