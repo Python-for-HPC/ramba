@@ -62,6 +62,7 @@ import atexit
 import ramba.random as random
 import socket
 import numbers
+from collections import Counter
 
 import ramba.fileio as fileio
 
@@ -463,8 +464,10 @@ class StencilMetadata:
             fsrc = inspect.getsource(self.func)
             dprint(3, "fsrc:\n", fsrc)
             fsrc_tokens = fsrc.split("\n")
-            varlist = fsrc_tokens[1][
-                fsrc_tokens[1].find("(") + 1 : fsrc_tokens[1].find(")")
+            start_token = next(filter(lambda x: x.startswith("def "), fsrc_tokens), None)
+            assert start_token is not None
+            varlist = start_token[
+                start_token.find("(") + 1 : start_token.find(")")
             ]
             # code = "@numba.njit(parallel=True)\n"
             code = "def " + self.hashname + "_wrap(" + varlist + ",out=None):\n"
@@ -472,7 +475,7 @@ class StencilMetadata:
             code += "        return " + self.hashname + "(" + varlist + ",out=out)\n"
             code += "    else:\n"
             code += "        return " + self.hashname + "(" + varlist + ")\n"
-            # print(code)
+            dprint(3, code)
             exec(code, gdict, ldict)
             # self.sfunc_wrap = ldict[self.hashname+"_wrap"]
             self.sfunc_wrap = FunctionMetadata(ldict[self.hashname + "_wrap"], [], {})
@@ -943,7 +946,7 @@ def reset_timing():
 
 
 def get_timing(details=False):
-    if numba.version_info.short >= (0, 53):
+    if in_driver() and (numba.version_info.short == (None, None) or numba.version_info.short >= (0, 53)):
         driver_summary = rec_buf_summary(compile_recorder.buffer)
         stats = remote_call_all("get_compile_stats")
         remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
@@ -952,14 +955,15 @@ def get_timing(details=False):
         }
 
     stats = remote_call_all("get_def_ops_stats")
+    #print("stats:", type(stats), len(stats), type(stats[0]), len(stats[0]))
     remote_maximum = functools.reduce(lambda a, b: a if a[1] > b[1] else b, stats)
     time_dict["remote_deferred_ops"] = {0: remote_maximum}
     remote_exec_maximum = functools.reduce(lambda a, b: a if a[2] > b[2] else b, stats)
     remote_exec_minimum = functools.reduce(lambda a, b: a if a[2] < b[2] else b, stats)
     time_dict["remote_deferred_ops_exec_max"] = {0: remote_exec_maximum}
     time_dict["remote_deferred_ops_exec_min"] = {0: remote_exec_minimum}
-    time_dict["worker_1_per_func"] = {0: stats[3]}
-    stats_per_func_1 = stats[1][3]
+    time_dict["worker_1_per_func"] = {0: (0, stats[0][3])}
+    stats_per_func_1 = stats[0][3]
     keys = list(stats_per_func_1.keys())
     values = list(stats_per_func_1.values())
     svi = np.argsort(values)
@@ -1841,7 +1845,7 @@ def external_set_common_state(st):
     set_common_state(st, globals())
 
 class RemoteState:
-    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator')
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children')
 
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
@@ -3471,13 +3475,13 @@ class RemoteState:
             self.create_array(
                 g,
                 subspace,
-                info[0],
+                info.shape,
                 None,
-                info[2],
-                info[5],
-                info[1],
-                None if info[3] is None else info[3][self.worker_num],
-                None if info[4] is None else info[4][self.worker_num],
+                info.local_border,
+                info.dtype,
+                info.distribution,
+                None if info.from_border is None else info.from_border[self.worker_num],
+                None if info.to_border is None else info.to_border[self.worker_num],
             )
 
         times.append(timer())
@@ -3517,43 +3521,43 @@ class RemoteState:
             for (v, info) in l:
                 arr_parts[v] = []
                 if shardview.is_compat(
-                    subspace, info[1][self.worker_num]
+                    subspace, info.distribution[self.worker_num]
                 ):  # whole compute range is local
-                    sl = self.get_view(g, info[1][self.worker_num])
+                    sl = self.get_view(g, info.distribution[self.worker_num])
                     arr_parts[v].append((subspace, sl, True))  # True in idcates local
                     continue
                 overlap_time -= timer()
                 overlap_workers = shardview.get_overlaps(
-                    self.worker_num, info[1], exec_dist
+                    self.worker_num, info.distribution, exec_dist
                 )
                 overlap_time += timer()
                 # for i in range(num_workers):
                 for i in overlap_workers:
                     if i != self.worker_num:
-                        # part = shardview.intersect(exec_dist[self.worker_num],info[1][i])  # part of what we need but located at worker i
+                        # part = shardview.intersect(exec_dist[self.worker_num],info.distribution[i])  # part of what we need but located at worker i
                         part = shardview.intersect(
-                            info[1][i], exec_dist[self.worker_num]
+                            info.distribution[i], exec_dist[self.worker_num]
                         )  # part of what we need but located at worker i
                         if not shardview.is_empty(part):
                             if v in expected_bits:
-                                expected_bits[v] += [(part, info[1][self.worker_num])]
+                                expected_bits[v] += [(part, info.distribution[self.worker_num])]
                             else:
-                                expected_bits[v] = [(part, info[1][self.worker_num])]
+                                expected_bits[v] = [(part, info.distribution[self.worker_num])]
                             from_set[i] = 1
-                    # part = shardview.intersect(exec_dist[i],info[1][self.worker_num])  # part of what we have needed at worker i
+                    # part = shardview.intersect(exec_dist[i],info.distribution[self.worker_num])  # part of what we have needed at worker i
                     part = shardview.intersect(
-                        info[1][self.worker_num], exec_dist[i]
+                        info.distribution[self.worker_num], exec_dist[i]
                     )  # part of what we have needed at worker i
                     if shardview.is_empty(part):
                         continue
                     getview_time -= timer()
-                    #sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                    #sl = self.get_partial_view( g, shardview.to_slice(part), info.distribution[self.worker_num], remap_view=False,)
                     getview_time += timer()
                     if i == self.worker_num:
                         # arr_parts[v].append( (part, sl) )
                         # arr_parts[v].append( (part, shardview.array_to_view(part, sl)) )
                         arrview_time -= timer()
-                        sl = self.get_partial_view( g, shardview.to_slice(part), info[1][self.worker_num], remap_view=False,)
+                        sl = self.get_partial_view( g, shardview.to_slice(part), info.distribution[self.worker_num], remap_view=False,)
                         arr_parts[v].append( ( shardview.clean_range(part), shardview.array_to_view(part, sl), True) )  # True indicates local
                         arrview_time += timer()
                         dprint(
@@ -3563,7 +3567,7 @@ class RemoteState:
                             "Keeping local part",
                             part,
                             sl,
-                            info[1],
+                            info.distribution,
                         )
                     else:
                         # deferred send data to worker i
@@ -3574,7 +3578,7 @@ class RemoteState:
                         # to_send[i].append( (v, part, sl) )
                         # to_send[i].append( (v, part, sl.copy()))  # pickling a slice is slower than copy+pickle !!
                         merge = False
-                        base_part = shardview.as_base(info[1][self.worker_num], part)
+                        base_part = shardview.as_base(info.distribution[self.worker_num], part)
                         for j in range(len(to_send[i])):
                             if to_send[i][j][0] == g:
                                 # TODO:  should check if worth merging or sending separately
@@ -3593,7 +3597,7 @@ class RemoteState:
                             i,
                             part,
                             #sl,
-                            info[1],
+                            info.distribution,
                         )
         times.append(timer())
 
@@ -3679,16 +3683,16 @@ class RemoteState:
                     vtr = ""
                     unionview = None
                     for (vn, ai) in v[0]:
-                        if shardview.dist_has_neg_step(ai[1]):  # use separate argument for views with negative steps
+                        if shardview.dist_has_neg_step(ai.distribution):  # use separate argument for views with negative steps
                             #arrvars[vn] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
                             arrvars[vn] = rangedvars[j][vn]
                         else:
                             if not did_once:
                                 vtr = vn
                                 did_once=True
-                                unionview = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
+                                unionview = shardview.mapslice( ai.distribution[self.worker_num], shardview.to_slice(r) )
                             else:
-                                view = shardview.mapslice( ai[1][self.worker_num], shardview.to_slice(r) )
+                                view = shardview.mapslice( ai.distribution[self.worker_num], shardview.to_slice(r) )
                                 unionview = shardview.view_union( view, unionview )
                                 did_more_than_once=True
                     if did_more_than_once:
@@ -3783,7 +3787,7 @@ class RemoteState:
         self.per_func = {}
 
     def get_def_ops_stats(self):
-        print("per_func remote:", type(self.per_func), self.per_func)
+        #print("per_func remote:", type(self.per_func), self.per_func)
         return (self.deferred_ops_count, self.deferred_ops_time, self.deferred_exec_time, self.per_func)
 
     def reset_compile_stats(self):
@@ -4348,6 +4352,10 @@ class DAG:
         self.output = output
         DAG.dag_nodes.add(self)
 
+    @property
+    def non_exec_backward_deps(self):
+        return set(filter(lambda x: not x.executed, self.backward_deps))
+
     @classmethod
     def print_unexecuted_referrers(cls):
         verify_count = 0
@@ -4716,13 +4724,15 @@ class DAG:
         return None
 
     @classmethod
-    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed):
+    def depth_first_traverse(cls, dag_node, depth_first_nodes, dag_node_processed, all_forward_deps):
         dprint(2, "dag_node:", id(dag_node.output()), type(dag_node.output()), dag_node.name, dag_node.args)
         if dag_node in dag_node_processed:
-            return
+            return all_forward_deps
         dag_node_processed.add(dag_node)
         if dag_node.executed:
-            return
+            return all_forward_deps
+        for fdep in dag_node.forward_deps:
+            all_forward_deps.add(fdep)
 
         rewrite_rules = [DAG.rewrite_stack_mean_advindex,
                          DAG.rewrite_concatenate_binop_getitem,
@@ -4739,12 +4749,20 @@ class DAG:
             dag_output_shape = dag_node.output().shape
         matching_shape = list(filter(lambda x: x.output() is not None and x.output().shape == dag_output_shape, dag_node.backward_deps))
         non_matching_shape = list(filter(lambda x: x.output() is None or x.output().shape != dag_output_shape, dag_node.backward_deps))
+        #matching_forward_shape = list(filter(lambda x: x.output() is not None and x.output().shape == dag_output_shape and x not in dag_node_processed, dag_node.forward_deps))
+#        for backward_dep in matching_shape + matching_forward_shape + non_matching_shape:
         for backward_dep in matching_shape + non_matching_shape:
         #for backward_dep in dag_node.backward_deps:
-            cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed)
+            cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed, all_forward_deps)
 
         dprint(2, "Adding depth first node:", dag_node.get_dot_name(), dag_node.args)
         depth_first_nodes.append(dag_node)
+
+        #for backward_dep in matching_forward_shape:
+        #    print("Doing forward dep in depth first:", backward_dep)
+        #    cls.depth_first_traverse(backward_dep, depth_first_nodes, dag_node_processed, all_forward_deps)
+
+        return all_forward_deps
 
     @classmethod
     def instantiate(cls, arr, **kwargs):
@@ -4771,7 +4789,7 @@ class DAG:
             exec_array_out = self.executor(soutput, *self.args, **self.kwargs)
             if not self.inplace and not isinstance(exec_array_out, ndarray):
                 print("bad type", type(exec_array_out), self.name, self.args)
-                breakpoint()
+                breakpoint()   # this one is okay
             assert self.inplace or isinstance(exec_array_out, ndarray)
             if not self.inplace and exec_array_out is not soutput:
                 soutput.assign(exec_array_out)
@@ -4830,13 +4848,140 @@ class DAG:
         cls.in_evaluate += 1
         depth_first_nodes = []
         dprint(2,"Instantiate:", id(dag_node.output()), dag_node.get_dot_name())
-        cls.depth_first_traverse(dag_node, depth_first_nodes, set())
+        forward_deps_not_in_depth_first = cls.depth_first_traverse(dag_node, depth_first_nodes, set(), set())
+        forward_deps_not_in_depth_first.difference_update(set(depth_first_nodes))
+
+        def alg1(depth_first_nodes):
+            alg1_start = timer()
+            already_scheduled = set()
+            new_schedule = []
+            num_nodes = len(depth_first_nodes)
+            unscheduled = set(depth_first_nodes)
+            #deps_fulfilled = []
+
+            #for node in unscheduled:
+            #    non_exec = node.non_exec_backward_deps
+            #    if len(set(non_exec).intersection(already_scheduled)) == len(non_exec):
+            #        deps_fulfilled.append(node)
+
+            while len(new_schedule) != num_nodes:
+                # collect all nodes we could schedule next.
+                # those nodes are ones that don't have any dependencies that aren't
+                # already in the scheduled set
+                deps_fulfilled = []
+
+                # find all nodes with their deps fulfilled
+                for node in unscheduled:
+                    non_exec = node.non_exec_backward_deps
+                    if len(set(non_exec).intersection(already_scheduled)) == len(non_exec):
+                        deps_fulfilled.append(node)
+
+                def get_index_most_common(deps_fulfilled):
+                    occ_count = Counter(deps_fulfilled)
+                    return deps_fulfilled.index(occ_count.most_common(1)[0][0])
+
+                dfshapes = [node.output().shape for node in deps_fulfilled]
+                if len(new_schedule) == 0:
+                    matching_index = get_index_most_common(deps_fulfilled) 
+                else:
+                    try:
+                        matching_index = dfshapes.index(new_schedule[-1].output().shape)
+                    except ValueError:
+                        matching_index = get_index_most_common(deps_fulfilled) 
+
+                new_schedule.append(deps_fulfilled[matching_index])
+                already_scheduled.add(deps_fulfilled[matching_index])
+                unscheduled.discard(deps_fulfilled[matching_index])
+                """
+                del deps_fulfilled[matching_index]
+                for fdep in new_schedule[-1].forward_deps:
+                    non_exec = fdep.non_exec_backward_deps
+                    if len(set(non_exec).intersection(already_scheduled)) == len(non_exec):
+                        deps_fulfilled.append(fdep)
+                """
+                    
+            alg1_end = timer()
+            add_time("alg1", alg1_end - alg1_start)
+
+            return new_schedule
+
+        def analyze_dfn(depth_first_nodes, prefix):
+            dfnshapes = [(None if node.output() is None else node.output().shape) for node in depth_first_nodes]
+            changes = 0
+            shapedict = {} 
+            shapeindices = {} 
+            shapeconnectsindex = {}
+
+            shapedict[dfnshapes[0]] = 1
+            shapeindices[dfnshapes[0]] = [0]
+            shapeconnectsindex[dfnshapes[0]] = 0
+            next_sci = 1
+
+            for sindex in range(1,len(dfnshapes)):
+                if dfnshapes[sindex] != dfnshapes[sindex - 1]:
+                    changes += 1
+                if dfnshapes[sindex] not in shapedict:
+                    shapedict[dfnshapes[sindex]] = 0
+                    shapeindices[dfnshapes[sindex]] = []
+                    shapeconnectsindex[dfnshapes[sindex]] = next_sci
+                    next_sci += 1
+                shapedict[dfnshapes[sindex]] += 1
+                shapeindices[dfnshapes[sindex]].append(sindex)
+                
+            N = len(dfnshapes)
+            connects = np.zeros((N,N), dtype=np.bool_)
+            last = np.copy(connects)
+            for i in range(N):
+                for j in range(N):
+                    if i==j:
+                        connects[i,j] = True
+                    else:
+                        if depth_first_nodes[i] in depth_first_nodes[j].backward_deps:
+                            connects[i,j] = True
+            while not np.array_equal(last, connects):
+                last = connects[:]
+                connects = connects @ connects
+            
+            M = len(shapedict)
+            shapeconnects = np.zeros((M,M), dtype=np.bool_)
+            for shapeind, indices in enumerate(shapeindices.values()):
+                combined_occurs_before = np.any(connects[indices], axis=0)
+                for colshapeind, colindices in enumerate(shapeindices.values()):
+                    shapeconnects[shapeind, colshapeind] = np.any(combined_occurs_before[colindices])
+
+            oneway = np.logical_and(shapeconnects, np.logical_xor(shapeconnects, shapeconnects.T))
+            oneway_count = oneway.sum()
+            max_oneway = (M*M - M) / 2
+            num_shapes = len(shapedict)
+            unnecessary_changes = changes - (num_shapes - 1)
+            print(f"{prefix} Depth first node shapes: changes {changes} num_shapes {num_shapes} unnecessary {unnecessary_changes} onewaycount {oneway_count} {max_oneway}", "shapedict", shapedict, "shapeindices", shapeindices, "shapeconnectsindex", shapeconnectsindex, "dfnshapes", dfnshapes, "\nTODD", connects, "\nTODD", shapeconnects, "\nTODD", oneway)
+            #dprint(2,"Depth first node shapes:", changes, shapedict, dfnshapes)
+
+        #depth_first_nodes = alg1(depth_first_nodes)
+        #print("Forward deps not in depth_first_nodes", len(forward_deps_not_in_depth_first))
+        if False:
+        #if ndebug >= 2:
+            analyze_dfn(depth_first_nodes, "ORIG")
+            alg1_res = alg1(depth_first_nodes)
+            analyze_dfn(alg1_res, "ALG1")
+
         for op in depth_first_nodes:
             dprint(2, "Running DAG executor for", op.get_dot_name())
             estart = timer()
             op.execute()
             eend = timer()
             exec_time += eend - estart
+
+        if False:
+            if op.output() is None:
+                dag_output_shape = None
+            else:
+                dag_output_shape = dag_node.output().shape
+
+            extra_nodes = list(filter(lambda x: not x.executed and x.output() is not None and x.output().shape == dag_output_shape, forward_deps_not_in_depth_first))
+            for node in extra_nodes:
+                cls.instantiate_dag_node(node, do_ops=False)
+
         # FIX ME?  Does this need to go in the loop above if we alternate between deferred_ops and something else?
         do_op_start = timer()
         if do_ops:
@@ -4870,6 +5015,22 @@ class DAG:
         # Find all the leaf nodes such that no operation currently depends on them.
         nodeps = list(filter(lambda x: len(x.forward_deps) == 0 and not x.executed, cls.dag_nodes))
         nodeps.sort(key=lambda x: x.seq_no)
+        def rearrange_by_shape(nodeps):
+            temp = {}
+            for dag_node in nodeps:
+                if dag_node.output() is None:
+                    dag_output_shape = None
+                else:
+                    dag_output_shape = dag_node.output().shape
+                if dag_output_shape not in temp:
+                    temp[dag_output_shape] = []
+                temp[dag_output_shape].append(dag_node)
+            ret = []
+            for v in temp.values():
+                ret.extend(v)
+            return ret
+        nodeps = rearrange_by_shape(nodeps)
+                
         dprint(2, "execute_all:", len(nodeps))
         for dag_node in nodeps:
             cls.instantiate_dag_node(dag_node, do_ops=False)
@@ -4957,6 +5118,17 @@ def DAGapi(func):
         else:
             dprint(1, "----------------------------------------------------")
             ret = fres
+
+        if ndebug >= 2:
+            parseable = "PARSE DAGapi " + name + " "
+            for a in args:
+                if isinstance(a, ndarray):
+                    parseable += "input_array " + str(id(a)) + " "
+            if isinstance(ret, ndarray):
+                parseable += "output_array " + str(id(ret)) + " " + str(ret.shape)
+            print(parseable)
+            #dprint(2, parseable)
+
         wrap_end = timer()
         add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
         add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
@@ -5055,6 +5227,18 @@ class ndarray_flags:
         dagshape = DAGshape(self.arr.shape, self.arr.dtype, self.arr)
         DAG.add(dagshape, "set_writeable", set_writeable_executor, (self, self.arr, val,), {})
         # Have to do DAG.in_evaluate check?  FIX ME. TODO.
+
+
+class ndarray_details:
+    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__')
+
+    def __init__(self, shape, distribution, local_border, from_border, to_border, dtype):
+        self.shape = shape
+        self.distribution = distribution
+        self.local_border = local_border
+        self.from_border = from_border
+        self.to_border = to_border
+        self.dtype = dtype
 
 
 class ndarray:
@@ -5193,16 +5377,13 @@ class ndarray:
 
     # TODO: should consider using a class rather than tuple; alternative -- use weak ref to ndarray
     def get_details(self):
-        return tuple(
-            [
-                self.shape,
-                self.distribution,
-                self.local_border,
-                self.from_border,
-                self.to_border,
-                self.dtype,
-            ]
-        )
+        return ndarray_details(
+                   self.shape,
+                   self.distribution,
+                   self.local_border,
+                   self.from_border,
+                   self.to_border,
+                   self.dtype)
 
     @property
     def gid(self):
@@ -5444,14 +5625,21 @@ class ndarray:
         return red_arr
 
     @classmethod
-    def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis):
+    def internal_reduction2_executor(cls, temp_array, self, op, optext, imports, dtype, axis, keepdims):
         if isinstance(axis, numbers.Integral):
             axis = [axis]
-        sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
-        sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
+        if keepdims:
+            sl1 = tuple(slice(None) for i in range(self.ndim))
+            sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
+        else:
+            sl1 = tuple(0 if i in axis else slice(None) for i in range(self.ndim))
+            sl2 = tuple(slice(0,1) if i in axis else slice(None) for i in range(self.ndim))
         k = np.array(self.shape)[axis]
         if builtins.all(k == 1):  # done, just get the slice with axes removed
-            return self[sl1]
+            if keepdims:
+                return self
+            else:
+                return self[sl1]
         # need global reduction
         arr = empty_like(self[sl2])
         code = ["", arr, " = " + optext + "( np.array(["]
@@ -5489,8 +5677,11 @@ class ndarray:
         return DAGshape(self.shape, self.dtype, self)
 
     @DAGapi
-    def internal_reduction2(self, op, optext, imports, dtype, axis):
-        outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
+    def internal_reduction2(self, op, optext, imports, dtype, axis, keepdims=False):
+        if keepdims:
+            outshape = tuple( [ self.shape[i] if i not in axis else 1 for i in range(self.ndim) ] )
+        else:
+            outshape = tuple( [ self.shape[i] for i in range(self.ndim) if i not in axis ] )
         return DAGshape(outshape, dtype, False)
 
     @DAGapi
@@ -5536,7 +5727,7 @@ class ndarray:
 
     @DAGapi
     def array_unaryop(
-        self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
+        self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
         if dtype is None:
             dtype = self.dtype
@@ -5575,9 +5766,9 @@ class ndarray:
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-                redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
+                redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
                 add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
                 return redres
@@ -5761,9 +5952,16 @@ class ndarray:
     def array_binop(
         self, rhs, op, optext, opfunc="", extra_args={}, inplace=False, reverse=False, imports=[], dtype=None
     ):
-        dprint(1, "array_binop", id(self), op, optext)
+        dprint(1, "array_binop", id(self), op, type(op), optext, type(rhs))
         new_shape = numpy_broadcast_shape(self, rhs)
         new_dtype = unify_args(self.dtype, rhs, dtype)
+        if op == "__truediv__":
+            # Convert division into multiplication by reciprocal.
+            op = "__mul__"
+            optext = " * "
+            rhs = 1.0 / rhs
+            dprint(1, "Converted div into mul")
+
         if new_shape is None:
             new_shape = ()
             DAG.instantiate(self)
@@ -5771,10 +5969,11 @@ class ndarray:
             return ndarray.array_binop_executor(None, self, rhs, op, optext, extra_args=extra_args, inplace=inplace, reverse=reverse, imports=imports, dtype=dtype)
         else:
             #add_constraint([(self, list(range(1, self.ndim + 1))), (rhs, list(range(1, rhs.ndim + 1)))])
+            # We might need replaced_args below due to the div-to-mul rewrite above.
             if inplace:
-                return DAGshape(new_shape, new_dtype, self)
+                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext])
             else:
-                return DAGshape(new_shape, new_dtype, False)
+                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext])
 
 
     @classmethod
@@ -6197,7 +6396,11 @@ class ndarray:
             else:
                 return NotImplemented
         """
-        return hf[0](*new_args, **kwargs)
+        #return hf[0](*new_args, **kwargs)
+        res = hf[0](*new_args, **kwargs)
+        dprint(1, "__array_function__ done")
+        sys.stdout.flush()
+        return res
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         dprint(1, "__array_ufunc__", ufunc, type(ufunc), method, len(inputs), kwargs)
@@ -7076,7 +7279,7 @@ def make_method(
             if "dtype" not in kwargs:
                 kwargs["dtype"] = dtype
             retval = self.array_unaryop(
-                name, optext, reduction, imports=imports, **kwargs_m, **kwargs
+                name, optext, reduction=reduction, imports=imports, **kwargs_m, **kwargs
             )
             return retval
 
@@ -7275,10 +7478,10 @@ class deferred_op:
             self.use_gids[gid] = ([], bd_info, pad, flex_dist)
             self.keepalives.add(bdarray.get_by_gid(gid))  # keep bdarrays alive
         for (v, ai) in self.use_gids[gid][0]:
-            if shardview.dist_is_eq(arr_info[1], ai[1]):
+            if shardview.dist_is_eq(arr_info.distribution, ai.distribution):
                 return v
         v = self.get_var_name()
-        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info[1])
+        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info.distribution)
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
@@ -7347,18 +7550,18 @@ class deferred_op:
             # precode.append("  "+v+" = arrays["+str(i)+"]")
             for (vn, ai) in v[0]:
                 args.append(vn)
-                if shardview.dist_has_neg_step(ai[1]):  # use separate argument for views with negative steps
+                if shardview.dist_has_neg_step(ai.distribution):  # use separate argument for views with negative steps
                     args2.append(vn)
                 else:
                     if not did_once:
                         args2.append(vn)
                         vtr = vn
                         did_once=True
-                        unionview = shardview.dist_to_view(ai[0],ai[1],bdarray.gid_map[k].distribution)
+                        unionview = shardview.dist_to_view(ai.shape,ai.distribution,bdarray.gid_map[k].distribution)
                         args2tran[vn] = (vtr, unionview)
                     else:
                         did_more_than_once = True
-                        view = shardview.dist_to_view(ai[0],ai[1],bdarray.gid_map[k].distribution)
+                        view = shardview.dist_to_view(ai.shape,ai.distribution,bdarray.gid_map[k].distribution)
                         unionview = shardview.view_union( view, unionview )
                         args2tran[vn] = (vtr, view)
             if did_more_than_once:
@@ -7440,7 +7643,7 @@ class deferred_op:
             print("with")
             for g,l in live_gids.items():
                 for t in l[0]:
-                    print ("  ",t[0],t[1][0],g)
+                    print ("  ",t[0],t[1].shape,g)
             for n,s in self.use_other.items():
                 print ("  ",n,pickle.loads(s))
             print ("   itershape ", self.shape)
@@ -7847,6 +8050,9 @@ def init_array(
 
 
 
+# Misc routines
+def dtype(dtype, align=False, copy=False):
+    return np.dtype(dtype, align, copy)
 
 # Array creation routines -- from shape or value
 
@@ -7884,11 +8090,16 @@ def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
 
 
 @implements("zeros_like", False)
-def zeros_like(other_ndarray):
+def zeros_like(other_ndarray, dtype=None, order='K', subok=True, shape=None):
+    if dtype is None:
+        dtype = other_ndarray.dtype
+    if shape is None:
+        shape = other_ndarray.shape
+    local_border = getattr(other_ndarray, "local_border", 0)
     return zeros(
-        other_ndarray.shape,
-        local_border=other_ndarray.local_border,
-        dtype=other_ndarray.dtype,
+        shape,
+        local_border=local_border,
+        dtype=dtype,
     )
 
 
@@ -7897,11 +8108,16 @@ def ones(shape, local_border=0, dtype=None, distribution=None, **kwargs):
 
 
 @implements("ones_like", False)
-def ones_like(other_ndarray):
+def ones_like(other_ndarray, dtype=None, order='K', subok=True, shape=None):
+    if dtype is None:
+        dtype = other_ndarray.dtype
+    if shape is None:
+        shape = other_ndarray.shape
+    local_border = getattr(other_ndarray, "local_border", 0)
     return ones(
-        other_ndarray.shape,
-        local_border=other_ndarray.local_border,
-        dtype=other_ndarray.dtype,
+        shape,
+        local_border=local_border,
+        dtype=dtype,
     )
 
 
@@ -8104,13 +8320,13 @@ def load(fname, dtype=None, local=False, ftype=None, **kwargs):
 # Array creation routines -- numerical ranges
 # arange, linspace, logspace, geomspace, meshgrid, mgrid, ogrid
 
-def arange_executor(temp_ndarray, size, local_border=0):
+def arange_executor(temp_ndarray, size, like=None, local_border=0):
     res = empty(size, local_border=local_border, dtype=int64)
     deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
     return res
 
 @DAGapi
-def arange(size, local_border=0):
+def arange(size, *, like=None, local_border=0):
     return DAGshape((size,), int64, False)
 
 def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
@@ -8532,6 +8748,7 @@ def transpose(a, *args):
 # Array manipulation -- changing number of dimensions
 # alteast_1d, atleast_2d, atleast_3d, broadcast, broadcast_to, broadcast_arrays, expand_dims, squeeze
 
+@implements("broadcast_to", False)
 def broadcast_to(a, shape):
     if not isinstance(a, ndarray):
         raise NotImplementedError("broadcast_to only supports ndarrays")
@@ -8580,6 +8797,7 @@ def squeeze(a, axis=None):
 # concatenate, stack, block, vstack, hstack, dstack, column_stack, row_stack
 
 def concatenate_executor(temp_array, arrayseq, axis=0, out=None, **kwargs):
+    deferred_op.do_ops()
     out_shape = list(arrayseq[0].shape)
     found_ndarray = isinstance(arrayseq[0], ndarray)
     first_dtype = arrayseq[0].dtype
