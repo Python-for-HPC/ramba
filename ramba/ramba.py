@@ -1114,25 +1114,25 @@ class bdarray:
             if shape == ():
                 distribution = np.ndarray(shape, dtype=dtype)
             else:
-                distribution = (
-                    shardview.default_distribution(shape, **kwargs)
-                    if distribution is None
-                    else libcopy.deepcopy(distribution)
-                )
-                # clear offsets (since this is a new array)
-                for i in distribution:
-                    tmp = shardview.get_base_offset(i)
-                    tmp *= 0
+                if distribution is None:
+                    distribution = shardview.default_distribution(shape, **kwargs)
+                else:
+                    distribution = libcopy.deepcopy(distribution)
+                    # clear offsets (since this is a new array)
+                    for i in distribution:
+                        tmp = shardview.get_base_offset(i)
+                        tmp *= 0
             bd = cls(shape, distribution, gid, pad, flexible_dist, dtype)
         else:
             bd = cls.gid_map[gid]
         bd.add_nd(nd)
-        dprint(2, f"Assigning ndarray {id(nd)} to bdarray {id(bd)} with gid {gid} and refcount {len(bd.nd_set)}")
-        dprint(3, "Distribution:", bd.distribution, shape)
-        if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
-            dprint(
-                4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
-            )
+        if debug:
+            dprint(2, f"Assigning ndarray {id(nd)} to bdarray {id(bd)} with gid {gid} and refcount {len(bd.nd_set)}")
+            dprint(3, "Distribution:", bd.distribution, shape)
+            if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
+                dprint(
+                    4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
+                )
         return bd
 
     @classmethod

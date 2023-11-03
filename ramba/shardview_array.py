@@ -797,7 +797,14 @@ def distribution_to_divisions(dist):
     return ret
 
 
+dist_cache={}
 def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
+    if isinstance(dist_dims, list):
+        key = (size, tuple(dims_do_not_distribute), tuple(dist_dims))
+    else:
+        key = (size, tuple(dims_do_not_distribute), dist_dims)
+    if key in dist_cache:
+        return dist_cache[key].copy()
     num_dim = len(size)
     if isinstance(dist_dims, int):
         dist_dims = [dist_dims]
@@ -816,7 +823,9 @@ def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
             size, divisions, dims_do_not_distribute=dims_do_not_distribute
         )
         dprint(3, "compute_regular output:", size, divisions)
-    return divisions_to_distribution(divisions)
+    dist = divisions_to_distribution(divisions)
+    dist_cache[key] = dist.copy()
+    return dist
 
 
 def block_intersection(a, b):
