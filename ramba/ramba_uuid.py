@@ -31,3 +31,13 @@ class UUID:
 def uuid4():
     return UUID()
 
+"""
+UUID = int
+next_value = 0
+
+def uuid4():
+    global next_value
+    value = next_value
+    next_value += 1
+    return value
+"""
