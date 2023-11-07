@@ -7731,7 +7731,7 @@ class deferred_op:
             print("with")
             for g,l in live_gids.items():
                 t = l[0][0]
-                print ("  ",t[0],shardview._size(args2uv[t[0]]) if t[0] in args2uv else t[1][0],g)
+                print ("  ",t[0],shardview._size(args2uv[t[0]]) if t[0] in args2uv else t[1].shape,g)
             for n,s in self.use_other.items():
                 print ("  ",n,pickle.loads(s))
             print ("   itershape ", self.shape)
