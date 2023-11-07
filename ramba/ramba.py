@@ -5058,11 +5058,11 @@ def get_executor(name):
     return eval(name + "_executor")
 
 
-def DAGapi(func):
-    name = func.__qualname__
-    def wrapper(*args, **kwargs):
-        if collect_timing:
-            if ndebug >= 1:
+if collect_timing:
+    if ndebug >= 1:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 wrap_start = timer()
                 inline_exec_time = 0
                 if ndebug >= 1:
@@ -5103,7 +5103,12 @@ def DAGapi(func):
                 add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
                 add_time("DAGapi_total", (wrap_end - wrap_start))
                 return ret
-            else:
+
+            return wrapper
+    else:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 wrap_start = timer()
                 inline_exec_time = 0
                 fres = func(*args, **kwargs)
@@ -5125,8 +5130,13 @@ def DAGapi(func):
                 add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
                 add_time("DAGapi_total", (wrap_end - wrap_start))
                 return ret
-        else:
-            if ndebug >= 1:
+
+            return wrapper
+else:
+    if ndebug >= 1:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 inline_exec_time = 0
                 if ndebug >= 1:
                     dprint(1, "----------------------------------------------------")
@@ -5157,7 +5167,12 @@ def DAGapi(func):
                     print(parseable)
 
                 return ret
-            else:
+
+            return wrapper
+    else:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 fres = func(*args, **kwargs)
                 if isinstance(fres, DAGshape):
                     executor = get_executor(name)
@@ -5170,7 +5185,7 @@ def DAGapi(func):
 
                 return ret
 
-    return wrapper
+            return wrapper
 
 
 class Constraint:
