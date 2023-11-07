@@ -996,6 +996,8 @@ def get_timing_str(details=False):
 
 
 def add_time(time_name, val):
+    if not collect_timing:
+        return
     if time_name not in time_dict:
         time_dict[time_name] = {0: (0, 0)}
     tindex = time_dict[time_name]
@@ -1006,6 +1008,8 @@ def add_time(time_name, val):
 
 
 def add_sub_time(time_name, sub_name, val):
+    if not collect_timing:
+        return
     tindex = time_dict[time_name]
     if sub_name not in tindex:
         tindex[sub_name] = (0, 0)
@@ -4944,10 +4948,11 @@ class DAG:
             deferred_op.do_ops()
         cls.in_evaluate -= 1
         inst_end = timer()
-        add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
-        add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
-        add_time("instantiate_dag_node_execute", exec_time)
-        add_sub_time("instantiate_dag_node_execute", op.name, exec_time)
+        if collect_timing:
+            add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
+            add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
+            add_time("instantiate_dag_node_execute", exec_time)
+            add_sub_time("instantiate_dag_node_execute", op.name, exec_time)
 
     @classmethod
     def print_nodes(cls):
