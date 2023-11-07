@@ -317,8 +317,8 @@ def as_slice(sv):
         e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
         st[i] ) for i in range(len(s))])
 
-
-def to_base_slice(sv):
+@numba.njit(fastmath=fastmath, cache=True)
+def to_base_slice_internal(sv):
     s = _base_offset(sv)
     e = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
     st = np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
@@ -327,10 +327,19 @@ def to_base_slice(sv):
             e[v] += (_size(sv)[i]-1) * abs(_steps(sv)[i])
             st[v] = _steps(sv)[i]
     e += s
+    ret = np.empty((len(s), 3), dtype=ramba_dist_dtype)
+    for i in range(len(s)):
+        ret[i,0] = s[0] if st[0]>0 else e[0]-1
+        ret[i,1] = e[0] if st[0]>=0 else (s[0]-1 if s[0]>0 else -1)
+        ret[i,2] = st[0]
+    return ret
+
+def to_base_slice(sv):
+    ret_array = to_base_slice_internal(sv)
     return tuple([slice(
-        s[i] if st[i]>0 else e[i]-1,
-        e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else None),
-        st[i] ) for i in range(len(s))])
+        ret_array[i][0],
+        ret_array[i][1] if ret_array[i][1] >= 0 else None,
+        ret_array[i][2]) for i in range(ret_array.shape[0])])
 
 
 import numba.cpython.unsafe.tuple as UT
@@ -495,7 +504,7 @@ def union(sv, sl):
     e = np.array([max(sl_e[i], sv_e[i]) for i in range(len_size(sl))])
     return shardview(e - s, s, axis_map=_axis_map(sv), base_offset=_base_offset(sv) * 0)
 
-# No need to update for stpes?
+# No need to update for steps?
 # get a view of array (e.g. piece of a bcontainer) based on this shardview
 # output is an np array with shape same as shardview size
 # Will broadcast along additional dimensions as needed
@@ -839,7 +848,14 @@ def distribution_to_divisions(dist):
     return ret
 
 
+dist_cache={}
 def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
+    if isinstance(dist_dims, list):
+        key = (size, tuple(dims_do_not_distribute), tuple(dist_dims))
+    else:
+        key = (size, tuple(dims_do_not_distribute), dist_dims)
+    if key in dist_cache:
+        return dist_cache[key].copy()
     num_dim = len(size)
     if isinstance(dist_dims, int):
         dist_dims = [dist_dims]
@@ -858,7 +874,9 @@ def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
             size, divisions, dims_do_not_distribute=dims_do_not_distribute
         )
         dprint(3, "compute_regular output:", size, divisions)
-    return divisions_to_distribution(divisions)
+    dist = divisions_to_distribution(divisions)
+    dist_cache[key] = dist.copy()
+    return dist
 
 
 def block_intersection(a, b):

@@ -141,10 +141,20 @@ if nreshape_forwarding != 0:
 else:
     reshape_forwarding = False
 
+# If RAMBA_COLLECT_TIMING environment variable set to True,
+# will collect timing information.  You can use timing_summary, get_timing_str,
+# or get_timing to get the collected timing data.
+ctiming = int(os.environ.get("RAMBA_COLLECT_TIMING", "0"))
+if ctiming != 0:
+    collect_timing = True
+else:
+    collect_timing = False
+
 # If RAMBA_TIMING environment variable set to True, will print detailed timing messages.
 ntiming = int(os.environ.get("RAMBA_TIMING", "0"))
 if ntiming != 0:
     timing = True
+    collect_timing = True
 else:
     timing = False
 

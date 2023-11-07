@@ -39,10 +39,14 @@ if pickle.HIGHEST_PROTOCOL < 5:
 import cloudpickle
 import threading
 
+import ramba.ramba_uuid as uuid
+
+"""
 if USE_MPI and not USE_MPI_CW:
     import ramba.ramba_uuid as uuid
 else:
     import uuid
+"""
 
 if USE_ZMQ:
     import ramba.ramba_queue_zmq as ramba_queue
@@ -328,7 +332,7 @@ class FunctionMetadata:
                                 self.numba_pfunc = gpu_jit(
                                     fastmath=fastmath, **self.numba_args
                                 )(self.func)
-                                self.numba_func = None 
+                                self.numba_func = None
                         if not try_again:
                             self.ngfunc[atypes] = False
                             dprint(
@@ -1114,25 +1118,25 @@ class bdarray:
             if shape == ():
                 distribution = np.ndarray(shape, dtype=dtype)
             else:
-                distribution = (
-                    shardview.default_distribution(shape, **kwargs)
-                    if distribution is None
-                    else libcopy.deepcopy(distribution)
-                )
-                # clear offsets (since this is a new array)
-                for i in distribution:
-                    tmp = shardview.get_base_offset(i)
-                    tmp *= 0
+                if distribution is None:
+                    distribution = shardview.default_distribution(shape, **kwargs)
+                else:
+                    distribution = libcopy.deepcopy(distribution)
+                    # clear offsets (since this is a new array)
+                    for i in distribution:
+                        tmp = shardview.get_base_offset(i)
+                        tmp *= 0
             bd = cls(shape, distribution, gid, pad, flexible_dist, dtype)
         else:
             bd = cls.gid_map[gid]
         bd.add_nd(nd)
-        dprint(2, f"Assigning ndarray {id(nd)} to bdarray {id(bd)} with gid {gid} and refcount {len(bd.nd_set)}")
-        dprint(3, "Distribution:", bd.distribution, shape)
-        if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
-            dprint(
-                4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
-            )
+        if debug:
+            dprint(2, f"Assigning ndarray {id(nd)} to bdarray {id(bd)} with gid {gid} and refcount {len(bd.nd_set)}")
+            dprint(3, "Distribution:", bd.distribution, shape)
+            if len(shape) != 0 and not isinstance(bd.distribution, np.ndarray):
+                dprint(
+                    4, "Divisions:", shardview.distribution_to_divisions(bd.distribution)
+                )
         return bd
 
     @classmethod
@@ -1193,7 +1197,7 @@ class LocalNdarray:
         if gpu_present:
             pass
             # Set device and/or usm_type here.
-            #gnpargs[""] = 
+            #gnpargs[""] =
 
         if border == 0 and creation_mode == Filler.WHOLE_ARRAY_NEW and not gpu_present:
             self.bcontainer = None
@@ -4882,12 +4886,12 @@ class DAG:
 
                 dfshapes = [node.output().shape for node in deps_fulfilled]
                 if len(new_schedule) == 0:
-                    matching_index = get_index_most_common(deps_fulfilled) 
+                    matching_index = get_index_most_common(deps_fulfilled)
                 else:
                     try:
                         matching_index = dfshapes.index(new_schedule[-1].output().shape)
                     except ValueError:
-                        matching_index = get_index_most_common(deps_fulfilled) 
+                        matching_index = get_index_most_common(deps_fulfilled)
 
                 new_schedule.append(deps_fulfilled[matching_index])
                 already_scheduled.add(deps_fulfilled[matching_index])
@@ -4899,7 +4903,7 @@ class DAG:
                     if len(set(non_exec).intersection(already_scheduled)) == len(non_exec):
                         deps_fulfilled.append(fdep)
                 """
-                    
+
             alg1_end = timer()
             add_time("alg1", alg1_end - alg1_start)
 
@@ -4908,8 +4912,8 @@ class DAG:
         def analyze_dfn(depth_first_nodes, prefix):
             dfnshapes = [(None if node.output() is None else node.output().shape) for node in depth_first_nodes]
             changes = 0
-            shapedict = {} 
-            shapeindices = {} 
+            shapedict = {}
+            shapeindices = {}
             shapeconnectsindex = {}
 
             shapedict[dfnshapes[0]] = 1
@@ -4927,7 +4931,7 @@ class DAG:
                     next_sci += 1
                 shapedict[dfnshapes[sindex]] += 1
                 shapeindices[dfnshapes[sindex]].append(sindex)
-                
+
             N = len(dfnshapes)
             connects = np.zeros((N,N), dtype=np.bool_)
             last = np.copy(connects)
@@ -4941,7 +4945,7 @@ class DAG:
             while not np.array_equal(last, connects):
                 last = connects[:]
                 connects = connects @ connects
-            
+
             M = len(shapedict)
             shapeconnects = np.zeros((M,M), dtype=np.bool_)
             for shapeind, indices in enumerate(shapeindices.values()):
@@ -5030,7 +5034,7 @@ class DAG:
                 ret.extend(v)
             return ret
         nodeps = rearrange_by_shape(nodeps)
-                
+
         dprint(2, "execute_all:", len(nodeps))
         for dag_node in nodeps:
             cls.instantiate_dag_node(dag_node, do_ops=False)
@@ -5092,48 +5096,123 @@ def get_non_ramba_callsite(the_stack):
     return ("Unknown", 0)
 
 
+@functools.lru_cache()
+def get_executor(name):
+    return eval(name + "_executor")
+
+
 def DAGapi(func):
     name = func.__qualname__
     def wrapper(*args, **kwargs):
-        wrap_start = timer()
-        inline_exec_time = 0
-        dprint(1, "----------------------------------------------------")
-        dprint(1, "DAGapi", name)
-        for a in args:
-            if isinstance(a, ndarray):
-                dprint(2, "    DAGapi input array", id(a), id(a.bdarray), a.gid)
-        fres = func(*args, **kwargs)
-        if isinstance(fres, DAGshape):
-            executor = eval(name + "_executor")
-            nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
-            if DAG.in_evaluate > 0 or NO_DAG:
-                dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
-                inline_start = timer()
-                dag.execute()
-                inline_end = timer()
-                inline_exec_time = inline_end - inline_start
-                add_time("DAGapi_inline_exec", inline_exec_time)
-            dprint(1, "----------------------------------------------------")
-            ret = nres
+        if collect_timing:
+            if ndebug >= 1:
+                wrap_start = timer()
+                inline_exec_time = 0
+                if ndebug >= 1:
+                    dprint(1, "----------------------------------------------------")
+                    dprint(1, "DAGapi", name)
+                    for a in args:
+                        if isinstance(a, ndarray):
+                            dprint(2, "    DAGapi input array", id(a), id(a.bdarray), a.gid)
+                fres = func(*args, **kwargs)
+                if isinstance(fres, DAGshape):
+                    executor = get_executor(name)
+                    nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
+                    if DAG.in_evaluate > 0 or NO_DAG:
+                        dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
+                        inline_start = timer()
+                        dag.execute()
+                        inline_end = timer()
+                        inline_exec_time = inline_end - inline_start
+                        add_time("DAGapi_inline_exec", inline_exec_time)
+                    dprint(1, "----------------------------------------------------")
+                    ret = nres
+                else:
+                    dprint(1, "----------------------------------------------------")
+                    ret = fres
+
+                if ndebug >= 2:
+                    parseable = "PARSE DAGapi " + name + " "
+                    for a in args:
+                        if isinstance(a, ndarray):
+                            parseable += "input_array " + str(id(a)) + " "
+                    if isinstance(ret, ndarray):
+                        parseable += "output_array " + str(id(ret)) + " " + str(ret.shape)
+                    print(parseable)
+                    #dprint(2, parseable)
+
+                wrap_end = timer()
+                add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
+                add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
+                add_time("DAGapi_total", (wrap_end - wrap_start))
+                return ret
+            else:
+                wrap_start = timer()
+                inline_exec_time = 0
+                fres = func(*args, **kwargs)
+                if isinstance(fres, DAGshape):
+                    executor = get_executor(name)
+                    nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
+                    if DAG.in_evaluate > 0 or NO_DAG:
+                        inline_start = timer()
+                        dag.execute()
+                        inline_end = timer()
+                        inline_exec_time = inline_end - inline_start
+                        add_time("DAGapi_inline_exec", inline_exec_time)
+                    ret = nres
+                else:
+                    ret = fres
+
+                wrap_end = timer()
+                add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
+                add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
+                add_time("DAGapi_total", (wrap_end - wrap_start))
+                return ret
         else:
-            dprint(1, "----------------------------------------------------")
-            ret = fres
+            if ndebug >= 1:
+                inline_exec_time = 0
+                if ndebug >= 1:
+                    dprint(1, "----------------------------------------------------")
+                    dprint(1, "DAGapi", name)
+                    for a in args:
+                        if isinstance(a, ndarray):
+                            dprint(2, "    DAGapi input array", id(a), id(a.bdarray), a.gid)
+                fres = func(*args, **kwargs)
+                if isinstance(fres, DAGshape):
+                    executor = get_executor(name)
+                    nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
+                    if DAG.in_evaluate > 0 or NO_DAG:
+                        dprint(2, "DAG.in_evaluate", args, dag, len(dag.backward_deps), len(dag.forward_deps))
+                        dag.execute()
+                    dprint(1, "----------------------------------------------------")
+                    ret = nres
+                else:
+                    dprint(1, "----------------------------------------------------")
+                    ret = fres
 
-        if ndebug >= 2:
-            parseable = "PARSE DAGapi " + name + " "
-            for a in args:
-                if isinstance(a, ndarray):
-                    parseable += "input_array " + str(id(a)) + " "
-            if isinstance(ret, ndarray):
-                parseable += "output_array " + str(id(ret)) + " " + str(ret.shape)
-            print(parseable)
-            #dprint(2, parseable)
+                if ndebug >= 2:
+                    parseable = "PARSE DAGapi " + name + " "
+                    for a in args:
+                        if isinstance(a, ndarray):
+                            parseable += "input_array " + str(id(a)) + " "
+                    if isinstance(ret, ndarray):
+                        parseable += "output_array " + str(id(ret)) + " " + str(ret.shape)
+                    print(parseable)
 
-        wrap_end = timer()
-        add_time("DAGapi", (wrap_end - wrap_start) - inline_exec_time)
-        add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
-        add_time("DAGapi_total", (wrap_end - wrap_start))
-        return ret
+                return ret
+            else:
+                fres = func(*args, **kwargs)
+                if isinstance(fres, DAGshape):
+                    executor = get_executor(name)
+                    nres, dag = DAG.add(fres, name, executor, fres.replaced_args if fres.replaced_args is not None else args, fres.replaced_kwargs if fres.replaced_kwargs is not None else kwargs) # need a deepcopy of args and kwargs?  maybe pickle if not simple types
+                    if DAG.in_evaluate > 0 or NO_DAG:
+                        dag.execute()
+                    ret = nres
+                else:
+                    ret = fres
+
+                return ret
+
     return wrapper
 
 
