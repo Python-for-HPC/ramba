@@ -996,6 +996,8 @@ def get_timing_str(details=False):
 
 
 def add_time(time_name, val):
+    if not collect_timing:
+        return
     if time_name not in time_dict:
         time_dict[time_name] = {0: (0, 0)}
     tindex = time_dict[time_name]
@@ -1006,6 +1008,8 @@ def add_time(time_name, val):
 
 
 def add_sub_time(time_name, sub_name, val):
+    if not collect_timing:
+        return
     tindex = time_dict[time_name]
     if sub_name not in tindex:
         tindex[sub_name] = (0, 0)
@@ -4992,10 +4996,11 @@ class DAG:
             deferred_op.do_ops()
         cls.in_evaluate -= 1
         inst_end = timer()
-        add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
-        add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
-        add_time("instantiate_dag_node_execute", exec_time)
-        add_sub_time("instantiate_dag_node_execute", op.name, exec_time)
+        if collect_timing:
+            add_time("instantiate_dag_node", do_op_start - inst_start - exec_time)
+            add_time("instantiate_dag_node_do_ops", inst_end - do_op_start)
+            add_time("instantiate_dag_node_execute", exec_time)
+            add_sub_time("instantiate_dag_node_execute", op.name, exec_time)
 
     @classmethod
     def print_nodes(cls):
@@ -5101,11 +5106,11 @@ def get_executor(name):
     return eval(name + "_executor")
 
 
-def DAGapi(func):
-    name = func.__qualname__
-    def wrapper(*args, **kwargs):
-        if collect_timing:
-            if ndebug >= 1:
+if collect_timing:
+    if ndebug >= 1:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 wrap_start = timer()
                 inline_exec_time = 0
                 if ndebug >= 1:
@@ -5146,7 +5151,12 @@ def DAGapi(func):
                 add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
                 add_time("DAGapi_total", (wrap_end - wrap_start))
                 return ret
-            else:
+
+            return wrapper
+    else:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 wrap_start = timer()
                 inline_exec_time = 0
                 fres = func(*args, **kwargs)
@@ -5168,8 +5178,13 @@ def DAGapi(func):
                 add_sub_time("DAGapi", name, (wrap_end - wrap_start) - inline_exec_time)
                 add_time("DAGapi_total", (wrap_end - wrap_start))
                 return ret
-        else:
-            if ndebug >= 1:
+
+            return wrapper
+else:
+    if ndebug >= 1:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 inline_exec_time = 0
                 if ndebug >= 1:
                     dprint(1, "----------------------------------------------------")
@@ -5200,7 +5215,12 @@ def DAGapi(func):
                     print(parseable)
 
                 return ret
-            else:
+
+            return wrapper
+    else:
+        def DAGapi(func):
+            name = func.__qualname__
+            def wrapper(*args, **kwargs):
                 fres = func(*args, **kwargs)
                 if isinstance(fres, DAGshape):
                     executor = get_executor(name)
@@ -5213,7 +5233,7 @@ def DAGapi(func):
 
                 return ret
 
-    return wrapper
+            return wrapper
 
 
 class Constraint:

@@ -329,9 +329,9 @@ def to_base_slice_internal(sv):
     e += s
     ret = np.empty((len(s), 3), dtype=ramba_dist_dtype)
     for i in range(len(s)):
-        ret[i,0] = s[0] if st[0]>0 else e[0]-1
-        ret[i,1] = e[0] if st[0]>=0 else (s[0]-1 if s[0]>0 else -1)
-        ret[i,2] = st[0]
+        ret[i,0] = s[i] if st[i]>0 else e[i]-1
+        ret[i,1] = e[i] if st[i]>=0 else (s[i]-1 if s[i]>0 else -1)
+        ret[i,2] = st[i]
     return ret
 
 def to_base_slice(sv):
