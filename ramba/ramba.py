@@ -8418,7 +8418,27 @@ def triu(m, k=0):
 # Array manipulation -- basic ops
 # copyto, shape
 
+def cbrt_executor(temp_array, x, *args, **kwargs):
+    new_ndarray = create_array_with_divisions(
+        x.shape,
+        x.distribution,
+        local_border=x.local_border,
+        dtype=temp_array.dtype,
+    )
+    deferred_op.add_op(
+        ["", new_ndarray, " = " + "numpy.cbrt" + "(", x, ")"],
+        new_ndarray,
+        imports=["numpy"]
+    )
+    return new_ndarray
 
+@DAGapi
+def cbrt(x, /, out=None, *, dtype=None):
+    dprint(1, "cbrt", x.shape)
+    if isinstance(x, ndarray):
+        return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
+    else:
+        return np.cbrt(x)
 
 # Array manipulation -- changing shape
 # reshape, ravel, ndarray.flat, ndarray.flatten
