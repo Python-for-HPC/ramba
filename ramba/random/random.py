@@ -70,6 +70,21 @@ def default_rng():
     return Generator()
 
 
+def randint(low, high=None, size=None, dtype=np.int64):
+    if size is None:
+        return np.random.randint(low, high, size, dtype)
+    else:
+        def impl(bcontainer, dim_lens, starts):
+            for i in numba.pndindex(dim_lens):
+                bcontainer[i] = np.random.randint(low, high)
+
+        return ramba.init_array(
+            size,
+            ramba.Filler(impl, mode=ramba.Filler.WHOLE_ARRAY_INPLACE, do_compile=True),
+            **kwargs
+        )
+
+
 def random(size=None, **kwargs):
     if size is None:
         return np.random.random()
