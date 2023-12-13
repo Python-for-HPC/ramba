@@ -70,7 +70,7 @@ def default_rng():
     return Generator()
 
 
-def randint(low, high=None, size=None, dtype=np.int64):
+def randint(low, high=None, size=None, dtype=np.int64, **kwargs):
     if size is None:
         return np.random.randint(low, high, size, dtype)
     else:
