@@ -8433,7 +8433,8 @@ def cbrt_executor(temp_array, x, *args, **kwargs):
     return new_ndarray
 
 @DAGapi
-def cbrt(x, /, out=None, *, dtype=None):
+#def cbrt(x, /, out=None, *, dtype=None):
+def cbrt(x, out=None, dtype=None):   # just to keep flake happy
     dprint(1, "cbrt", x.shape)
     if isinstance(x, ndarray):
         return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
