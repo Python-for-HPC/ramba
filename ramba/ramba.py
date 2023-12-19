@@ -6137,18 +6137,25 @@ class ndarray:
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            if index.shape != self.shape:
-                index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                if index.shape != self.shape:
+                    index = index.broadcast_to(self.shape)
+                return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
+            dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
+            src_arr = self[preindex]
+            dst_arr = ndarray(dim_sizes, distribution=dist, dtype=self.dtype)
+
             assert 0 # Need to implement the slow way here in the case it doesn't get optimized away.
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
@@ -6189,20 +6196,24 @@ class ndarray:
 
     @DAGapi
     def getitem_array(self, index):
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         if len(index) > self.ndim:
             raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
+            dim_sizes,_,_,_,_ = dim_sizes_from_index(index, self.shape)
             return DAGshape(dim_sizes, self.dtype, False, aliases=self)
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
@@ -6223,8 +6234,8 @@ class ndarray:
 
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
-        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
+        # index is a mask ndarray -- boolean type
+        if isinstance(index, ndarray) and index.dtype==bool:
             return self.getitem_array(index)
 
         if not isinstance(index, tuple):
@@ -7201,26 +7212,91 @@ def canonical_slice( sl, dim_size ):
         s
     )
 
+
+# Helper function to setup fancy/advanced indexing
+# This assumes at least one index term is an array or iterable, but at most one can be a ramba ndarray
+# "none", 0-d arrays, and ellipses as index terms should be resolved before caling this function
+# slices and integral values are ok
+# inputs: index, size
+#   index is the fancy indes
+#   size is the shape of the ndarray
+# outputs: newshape, preindex, postindind, arrayind, dist
+#   newshape is the shape of the resultant array
+#   preindex is the index to apply to the original (e.g., to handle constant and slice terms)
+#   postindind has the list of index terms to apply after preindex;
+#     if integral, this is indicates the kth dimension of the output array
+#     if an array or ndarray, use the values in the array for this index term position
+#   arrayind indicates the slice of the output array dimensions used to index the array terms in postindind
+#   dist indicates the desired distribution of the output to match an ndarray term, or None to use defaults
 def dim_sizes_from_index(index, size):
-    newindex = []
+    newshape = []
+    preindex = []
+    postindind = []
+    arrayshape=None
+    arraypos=0
+    distarr=None
     if not isinstance(index, tuple):
         index = (index,)
-    assert len(index) <= len(size)
+    if (len(index) > len(size)):
+        raise IndexError(f"too many indices for array: array is {len(size)}-dimensional, but {len(index)} were indexed")
     for i in range(len(size)):
         if i >= len(index):
-            newindex.append(size[i])
+            postindind.append(len(newshape))
+            newshape.append(size[i])
             continue
         ti = index[i]
         if isinstance(ti, numbers.Integral):
-            newindex.append(1)
+            preindex.append(ti)
         elif isinstance(ti, slice):
             tmp = canonical_slice(ti, size[i])
-            newindex.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
-        elif isinstance(ti, np.ndarray):
-            newindex.append(len(ti))
+            postindind.append(len(newshape))
+            newshape.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
+            preindex.append( tmp )
+        elif isinstance(ti, (tuple, list, np.ndarray, ndarray)):
+            if isinstance(ti, ndarray):
+                if distarr is not None:
+                    raise IndexError(f"Support only maximum of 1 distributed array in advanced indexing")
+                distarr = ti
+            else:
+                if not isinstance(ti, np.ndarray):
+                    ti = np.array(ti, dtype=int)
+                if np.min(ti)<-size[i] or np.max(ti)>=size[i]:
+                    raise IndexError(f"index out of bounds for axis {i} with size {size[i]}")
+            if arrayshape is None:
+                arrayshape = ti.shape
+                arraypos = len(newshape)
+            else:
+                # broadcast check
+                try:
+                    arrayshape = np.broadcast_shapes(arrayshape, ti.shape)
+                except:
+                    raise IndexError(f"shape mismatch: indexing arrays could not be broadcast together with shapes {arrayshape} {ti.shape}")
+                # check arraypos
+                if arraypos != len(newshape):
+                    arraypos = 0
+            postindind.append(ti)
+            preindex.append( slice(0,size[i],1) )
         else:
             assert 0
-    return tuple(newindex)
+    newshape[arraypos:arraypos] = list(arrayshape)
+    for i,j in enumerate(postindind):
+        if isinstance(j, numbers.Integral):
+            if j>=arraypos:
+                postindind[i]=j+len(arrayshape)
+        elif isinstance(j, ndarray):
+            postindind[i]=j.broadcast_to(arrayshape)
+        else:   # numpy array
+            postindind[i]=np.broadcast_to(j, arrayshape)
+    arrayind = slice(arraypos, arraypos+len(arrayshape))
+    if distarr is not None:
+        distarr = distarr.broadcast_to(arrayshape)
+        distarr = expand_dims(distarr, [i if i<arraypos else i+len(arrayshape) for i in range(len(newshape)-len(arrayshape))])
+        distarr = distarr.broadcast_to(tuple(newshape))
+        dist = shardview.distribution_like( distarr.distribution )
+    else:
+        dist = None
+    print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
+    return tuple(newshape), tuple(preindex), postindind, arrayind, dist
 
 
 def canonical_index(index, shape, allslice=True):
@@ -7228,7 +7304,7 @@ def canonical_index(index, shape, allslice=True):
     if not isinstance(index, tuple):
         index = (index,)
     if (len(index) > len(shape)):
-        raise IndexError(f"too many indices for array: array is {len(index)}-dimensional, but {len(index)} were indexed")
+        raise IndexError(f"too many indices for array: array is {len(shape)}-dimensional, but {len(index)} were indexed")
     for i in range(len(shape)):
         if i >= len(index):
             newindex.append(slice(0, shape[i]))

@@ -805,6 +805,16 @@ def distribution_to_divisions(dist):
         ret[i][1] = _stop(d) - 1
     return ret
 
+@numba.njit(fastmath=fastmath, cache=True)
+def distribution_like(dist):
+    svl = [
+        shardview( size = _size(dist[i]), index_start = _index_start(dist[i]))
+        for i in range(dist.shape[0])
+    ]
+    ret = np.empty( (dist.shape[0], svl[0].shape[0], svl[0].shape[1]), dtype=ramba_dist_dtype)
+    for i, sv in enumerate(svl):
+        ret[i] = sv
+    return ret
 
 dist_cache={}
 def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
