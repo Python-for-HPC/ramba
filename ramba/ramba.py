@@ -3508,9 +3508,8 @@ class RemoteState:
 
         # Send data to other workers as needed, count how many items to recieve later
         # TODO: optimize by combining messages of overlapping array parts
-        arr_parts = (
-            {}
-        )  # place to keep array parts received and local parts, indexed by variable name
+        arr_parts = {}  # place to keep array parts received and local parts, indexed by variable name
+        manual_index_arrays = {} # place to keep local parts of arrays that will be indexed manually (i.e., no data xfer, may mismatch main index loop), indexed by variable name
         expected_bits ={} # set of parts that will be sent to this worker from others
         to_send = {}  # save up list of messages to node i, send all as single message
         from_set = {}  # nodes to recieve from
@@ -3521,6 +3520,10 @@ class RemoteState:
         for (g, (l, bdist, pad, _)) in arrays.items():
             for (v, info) in l:
                 arr_parts[v] = []
+                if info.manual_idx:
+                    sl = self.get_view(g, info.distribution[self.worker_num])
+                    manual_index_arrays[v] = sl
+                    continue
                 if shardview.is_compat(
                     subspace, info.distribution[self.worker_num]
                 ):  # whole compute range is local
@@ -3666,6 +3669,8 @@ class RemoteState:
         rangedvars = [{} for _ in ranges]
         for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
+            for (varname, data) in manual_index_arrays.items():
+                varlist[varname] = data
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
                     #print("TODD:", len(arr_parts), len(partlist), len(ranges))
@@ -5281,7 +5286,7 @@ class ndarray_flags:
 
 
 class ndarray_details:
-    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__')
+    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__', 'manual_idx')
 
     def __init__(self, shape, distribution, local_border, from_border, to_border, dtype):
         self.shape = shape
@@ -5290,6 +5295,11 @@ class ndarray_details:
         self.from_border = from_border
         self.to_border = to_border
         self.dtype = dtype
+        self.manual_idx = False
+
+    def force_manual_idx(self):
+        self.manual_idx = True
+        return self
 
 
 class ndarray:
@@ -5299,7 +5309,7 @@ class ndarray:
 
     def __init__(
         self,
-        shape,
+        shape, # can support use as copy constructor if shape is an ndarray
         *,    # the arguments below can only be passed as keyword
         base=None,
         distribution=None,
@@ -5312,6 +5322,16 @@ class ndarray:
         **kwargs
     ):
         t0 = timer()
+        if isinstance(shape, ndarray):  # act as copy constructor
+            base = shape.base
+            distribution = shape.distribution
+            local_border = shape.local_border
+            dtype = shape.dtype
+            flex_dist = shape.bdarray.flex_dist
+            readonly = shape.readonly
+            dag = shape.idag
+            maskarray = shape.maskarray
+            shape = shape.shape
         self.base = base
         if self.base is not None:
             gid = self.base.gid
@@ -6506,6 +6526,11 @@ class ndarray:
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 atexit.register(ndarray.atexit)
+
+
+class manual_idx_ndarray(ndarray):
+    def get_details(self):
+        return super().get_details().force_manual_idx()
 
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
