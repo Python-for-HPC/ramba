@@ -3497,6 +3497,8 @@ class RemoteState:
         for imp in imports:
             the_module = __import__(imp)
             gdict[imp.split(".")[0]] = the_module
+        # additional useful globals
+        gdict['worker_num'] = self.worker_num
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
@@ -7690,6 +7692,7 @@ class deferred_op:
             index_text += "[axisindex]"
         for (k, v) in live_gids.items():
             for (vn, ai) in v[0]:
+                if ai.manual_idx: continue  # skip for manually indexed arrays
                 for i in range(len(self.codelines)):
                     self.codelines[i] = self.codelines[i].replace(vn, vn + index_text)
         times.append(timer())
