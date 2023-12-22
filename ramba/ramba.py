@@ -6175,10 +6175,39 @@ class ndarray:
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
             dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
-            src_arr = self[preindex]
+            src_arr = manual_idx_ndarray(self[preindex])
             dst_arr = ndarray(dim_sizes, distribution=dist, dtype=self.dtype)
 
-            assert 0 # Need to implement the slow way here in the case it doesn't get optimized away.
+            src_arr_dist = deferred_op.get_temp_var()  # temp variable to store distribution of source array
+            deferred_op.add_op(["#",dst_arr], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])  # make sure that the output array is first argument and used for loop size; copy distribution (numpy array) so it does not get passed in multiple times
+            # construct indexing tuples
+            ind_arr = deferred_op.get_temp_var()  # temporary variable to hold constructed global index tuple
+            arrindstr = ",".join([f"index[{i}]+global_start[{i}]" for i in range(arrayind.start,arrayind.stop)])
+            indop = ["", ind_arr, "= ("]
+            for i in postindind:
+                if isinstance(i, numbers.Integral):
+                    indop[-1]+=f"index[{i}]+global_start[{i}], "
+                elif isinstance(i, ndarray):
+                    indop[-1]+=f"int("
+                    indop.append(i)
+                    indop.append("), ")
+                else:
+                    indop[-1]+=f"int("
+                    indop.append(i)
+                    indop.append(f"[({arrindstr})]), ")
+            indop[-1]+=")"
+            deferred_op.add_op(indop, dst_arr)
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([ind_arr, f"[{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(indop_local, dst_arr)
+            # if index is in local range of source array, copy value to output array
+            deferred_op.add_op(["if shardview.has_index(", src_arr_dist,"[worker_num],",ind_arr, "): ",dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
+            deferred_op.do_ops()
+            return dst_arr
+
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
             cindex = canonical_index(index, self.shape)
@@ -7306,22 +7335,20 @@ def dim_sizes_from_index(index, size):
         else:
             assert 0
     newshape[arraypos:arraypos] = list(arrayshape)
+    dist = None
     for i,j in enumerate(postindind):
         if isinstance(j, numbers.Integral):
             if j>=arraypos:
                 postindind[i]=j+len(arrayshape)
         elif isinstance(j, ndarray):
-            postindind[i]=j.broadcast_to(arrayshape)
+            distarr = distarr.broadcast_to(arrayshape)
+            distarr = expand_dims(distarr, [i if i<arraypos else i+len(arrayshape) for i in range(len(newshape)-len(arrayshape))])
+            distarr = distarr.broadcast_to(tuple(newshape))
+            postindind[i]=distarr
+            dist = shardview.distribution_like( distarr.distribution )
         else:   # numpy array
             postindind[i]=np.broadcast_to(j, arrayshape)
     arrayind = slice(arraypos, arraypos+len(arrayshape))
-    if distarr is not None:
-        distarr = distarr.broadcast_to(arrayshape)
-        distarr = expand_dims(distarr, [i if i<arraypos else i+len(arrayshape) for i in range(len(newshape)-len(arrayshape))])
-        distarr = distarr.broadcast_to(tuple(newshape))
-        dist = shardview.distribution_like( distarr.distribution )
-    else:
-        dist = None
     print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
     return tuple(newshape), tuple(preindex), postindind, arrayind, dist
 
