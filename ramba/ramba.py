@@ -3497,8 +3497,6 @@ class RemoteState:
         for imp in imports:
             the_module = __import__(imp)
             gdict[imp.split(".")[0]] = the_module
-        # additional useful globals
-        gdict['worker_num'] = self.worker_num
 
         # gdict=sys.modules['__main__'].__dict__
         if fname not in gdict:
@@ -3697,7 +3695,7 @@ class RemoteState:
                         dprint(4, "others:", k, v, type(v))
 
                 total_elements += sum([x.size for x in arrvars.values()])
-                func(shardview._index_start(r), **arrvars, **othervars)
+                func(shardview._index_start(r), self.worker_num, num_workers, **arrvars, **othervars)
                 if ndebug>3:
                     for k, v in arrvars.items():
                         dprint(4, "results:", k, v, type(v))
@@ -7764,7 +7762,7 @@ class deferred_op:
         # Use hashlib here so that hash is same every time so that caching works.
         code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(code_hash)
-        code = "def " + fname + "(global_start," + ",".join(args) + "):" + code + "\n  pass"
+        code = "def " + fname + "(global_start,worker_num,num_workers," + ",".join(args) + "):" + code + "\n  pass"
         if (debug_showcode or ndebug>=2) and is_main_thread:
             print("Executing code:\n" + code)
             print("with")
