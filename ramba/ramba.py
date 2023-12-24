@@ -3478,9 +3478,10 @@ class RemoteState:
                 continue
             v = l[0][0]
             info = l[0][1]
+            ss = shardview.clean_range(info.distribution[self.worker_num])
             self.create_array(
                 g,
-                subspace,
+                ss,
                 info.shape,
                 None,
                 info.local_border,
