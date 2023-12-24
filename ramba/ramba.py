@@ -1850,6 +1850,18 @@ def unpickle_args(args):
 def external_set_common_state(st):
     set_common_state(st, globals())
 
+
+#list of list of messages for all-to-all messaging
+# put here in global scope so can access easily from jit functions
+comm_list = []
+def init_comm(n=num_workers):
+    comm_list.clear()
+    for i in range(n):
+        comm_list.append([])
+
+def add_comm_msg( dst, msg ):
+    comm_list[dst].append(msg)
+
 class RemoteState:
     __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children')
 
@@ -6204,7 +6216,55 @@ class ndarray:
             deferred_op.add_op(indop_local, dst_arr)
             # if index is in local range of source array, copy value to output array
             deferred_op.add_op(["if shardview.has_index(", src_arr_dist,"[worker_num],",ind_arr, "): ",dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
-            deferred_op.do_ops()
+            # otherwise, add to list of items to request from the corresponding remote node
+            deferred_op.add_op(["else:"],dst_arr)
+            nodeid = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", src_arr_dist,",",ind_arr,")"], dst_arr)
+            need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
+            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], dst_arr,
+                    precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
+            #zero = np.array(0, dtype=src_arr.dtype)[()]
+            #msg = deferred_op.get_temp_var()
+            #deferred_op.add_op(["  ", msg, "=(", ind_arr, ",", ind_arr_local, ",", zero, ")"], dst_arr)
+            comm = deferred_op.get_temp_var()
+            #deferred_op.add_op(["  ", comm, "[", nodeid, "].append( (", ind_arr, ",", ind_arr_local, ",", zero, ") )"], dst_arr,
+            #        precode=["", comm,"=[[]]*num_workers"])
+            #deferred_op.add_op(["  ", comm, "[", nodeid, "].append(", msg, ")"], dst_arr,
+            #        precode=["", comm,"=[[(", src_arr,".shape,", src_arr, ".shape,", zero, ")] for _ in range(num_workers)]"],
+            #        postcode=["with numba.objmode(): set_comm_list(worker_num,", comm, ")"] )
+            deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "+index))"], dst_arr,
+                    precode=["", comm,"=[[[", src_arr,".shape[0]]]*0 for _ in range(num_workers)]"])
+            #deferred_op.add_op(["#"], dst_arr, postcode=["return ",comm] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["for i in range(num_workers):"] )
+            tmp_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, postcode=["  if not ", need_comm,"[0,i]: continue"] )
+            #deferred_op.add_op(["#"], dst_arr, postcode=["  print(np.array(", comm,"[i]))"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  ",tmp_arr,"=np.array(", comm,"[i])"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr, ")"],
+                    precode=["with numba.objmode(): init_comm(num_workers)"] )
+            #deferred_op.add_op(["  with numba.objmode(): comm[", nodeid, "].append( (", ind_arr, ",", ind_arr_local, ",", zero, ") )"], dst_arr,
+            #        precode=["with numba.objmode(): comm=[[]]*num_workers"])
+            #deferred_op.add_op(["  "], dst_arr,
+            #        precode=["global comm"])
+            #deferred_op.add_op(["  "], dst_arr,
+            #        precode=["with objmode(): comm=[[]]*num_workers"])
+            #tmp = deferred_op.get_temp_var()
+            #deferred_op.add_op(["  with numba.objmode(", tmp,"='int'): ", tmp, "=add_comm(", nodeid, ",", msg, ")"], dst_arr)
+            #deferred_op.add_op(["  with numba.objmode(): add_comm_msg(worker_num,", nodeid, ",", msg, ")"], dst_arr,
+            #        precode=["with numba.objmode(): init_comm(num_workers)"] )
+            #deferred_op.do_ops()
+
+            # Exchange messages
+            need_comm = need_comm.asarray()
+            print("need_comm array: ",need_comm)
+
+            # Create reply data
+
+            # Excahnge messages
+
+            # Fill in from received data
+
+            # Done!
             return dst_arr
 
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
@@ -7348,7 +7408,7 @@ def dim_sizes_from_index(index, size):
         else:   # numpy array
             postindind[i]=np.broadcast_to(j, arrayshape)
     arrayind = slice(arraypos, arraypos+len(arrayshape))
-    print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
+    #print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
     return tuple(newshape), tuple(preindex), postindind, arrayind, dist
 
 
