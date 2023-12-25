@@ -1866,6 +1866,9 @@ def init_comm(n=num_workers):
 def add_comm_msg( dst, msg ):
     remotestate.comm_list[dst].append(msg)
 
+def get_comm_msg( src, i ):
+    return remotestate.comm_list[src][i]
+
 class RemoteState:
     __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children', "comm_list")
 
@@ -3895,7 +3898,6 @@ class RemoteState:
     # All to all communication;  uses global comm lists;  
     # optional mask (n^2 boolean numpy array) that selects which source (row) and dest (column) communicate
     def all2all(self, gid, mask=None):
-        #print ("all2all start", self.worker_num, self.comm_list)
         need_sends = mask[self.worker_num] if mask is not None else np.ones(num_workers,dtype=bool)
         num_recvs = mask[:,self.worker_num].sum() if mask is not None else num_workers
         for i in range(num_workers):
@@ -3905,10 +3907,8 @@ class RemoteState:
         for i in range(num_recvs):
             _, j, k = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==gid)
             self.comm_list[j] = k
-            #print("all2all", self.worker_num, j, k)
         if not USE_ZMQ and USE_MPI:
             ramba_queue.wait_sends()
-        #print ("all2all end", self.worker_num, self.comm_list)
 
 if not USE_MPI:
     if USE_NON_DIST:
@@ -6246,47 +6246,63 @@ class ndarray:
             need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
             deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], dst_arr,
                     precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
-            #zero = np.array(0, dtype=src_arr.dtype)[()]
-            #msg = deferred_op.get_temp_var()
-            #deferred_op.add_op(["  ", msg, "=(", ind_arr, ",", ind_arr_local, ",", zero, ")"], dst_arr)
             comm = deferred_op.get_temp_var()
-            #deferred_op.add_op(["  ", comm, "[", nodeid, "].append( (", ind_arr, ",", ind_arr_local, ",", zero, ") )"], dst_arr,
-            #        precode=["", comm,"=[[]]*num_workers"])
-            #deferred_op.add_op(["  ", comm, "[", nodeid, "].append(", msg, ")"], dst_arr,
-            #        precode=["", comm,"=[[(", src_arr,".shape,", src_arr, ".shape,", zero, ")] for _ in range(num_workers)]"],
-            #        postcode=["with numba.objmode(): set_comm_list(worker_num,", comm, ")"] )
             deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "+index))"], dst_arr,
                     precode=["", comm,"=[[[", src_arr,".shape[0]]]*0 for _ in range(num_workers)]"])
-            #deferred_op.add_op(["#"], dst_arr, postcode=["return ",comm] )
             deferred_op.add_op(["#"], dst_arr, postcode=["for i in range(num_workers):"] )
             tmp_arr = deferred_op.get_temp_var()
+            indextype = 'int64' if ramba_big_data else 'int32'
             deferred_op.add_op(["#"], dst_arr, postcode=["  if not ", need_comm,"[0,i]: continue"] )
-            #deferred_op.add_op(["#"], dst_arr, postcode=["  print(np.array(", comm,"[i]))"] )
-            deferred_op.add_op(["#"], dst_arr, postcode=["  ",tmp_arr,"=np.array(", comm,"[i])"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  ",tmp_arr,"=np.array(", comm,"[i], dtype=np."+indextype+")"] )
             deferred_op.add_op(["#"], dst_arr, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr, ")"],
                     precode=["with numba.objmode(): init_comm(num_workers)"] )
-            #deferred_op.add_op(["  with numba.objmode(): comm[", nodeid, "].append( (", ind_arr, ",", ind_arr_local, ",", zero, ") )"], dst_arr,
-            #        precode=["with numba.objmode(): comm=[[]]*num_workers"])
-            #deferred_op.add_op(["  "], dst_arr,
-            #        precode=["global comm"])
-            #deferred_op.add_op(["  "], dst_arr,
-            #        precode=["with objmode(): comm=[[]]*num_workers"])
-            #tmp = deferred_op.get_temp_var()
-            #deferred_op.add_op(["  with numba.objmode(", tmp,"='int'): ", tmp, "=add_comm(", nodeid, ",", msg, ")"], dst_arr)
-            #deferred_op.add_op(["  with numba.objmode(): add_comm_msg(worker_num,", nodeid, ",", msg, ")"], dst_arr,
-            #        precode=["with numba.objmode(): init_comm(num_workers)"] )
-            #deferred_op.do_ops()
 
             # Exchange messages
             need_comm = need_comm.asarray()
             print("need_comm array: ",need_comm)
-            remote_exec_all("all2all", 7, need_comm)
+            remote_exec_all("all2all", uuid.uuid4(), need_comm)
 
             # Create reply data
+            src_arr_dist = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  ", reply_arr, "=np.empty(", req_arr, ".shape[0],dtype=", src_arr, ".dtype)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([req_arr, f"[j,{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", reply_arr, "[j]=", src_arr, "[", ind_arr_local, "]"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(): add_comm_msg(i,", reply_arr,")"])
+            deferred_op.add_op(["",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
 
-            # Excahnge messages
+            # Exchange messages
+            remote_exec_all("all2all", uuid.uuid4(), need_comm.T)
 
             # Fill in from received data
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", reply_arr,"='"+str(dst_arr.dtype)+"[:]'): ", reply_arr, "=get_comm_msg(i,1)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(dst_arr.ndim):
+                indop_local.extend([req_arr, f"[j,{i+len(postindind)}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", dst_arr, "[", ind_arr_local, "]=", reply_arr,"[j]"])
+            deferred_op.add_op(["",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
 
             # Done!
             return dst_arr
