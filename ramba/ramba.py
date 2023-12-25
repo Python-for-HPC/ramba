@@ -1853,17 +1853,21 @@ def external_set_common_state(st):
 
 #list of list of messages for all-to-all messaging
 # put here in global scope so can access easily from jit functions
-comm_list = []
+remotestate=None
+def set_remotestate(x):
+    global remotestate
+    remotestate=x
+
 def init_comm(n=num_workers):
-    comm_list.clear()
+    remotestate.comm_list.clear()
     for i in range(n):
-        comm_list.append([])
+        remotestate.comm_list.append([])
 
 def add_comm_msg( dst, msg ):
-    comm_list[dst].append(msg)
+    remotestate.comm_list[dst].append(msg)
 
 class RemoteState:
-    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children')
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children', "comm_list")
 
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
@@ -1899,6 +1903,8 @@ class RemoteState:
         self.deferred_ops_count = 0
         self.deferred_exec_time = 0
         self.per_func = {}
+        self.comm_list = []
+        set_remotestate(self)
 
     def set_comm_queues(self, comm_queues, control_queues):
         self.comm_queues = comm_queues
@@ -3886,6 +3892,23 @@ class RemoteState:
             postindex = inverter(subslice, *index)
             fldr.read(fname, lnd.bcontainer, postindex, **kwargs)
 
+    # All to all communication;  uses global comm lists;  
+    # optional mask (n^2 boolean numpy array) that selects which source (row) and dest (column) communicate
+    def all2all(self, gid, mask=None):
+        #print ("all2all start", self.worker_num, self.comm_list)
+        need_sends = mask[self.worker_num] if mask is not None else np.ones(num_workers,dtype=bool)
+        num_recvs = mask[:,self.worker_num].sum() if mask is not None else num_workers
+        for i in range(num_workers):
+            if not need_sends[i]: continue
+            self.comm_queues[i].put( (gid, self.worker_num, self.comm_list[i]) )
+        init_comm(num_workers)
+        for i in range(num_recvs):
+            _, j, k = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==gid)
+            self.comm_list[j] = k
+            #print("all2all", self.worker_num, j, k)
+        if not USE_ZMQ and USE_MPI:
+            ramba_queue.wait_sends()
+        #print ("all2all end", self.worker_num, self.comm_list)
 
 if not USE_MPI:
     if USE_NON_DIST:
@@ -6257,6 +6280,7 @@ class ndarray:
             # Exchange messages
             need_comm = need_comm.asarray()
             print("need_comm array: ",need_comm)
+            remote_exec_all("all2all", 7, need_comm)
 
             # Create reply data
 
