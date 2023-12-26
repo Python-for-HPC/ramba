@@ -813,6 +813,28 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_fancy_indexing1(self):
+        # Test advanced indexing -- sizes
+        def impl(app):
+            a = app.ones((11,21,31,41),dtype=int)
+            b = a[7,5,[2,6,1],3:6]
+            c = a[None, [[3, 4, 7]], 4, [[3],[2],[7],[1]]]
+            d = a[None, [[2, 3, 1]], 4, None, [[1],[7]], 4:9]
+            return (b.shape, c.shape, d.shape)
+
+        run_both(impl)
+
+    def test_fancy_indexing2(self):
+        # Test advanced indexing -- gather/scatter values
+        def impl(app):
+            a = app.arange(500)
+            b = a[::7]
+            c = app.fromfunction(lambda i,j: (i+j)%70, (50,20), dtype=int)
+            d = b[c]
+            return d
+
+        run_both(impl)
+
     def test_smap1(self):
         a = ramba.arange(100)
         b = ramba.smap("lambda x: 3*x-7", a)
