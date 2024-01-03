@@ -229,9 +229,9 @@ Current status of Ramba compatibility with NumPy APIs.  Key:  &#x1f7e2; works   
 |            | tiling          | &#x1f534; not implemented |
 |            | insert/remove elements | &#x1f534; not implemented |
 |            | rearrange elements | &#x1f534; not implemented |
-|Index/slice | range slice     | &#x1f7e1; partial         | produces view like in numpy; steps > 1 and negative steps are supported
-|            | masked arrays   | &#x1f7e1; partial         | only in assignments / in-place operations / reductions;  see below for details
-|            | fancy indexing  | &#x1f534; not implemented |
+|Index/slice | range slice     | &#x1f7e2; works           | produces view like in numpy; steps > 1 and negative steps are supported
+|            | masked arrays   | &#x1f7e1; partial         | only in assignments / in-place operations / reductions;  see docs for details
+|            | fancy indexing  | &#x1f7e1; partial         | fancy/advanced indexing using an array of indices is very expensive in a distributed context;  See docs for details/limitations.
 |            | index routines  | &#x1f534; not implemented | ("where" partly works)
 |Math        | arithmetic operations | &#x1f7e2; works     | +, -, +=, //, etc. 
 |            | comparisons     | &#x1f7e2; works           | 

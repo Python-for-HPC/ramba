@@ -1851,8 +1851,27 @@ def unpickle_args(args):
 def external_set_common_state(st):
     set_common_state(st, globals())
 
+
+#list of list of messages for all-to-all messaging
+# put here in global scope so can access easily from jit functions
+remotestate=None
+def set_remotestate(x):
+    global remotestate
+    remotestate=x
+
+def init_comm(n=num_workers):
+    remotestate.comm_list.clear()
+    for i in range(n):
+        remotestate.comm_list.append([])
+
+def add_comm_msg( dst, msg ):
+    remotestate.comm_list[dst].append(msg)
+
+def get_comm_msg( src, i ):
+    return remotestate.comm_list[src][i]
+
 class RemoteState:
-    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children')
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children', "comm_list")
 
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
@@ -1888,6 +1907,8 @@ class RemoteState:
         self.deferred_ops_count = 0
         self.deferred_exec_time = 0
         self.per_func = {}
+        self.comm_list = []
+        set_remotestate(self)
 
     def set_comm_queues(self, comm_queues, control_queues):
         self.comm_queues = comm_queues
@@ -3479,9 +3500,10 @@ class RemoteState:
                 continue
             v = l[0][0]
             info = l[0][1]
+            ss = shardview.clean_range(info.distribution[self.worker_num])
             self.create_array(
                 g,
-                subspace,
+                ss,
                 info.shape,
                 None,
                 info.local_border,
@@ -3509,9 +3531,8 @@ class RemoteState:
 
         # Send data to other workers as needed, count how many items to recieve later
         # TODO: optimize by combining messages of overlapping array parts
-        arr_parts = (
-            {}
-        )  # place to keep array parts received and local parts, indexed by variable name
+        arr_parts = {}  # place to keep array parts received and local parts, indexed by variable name
+        manual_index_arrays = {} # place to keep local parts of arrays that will be indexed manually (i.e., no data xfer, may mismatch main index loop), indexed by variable name
         expected_bits ={} # set of parts that will be sent to this worker from others
         to_send = {}  # save up list of messages to node i, send all as single message
         from_set = {}  # nodes to recieve from
@@ -3522,6 +3543,10 @@ class RemoteState:
         for (g, (l, bdist, pad, _)) in arrays.items():
             for (v, info) in l:
                 arr_parts[v] = []
+                if info.manual_idx:
+                    sl = self.get_view(g, info.distribution[self.worker_num])
+                    manual_index_arrays[v] = sl
+                    continue
                 if shardview.is_compat(
                     subspace, info.distribution[self.worker_num]
                 ):  # whole compute range is local
@@ -3667,6 +3692,8 @@ class RemoteState:
         rangedvars = [{} for _ in ranges]
         for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
+            for (varname, data) in manual_index_arrays.items():
+                varlist[varname] = data
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data) in partlist:
                     #print("TODD:", len(arr_parts), len(partlist), len(ranges))
@@ -3691,7 +3718,7 @@ class RemoteState:
                         dprint(4, "others:", k, v, type(v))
 
                 total_elements += sum([x.size for x in arrvars.values()])
-                func(shardview._index_start(r), **arrvars, **othervars)
+                func(shardview._index_start(r), self.worker_num, num_workers, **arrvars, **othervars)
                 if ndebug>3:
                     for k, v in arrvars.items():
                         dprint(4, "results:", k, v, type(v))
@@ -3869,6 +3896,20 @@ class RemoteState:
             postindex = inverter(subslice, *index)
             fldr.read(fname, lnd.bcontainer, postindex, **kwargs)
 
+    # All to all communication;  uses global comm lists;  
+    # optional mask (n^2 boolean numpy array) that selects which source (row) and dest (column) communicate
+    def all2all(self, gid, mask=None):
+        need_sends = mask[self.worker_num] if mask is not None else np.ones(num_workers,dtype=bool)
+        num_recvs = mask[:,self.worker_num].sum() if mask is not None else num_workers
+        for i in range(num_workers):
+            if not need_sends[i]: continue
+            self.comm_queues[i].put( (gid, self.worker_num, self.comm_list[i]) )
+        init_comm(num_workers)
+        for i in range(num_recvs):
+            _, j, k = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==gid)
+            self.comm_list[j] = k
+        if not USE_ZMQ and USE_MPI:
+            ramba_queue.wait_sends()
 
 if not USE_MPI:
     if USE_NON_DIST:
@@ -5282,7 +5323,7 @@ class ndarray_flags:
 
 
 class ndarray_details:
-    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__')
+    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__', 'manual_idx')
 
     def __init__(self, shape, distribution, local_border, from_border, to_border, dtype):
         self.shape = shape
@@ -5291,6 +5332,11 @@ class ndarray_details:
         self.from_border = from_border
         self.to_border = to_border
         self.dtype = dtype
+        self.manual_idx = False
+
+    def force_manual_idx(self):
+        self.manual_idx = True
+        return self
 
 
 class ndarray:
@@ -5300,7 +5346,7 @@ class ndarray:
 
     def __init__(
         self,
-        shape,
+        shape, # can support use as copy constructor if shape is an ndarray
         *,    # the arguments below can only be passed as keyword
         base=None,
         distribution=None,
@@ -5313,6 +5359,16 @@ class ndarray:
         **kwargs
     ):
         t0 = timer()
+        if isinstance(shape, ndarray):  # act as copy constructor
+            base = shape.base
+            distribution = shape.distribution
+            local_border = shape.local_border
+            dtype = shape.dtype
+            flex_dist = shape.bdarray.flex_dist
+            readonly = shape.readonly
+            dag = shape.idag
+            maskarray = shape.maskarray
+            shape = shape.shape
         self.base = base
         if self.base is not None:
             gid = self.base.gid
@@ -6143,19 +6199,120 @@ class ndarray:
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            if index.shape != self.shape:
-                index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                if index.shape != self.shape:
+                    index = index.broadcast_to(self.shape)
+                return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
-            assert 0 # Need to implement the slow way here in the case it doesn't get optimized away.
+            dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
+            src_arr = manual_idx_ndarray(self[preindex])
+            dst_arr = ndarray(dim_sizes, distribution=dist, dtype=self.dtype)
+
+            src_arr_dist = deferred_op.get_temp_var()  # temp variable to store distribution of source array
+            deferred_op.add_op(["#",dst_arr], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])  # make sure that the output array is first argument and used for loop size; copy distribution (numpy array) so it does not get passed in multiple times
+            # construct indexing tuples
+            ind_arr = deferred_op.get_temp_var()  # temporary variable to hold constructed global index tuple
+            arrindstr = ",".join([f"index[{i}]+global_start[{i}]" for i in range(arrayind.start,arrayind.stop)])
+            indop = ["", ind_arr, "= ("]
+            for i in postindind:
+                if isinstance(i, numbers.Integral):
+                    indop[-1]+=f"index[{i}]+global_start[{i}], "
+                elif isinstance(i, ndarray):
+                    indop[-1]+=f"int("
+                    indop.append(i)
+                    indop.append("), ")
+                else:
+                    indop[-1]+=f"int("
+                    indop.append(i)
+                    indop.append(f"[({arrindstr})]), ")
+            indop[-1]+=")"
+            deferred_op.add_op(indop, dst_arr)
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([ind_arr, f"[{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(indop_local, dst_arr)
+            # if index is in local range of source array, copy value to output array
+            deferred_op.add_op(["if shardview.has_index(", src_arr_dist,"[worker_num],",ind_arr, "): ",dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
+            # otherwise, add to list of items to request from the corresponding remote node
+            deferred_op.add_op(["else:"],dst_arr)
+            nodeid = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", src_arr_dist,",",ind_arr,")"], dst_arr)
+            need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
+            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], dst_arr,
+                    precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
+            comm = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "+index))"], dst_arr,
+                    precode=["", comm,"=[[[", src_arr,".shape[0]]]*0 for _ in range(num_workers)]"])
+            deferred_op.add_op(["#"], dst_arr, postcode=["for i in range(num_workers):"] )
+            tmp_arr = deferred_op.get_temp_var()
+            indextype = 'int64' if ramba_big_data else 'int32'
+            deferred_op.add_op(["#"], dst_arr, postcode=["  if not ", need_comm,"[0,i]: continue"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  ",tmp_arr,"=np.array(", comm,"[i], dtype=np."+indextype+")"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr, ")"],
+                    precode=["with numba.objmode(): init_comm(num_workers)"] )
+
+            # Exchange messages
+            need_comm = need_comm.asarray()
+            print("need_comm array: ",need_comm)
+            remote_exec_all("all2all", uuid.uuid4(), need_comm)
+
+            # Create reply data
+            src_arr_dist = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  ", reply_arr, "=np.empty(", req_arr, ".shape[0],dtype=", src_arr, ".dtype)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([req_arr, f"[j,{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", reply_arr, "[j]=", src_arr, "[", ind_arr_local, "]"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(): add_comm_msg(i,", reply_arr,")"])
+            deferred_op.add_op(["",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
+
+            # Exchange messages
+            remote_exec_all("all2all", uuid.uuid4(), need_comm.T)
+
+            # Fill in from received data
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", reply_arr,"='"+str(dst_arr.dtype)+"[:]'): ", reply_arr, "=get_comm_msg(i,1)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(dst_arr.ndim):
+                indop_local.extend([req_arr, f"[j,{i+len(postindind)}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", dst_arr, "[", ind_arr_local, "]=", reply_arr,"[j]"])
+            deferred_op.add_op(["",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
+
+            # Done!
+            return dst_arr
+
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
             cindex = canonical_index(index, self.shape)
@@ -6195,20 +6352,24 @@ class ndarray:
 
     @DAGapi
     def getitem_array(self, index):
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         if len(index) > self.ndim:
             raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
+            dim_sizes,_,_,_,_ = dim_sizes_from_index(index, self.shape)
             return DAGshape(dim_sizes, self.dtype, False, aliases=self)
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
@@ -6229,8 +6390,8 @@ class ndarray:
 
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
-        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
+        # index is a mask ndarray -- boolean type
+        if isinstance(index, ndarray) and index.dtype==bool:
             return self.getitem_array(index)
 
         if not isinstance(index, tuple):
@@ -6501,6 +6662,11 @@ class ndarray:
         return RambaGroupby(self, dim, value_to_group, num_groups=num_groups)
 
 atexit.register(ndarray.atexit)
+
+
+class manual_idx_ndarray(ndarray):
+    def get_details(self):
+        return super().get_details().force_manual_idx()
 
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
@@ -7207,26 +7373,89 @@ def canonical_slice( sl, dim_size ):
         s
     )
 
+
+# Helper function to setup fancy/advanced indexing
+# This assumes at least one index term is an array or iterable, but at most one can be a ramba ndarray
+# "none", 0-d arrays, and ellipses as index terms should be resolved before caling this function
+# slices and integral values are ok
+# inputs: index, size
+#   index is the fancy indes
+#   size is the shape of the ndarray
+# outputs: newshape, preindex, postindind, arrayind, dist
+#   newshape is the shape of the resultant array
+#   preindex is the index to apply to the original (e.g., to handle constant and slice terms)
+#   postindind has the list of index terms to apply after preindex;
+#     if integral, this is indicates the kth dimension of the output array
+#     if an array or ndarray, use the values in the array for this index term position
+#   arrayind indicates the slice of the output array dimensions used to index the array terms in postindind
+#   dist indicates the desired distribution of the output to match an ndarray term, or None to use defaults
 def dim_sizes_from_index(index, size):
-    newindex = []
+    newshape = []
+    preindex = []
+    postindind = []
+    arrayshape=None
+    arraypos=0
+    distarr=None
     if not isinstance(index, tuple):
         index = (index,)
-    assert len(index) <= len(size)
+    if (len(index) > len(size)):
+        raise IndexError(f"too many indices for array: array is {len(size)}-dimensional, but {len(index)} were indexed")
     for i in range(len(size)):
         if i >= len(index):
-            newindex.append(size[i])
+            postindind.append(len(newshape))
+            newshape.append(size[i])
             continue
         ti = index[i]
         if isinstance(ti, numbers.Integral):
-            newindex.append(1)
+            preindex.append(ti)
         elif isinstance(ti, slice):
             tmp = canonical_slice(ti, size[i])
-            newindex.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
-        elif isinstance(ti, np.ndarray):
-            newindex.append(len(ti))
+            postindind.append(len(newshape))
+            newshape.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
+            preindex.append( tmp )
+        elif isinstance(ti, (tuple, list, np.ndarray, ndarray)):
+            if isinstance(ti, ndarray):
+                if distarr is not None:
+                    raise IndexError(f"Support only maximum of 1 distributed array in advanced indexing")
+                distarr = ti
+            else:
+                if not isinstance(ti, np.ndarray):
+                    ti = np.array(ti, dtype=int)
+                if np.min(ti)<-size[i] or np.max(ti)>=size[i]:
+                    raise IndexError(f"index out of bounds for axis {i} with size {size[i]}")
+            if arrayshape is None:
+                arrayshape = ti.shape
+                arraypos = len(newshape)
+            else:
+                # broadcast check
+                try:
+                    arrayshape = np.broadcast_shapes(arrayshape, ti.shape)
+                except:
+                    raise IndexError(f"shape mismatch: indexing arrays could not be broadcast together with shapes {arrayshape} {ti.shape}")
+                # check arraypos
+                if arraypos != len(newshape):
+                    arraypos = 0
+            postindind.append(ti)
+            preindex.append( slice(0,size[i],1) )
         else:
             assert 0
-    return tuple(newindex)
+    newshape[arraypos:arraypos] = list(arrayshape)
+    dist = None
+    for i,j in enumerate(postindind):
+        if isinstance(j, numbers.Integral):
+            if j>=arraypos:
+                postindind[i]=j+len(arrayshape)
+        elif isinstance(j, ndarray):
+            distarr = distarr.broadcast_to(arrayshape)
+            distarr = expand_dims(distarr, [i if i<arraypos else i+len(arrayshape) for i in range(len(newshape)-len(arrayshape))])
+            distarr = distarr.broadcast_to(tuple(newshape))
+            postindind[i]=distarr
+            dist = shardview.distribution_like( distarr.distribution )
+        else:   # numpy array
+            postindind[i]=np.broadcast_to(j, arrayshape)
+    arrayind = slice(arraypos, arraypos+len(arrayshape))
+    #print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
+    return tuple(newshape), tuple(preindex), postindind, arrayind, dist
 
 
 def canonical_index(index, shape, allslice=True):
@@ -7234,7 +7463,7 @@ def canonical_index(index, shape, allslice=True):
     if not isinstance(index, tuple):
         index = (index,)
     if (len(index) > len(shape)):
-        raise IndexError(f"too many indices for array: array is {len(index)}-dimensional, but {len(index)} were indexed")
+        raise IndexError(f"too many indices for array: array is {len(shape)}-dimensional, but {len(index)} were indexed")
     for i in range(len(shape)):
         if i >= len(index):
             newindex.append(slice(0, shape[i]))
@@ -7595,6 +7824,7 @@ class deferred_op:
             index_text += "[axisindex]"
         for (k, v) in live_gids.items():
             for (vn, ai) in v[0]:
+                if ai.manual_idx: continue  # skip for manually indexed arrays
                 for i in range(len(self.codelines)):
                     self.codelines[i] = self.codelines[i].replace(vn, vn + index_text)
         times.append(timer())
@@ -7639,7 +7869,7 @@ class deferred_op:
         # Use hashlib here so that hash is same every time so that caching works.
         code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(code_hash)
-        code = "def " + fname + "(global_start," + ",".join(args) + "):" + code + "\n  pass"
+        code = "def " + fname + "(global_start,worker_num,num_workers," + ",".join(args) + "):" + code + "\n  pass"
         if (debug_showcode or ndebug>=2) and is_main_thread:
             print("Executing code:\n" + code)
             print("with")

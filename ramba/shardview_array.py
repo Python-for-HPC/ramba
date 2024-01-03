@@ -805,6 +805,16 @@ def distribution_to_divisions(dist):
         ret[i][1] = _stop(d) - 1
     return ret
 
+@numba.njit(fastmath=fastmath, cache=True)
+def distribution_like(dist):
+    svl = [
+        shardview( size = _size(dist[i]), index_start = _index_start(dist[i]))
+        for i in range(dist.shape[0])
+    ]
+    ret = np.empty( (dist.shape[0], svl[0].shape[0], svl[0].shape[1]), dtype=ramba_dist_dtype)
+    for i, sv in enumerate(svl):
+        ret[i] = sv
+    return ret
 
 dist_cache={}
 def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
@@ -817,7 +827,7 @@ def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
     num_dim = len(size)
     if isinstance(dist_dims, int):
         dist_dims = [dist_dims]
-    if isinstance(dist_dims, list):
+    if isinstance(dist_dims, (list, tuple)):
         assert dims_do_not_distribute is None or len(dims_do_not_distribute) == 0
         dims_do_not_distribute = [i for i in range(num_dim) if i not in dist_dims]
     starts = np.zeros(num_dim, dtype=np.int64)
@@ -825,7 +835,7 @@ def default_distribution(size, dims_do_not_distribute=[], dist_dims=None):
     # the ends are inclusive, not one past the last index
     ends -= 1
     divisions = np.empty((num_workers, 2, num_dim), dtype=np.int64)
-    if do_not_distribute(size):
+    if dist_dims is None and do_not_distribute(size):
         make_uni_dist(divisions, 0, starts, ends)
     else:
         compute_regular_schedule(

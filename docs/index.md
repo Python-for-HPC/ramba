@@ -67,6 +67,12 @@ corresponding elements of the array should be updated;  other elements remain un
 
 Ramba currently only supports the first use case.  
 
+### Fancy / Advanced Indexing
+Ramba now supports fancy/advanced indexing of an array with array of index values.  Although this works, in a distributed context this is a very expensive operation.  The result is always a copy, and may require significant communication betweeen nodes.  The result array will attempt to match the distribution of the indexing array, or use a clean default distribution if there is no distributed index.  
+
+Mixing advanced indexing on an axis with simple indexing, slices, "None", ellipses, etc. on others is also supported.  Supplying index arrays for multiple axes is supported (as long as the arrays can broadcast together, as in Numpy).  However, in the current implementation, at most only one of the index arrays can be a distributed Ramba array -- others must be nondistributed Numpy arrays.  Note that the precise rules used in Numpy when mixing these indexing types is bit arcane.  Ramba tries to match these, but the position of the dimensions corresponding to the index arrays in the output shape may differ from Numpy when mixing broadcasting of indexing arrays, None, and slices in the same operation.  
+
+Lists and tuples can be used for fancy indexing -- these will be converted to Numpy arrays first.  "Ragged" arrays from lists of lists with different lengths is not supported (and is deprecated in Numpy).  
 
 ## Ramba's Distribution Friendly APIs
 
