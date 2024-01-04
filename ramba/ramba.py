@@ -14,6 +14,7 @@ from ramba.common import *
 
 import os
 
+
 if not USE_NON_DIST:
     if USE_MPI:
         import mpi4py
@@ -5375,6 +5376,9 @@ class ndarray:
                 readonly = True
         else:
             gid = None
+
+        shape = tuple([int(x) for x in shape])
+
         self.bdarray = bdarray.assign_bdarray(
             self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
         )  # extra options for distribution hints
@@ -6139,6 +6143,8 @@ class ndarray:
             return DAGshape(self.shape, self.dtype, self)
         if not isinstance(key, tuple):
             key = (key,)
+        # Convert various Integral types to plain Python int.
+        key = tuple([int(x) if not isinstance(x, (bool, np.bool_) and isinstance(x, numbers.Integral) else x for x in key])
         key = tuple([self.handle_0d_index(ind) for ind in key])
         key2 = tuple(i for i in key if i is not Ellipsis)
         if len(key2)+1<len(key):
@@ -6169,7 +6175,7 @@ class ndarray:
                     raise ValueError("assignment destination is read-only")
 
                 index = canonical_index(key2, self.shape, allslice=False)
-                owner = shardview.find_index( self.distribution, index)
+                owner = shardview.find_index(self.distribution, index)
                 dprint(2, "owner:", owner)
                 remote_exec( owner, "setitem_global", self.gid, index, value, self.distribution[owner])
                 return
@@ -8534,14 +8540,28 @@ def load(fname, dtype=None, local=False, ftype=None, **kwargs):
 # Array creation routines -- numerical ranges
 # arange, linspace, logspace, geomspace, meshgrid, mgrid, ogrid
 
-def arange_executor(temp_ndarray, size, like=None, local_border=0):
-    res = empty(size, local_border=local_border, dtype=int64)
-    deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
+def arange_executor(temp_ndarray, start, stop=None, step=None, dtype=None, like=None, local_border=0):
+    res = empty(temp_ndarray.size, local_border=local_border, dtype=int64)
+    if stop is None:
+        deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
+    else:
+        if step is None:
+            deferred_op.add_op( ["", res, " = ", start, " + index[0] + global_start[0]"], res, imports=[] )
+        else:
+            deferred_op.add_op( ["", res, " = ", start, " + ", step, " * (index[0] + global_start[0])"], res, imports=[] )
     return res
 
 @DAGapi
-def arange(size, *, like=None, local_border=0):
-    return DAGshape((size,), int64, False)
+def arange(start, stop=None, step=None, dtype=None, *, like=None, local_border=0):
+    if stop is None:
+        size = start
+    else:
+        if step is None:
+            size = stop - start
+        else:
+            size = (stop - start + step - 1) // step
+    return DAGshape((size,), int64 if dtype is None else dtype, False)
+
 
 def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
     assert num > 0
@@ -8663,10 +8683,10 @@ def cbrt_executor(temp_array, x, *args, **kwargs):
     return new_ndarray
 
 @DAGapi
-#def cbrt(x, /, out=None, *, dtype=None):
 def cbrt(x, out=None, dtype=None):   # just to keep flake happy
     dprint(1, "cbrt", x.shape)
     if isinstance(x, ndarray):
+        dprint(1, "cbrt", x.shape)
         return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
     else:
         return np.cbrt(x)
