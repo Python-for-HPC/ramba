@@ -6144,7 +6144,7 @@ class ndarray:
         if not isinstance(key, tuple):
             key = (key,)
         # Convert various Integral types to plain Python int.
-        key = tuple([int(x) if not isinstance(x, (bool, np.bool_) and isinstance(x, numbers.Integral) else x for x in key])
+        key = tuple([int(x) if not isinstance(x, (bool, np.bool_)) and isinstance(x, numbers.Integral) else x for x in key])
         key = tuple([self.handle_0d_index(ind) for ind in key])
         key2 = tuple(i for i in key if i is not Ellipsis)
         if len(key2)+1<len(key):
@@ -8684,7 +8684,6 @@ def cbrt_executor(temp_array, x, *args, **kwargs):
 
 @DAGapi
 def cbrt(x, out=None, dtype=None):   # just to keep flake happy
-    dprint(1, "cbrt", x.shape)
     if isinstance(x, ndarray):
         dprint(1, "cbrt", x.shape)
         return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
