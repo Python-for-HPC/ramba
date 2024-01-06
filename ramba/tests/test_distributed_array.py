@@ -573,6 +573,15 @@ class TestDgemm:
 
         run_both(impl, 5, 2, 3, 4, 5, 7)
 
+    def test_dot_5Dx3D(self):
+        def impl(app, a, b, c, d, i, j, k):
+            X = app.fromfunction(lambda v, w, x, y, z: v+w+x+y+z, (a, b, c, i, k))
+            theta = app.fromfunction(lambda x, y, z: x+y+z, (d, k, j), dtype=X.dtype)
+            res = app.dot(X,theta)
+            return res
+
+        run_both(impl, 5, 2, 3, 6, 4, 5, 7)
+
 
 
 class TestBasic:

@@ -6652,31 +6652,48 @@ ufunc_map = {
 }
 
 
+def _get_array_like(a):
+    if not isinstance(a, (np.ndarray, ndarray)):
+        try:
+            a = np.array(a)
+        except:
+            raise ValueError("Cannot convert to array")
+    if a.ndim==0:
+        return a[()], None
+    if isinstance(a, np.ndarray):
+        a = array(a)
+    return a, a.shape
+
+
+# TODO: handle out argument
 def dot(a, b, out=None):
     dprint(1, "dot")
-    ashape = a.shape
-    bshape = b.shape
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        return a*b
     if len(ashape) <= 2 and len(bshape) <= 2:
         return matmul(a, b, out=out)
-    else:
-        print("dot for matrices higher than 2 dimensions not currently supported.")
-        assert 0
-
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    shp0 = ashape[:-1] + bshape
+    bn = [-(i+3) for i in range(len(bshape)-2)]+[-1]
+    a = expand_dims(a, bn)
+    print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
 
 
 # TODO: handle out argument
 def matmul(a, b, reduction=False, out=None):
-    if not isinstance(a, (np.ndarray, ndarray)):
-        a = np.array(a)
-    if not isinstance(b, (np.ndarray, ndarray)):
-        b = np.array(b)
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        raise ValueError(f"Matmul cannot be used with scalar arguments")
     if a.ndim==2 and b.ndim==2:
         return matmul_2D(a, b, reduction=reduction, out=out)
-    if a.ndim==0 or b.ndim==0:
-        raise ValueError(f"Matmul cannot be used with scalar arguments")
 
-    ashape = a.shape
-    bshape = b.shape
     if b.ndim==1:
         if ashape[-1]!=bshape[0]:
             raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
