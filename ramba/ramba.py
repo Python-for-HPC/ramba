@@ -5806,6 +5806,8 @@ class ndarray:
         return DAGshape(self.shape, dtype, False)
 
 
+    # TODO: fully handle keepdims
+    # TODO: add out argument
     def array_unaryop(
         self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -5834,11 +5836,11 @@ class ndarray:
                 #    return DAGshape((1,), dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2b(op, dtype, asarray)
                 reduction2b_end = timer()
-                # TODO: Fixme -- this is not measuring the execution times
+                # TODO: Fixme -- this is not always measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2b", reduction2b_end - reduction2b_start)
                 return redres
             else:
@@ -5847,7 +5849,7 @@ class ndarray:
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
@@ -6662,17 +6664,53 @@ def dot(a, b, out=None):
 
 
 
-"""
+# TODO: handle out argument
 def matmul(a, b, reduction=False, out=None):
-    #DAG.in_evaluate += 1
-    res = matmul_internal(a, b, reduction=reduction, out=out)
-    #DAG.in_evaluate -= 1
-    return res
-"""
+    if not isinstance(a, (np.ndarray, ndarray)):
+        a = np.array(a)
+    if not isinstance(b, (np.ndarray, ndarray)):
+        b = np.array(b)
+    if a.ndim==2 and b.ndim==2:
+        return matmul_2D(a, b, reduction=reduction, out=out)
+    if a.ndim==0 or b.ndim==0:
+        raise ValueError(f"Matmul cannot be used with scalar arguments")
+
+    ashape = a.shape
+    bshape = b.shape
+    if b.ndim==1:
+        if ashape[-1]!=bshape[0]:
+            raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+        b = b.broadcast_to(ashape)
+        #if out is not None:
+        #    if out.shape!=ashape:
+        #        raise ValueError(f"Mismatch shape of output {out.shape} for input shapes {ashape} and {bshape}")
+        #    out[...] = (a*b).sum(axis=a.ndim-1)
+        #    return
+        #else:
+        #    return (a*b).sum(axis=a.ndim-1)
+        return (a*b).sum(axis=-1)
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    a = expand_dims(a,axis=-1)
+    if len(ashape)==1:
+        a = a.broadcast_to(bshape)
+        return (a*b).sum(axis=-2)
+    b = expand_dims(b,axis=-3)
+    ashp0 = ashape[:-2]
+    bshp0 = bshape[:-2]
+    try:
+        shp0 = np.broadcast_shapes(ashp0,bshp0) + ashape[-2:-1] + bshape[-2:]
+    except:
+        raise ValueError(f"Cannot broadcast shapes {ashp0} and {bshp0} for arrays shaped {ashape} and {bshape}")
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
+
 
 
 @DAGapi
-def matmul(a, b, reduction=False, out=None):
+def matmul_2D(a, b, reduction=False, out=None):
     ashape = a.shape
     bshape = b.shape
     dtype = np.result_type(a.dtype, b.dtype)
@@ -6714,7 +6752,7 @@ def matmul(a, b, reduction=False, out=None):
         return DAGshape(out_shape, dtype, False)
 
 
-def matmul_executor(temp_array, a, b, reduction=False, out=None):
+def matmul_2D_executor(temp_array, a, b, reduction=False, out=None):
     return matmul_internal(a, b, reduction=reduction, out=out)
 
 def matmul_internal(a, b, reduction=False, out=None):
