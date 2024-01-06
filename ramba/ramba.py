@@ -5805,38 +5805,7 @@ class ndarray:
     def internal_array_unaryop( self, op, optext, imports=[], dtype=None ):
         return DAGshape(self.shape, dtype, False)
 
-    @classmethod
-    def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
-    ):
-        if dtype is None:
-            dtype = self.dtype
-        elif dtype == "float":
-            dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if isinstance(initval, numbers.Integral):
-            if initval<-1: initval = getminmax(dtype)[0]
-            elif initval>1: initval = getminmax(dtype)[1]
-        if axis is not None:
-            if isinstance(axis, numbers.Number):
-                axis = [axis]
-            axis = sorted( list( np.core.numeric.normalize_axis_tuple( axis, self.ndim ) ) )
-            if len(axis)==self.ndim:
-                axis = None
-        assert reduction
-        if axis is None or (axis == 0 and self.ndim == 1):
-            assert asarray
-            dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2b(op, dtype, asarray)
-        else:
-            dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
-
-    @DAGapi
     def array_unaryop(
         self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -5869,6 +5838,7 @@ class ndarray:
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2b(op, dtype, asarray)
                 reduction2b_end = timer()
+                # TODO: Fixme -- this is not measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2b", reduction2b_end - reduction2b_start)
                 return redres
             else:
@@ -5881,6 +5851,7 @@ class ndarray:
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
+                # TODO: Fixme -- this is not measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
                 return redres
         else:
