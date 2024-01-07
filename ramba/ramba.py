@@ -6672,14 +6672,14 @@ def dot(a, b, out=None):
     b, bshape = _get_array_like(b)
     if ashape is None or bshape is None:
         return a*b
-    if len(ashape) <= 2 and len(bshape) <= 2:
+    if len(bshape)==1 or (len(ashape) <= 2 and len(bshape) <= 2):
         return matmul(a, b, out=out)
     if ashape[-1]!=bshape[-2]:
         raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
     shp0 = ashape[:-1] + bshape
     bn = [-(i+3) for i in range(len(bshape)-2)]+[-1]
     a = expand_dims(a, bn)
-    print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
     a = a.broadcast_to(shp0)
     b = b.broadcast_to(shp0)
     return (a*b).sum(axis=-2)
