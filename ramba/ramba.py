@@ -1333,7 +1333,11 @@ class LocalNdarray:
             if global_index
             else slice_index
         )
-        arr = self.bcontainer[local_slice]
+        try:
+            arr = self.bcontainer[local_slice]
+        except IndexError as e:
+            print("IndexError:", self.bcontainer.shape, local_slice, slice_index, global_index)
+            raise e
         #print("lnd::get_partial_view:", slice_index, shard, global_index, local_slice, arr, self.bcontainer, id(self.bcontainer))
         if remap_view:
             arr = shardview.array_to_view(shard, arr)
@@ -2625,7 +2629,8 @@ class RemoteState:
             bdiv = shardview.to_division(b_distribution[self.worker_num])
             # b_slice = tuple([slice(None,None)]*len(b.dim_lens))
             b_slice = tuple(
-                [slice(bdiv[0][i], bdiv[1][i] + 1) for i in range(len(b.dim_lens))]
+                [slice(bdiv[0][i], bdiv[1][i] + 1) for i in range(bdiv.shape[1])]
+                #[slice(bdiv[0][i], bdiv[1][i] + 1) for i in range(len(b.dim_lens))]
             )
         elif isinstance(b_gid, np.ndarray):
             b = FakeLocal(b_gid.shape, self.worker_num, bcontainer=b_gid)
@@ -4354,6 +4359,7 @@ class DAG:
         self.output = output
         DAG.dag_nodes.add(self)
 
+
     @property
     def non_exec_backward_deps(self):
         return set(filter(lambda x: not x.executed, self.backward_deps))
@@ -5347,17 +5353,27 @@ class ndarray:
     def __init__(
         self,
         shape, # can support use as copy constructor if shape is an ndarray
+        dtype=None,
+        buffer_arg=None,
+        offset=0,
+        strides=None,
+        order=None,
         *,    # the arguments below can only be passed as keyword
         base=None,
         distribution=None,
         local_border=0,
-        dtype=None,
         flex_dist=True,
         readonly=False,
         dag=None,
         maskarray=None,
         **kwargs
     ):
+        # These are unsupported.
+        assert buffer_arg is None
+        assert offset == 0
+        assert strides is None
+        assert order is None
+
         t0 = timer()
         if isinstance(shape, ndarray):  # act as copy constructor
             base = shape.base
@@ -5600,6 +5616,7 @@ class ndarray:
 
 
     def __del__(self):
+        dprint(2, "ndarray::__del__", id(self))
         dprint(2, "ndarray::__del__", self, self.gid, id(self), id(self.bdarray), flush=False)
         #ndarray_gids[self.gid][0]-=1
         self.bdarray.ndarray_del_callback()
@@ -6265,7 +6282,7 @@ class ndarray:
 
             # Exchange messages
             need_comm = need_comm.asarray()
-            print("need_comm array: ",need_comm)
+            dprint(1, "need_comm array: ", need_comm)
             remote_exec_all("all2all", uuid.uuid4(), need_comm)
 
             # Create reply data
@@ -6704,6 +6721,7 @@ def matmul(a, b, reduction=False, out=None):
 def matmul(a, b, reduction=False, out=None):
     ashape = a.shape
     bshape = b.shape
+    dprint(1, "matmul", ashape, bshape)
     dtype = np.result_type(a.dtype, b.dtype)
     if len(ashape) == 1 and len(bshape) == 1:
         DAG.instantiate(a)
@@ -6750,10 +6768,10 @@ def matmul_internal(a, b, reduction=False, out=None):
     #DAG.instantiate(a)
     #DAG.instantiate(b)
     #DAG.execute_all()
-    dprint(1, "matmul", a.shape, b.shape)
-    pre_matmul_start_time = timer()
     ashape = a.shape
     bshape = b.shape
+    dprint(1, "matmul_internal", ashape, bshape)
+    pre_matmul_start_time = timer()
 
     # Handle the 1D x 1D case.
     if len(ashape) == 1 and len(bshape) == 1:
@@ -8298,7 +8316,7 @@ def empty_like(other_ndarray,**kwargs):
     )
 
 
-def zeros(shape, local_border=0, dtype=None, distribution=None, **kwargs):
+def zeros(shape, dtype=None, order='C', *, local_border=0, distribution=None, **kwargs):
     return init_array(
         shape,
         "0",
@@ -8318,12 +8336,12 @@ def zeros_like(other_ndarray, dtype=None, order='K', subok=True, shape=None):
     local_border = getattr(other_ndarray, "local_border", 0)
     return zeros(
         shape,
-        local_border=local_border,
         dtype=dtype,
+        local_border=local_border,
     )
 
 
-def ones(shape, local_border=0, dtype=None, distribution=None, **kwargs):
+def ones(shape, dtype=None, order='C', local_border=0, distribution=None, **kwargs):
     return init_array(shape, "1", local_border=local_border, distribution=distribution, dtype=dtype, **kwargs)
 
 
@@ -8684,7 +8702,6 @@ def cbrt_executor(temp_array, x, *args, **kwargs):
 
 @DAGapi
 def cbrt(x, out=None, dtype=None):   # just to keep flake happy
-    dprint(1, "cbrt", x.shape)
     if isinstance(x, ndarray):
         dprint(1, "cbrt", x.shape)
         return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
@@ -9165,6 +9182,23 @@ def stack(arrays, axis=0, out=None):
 # Array manipulation -- splitting arrays
 # split, array_split, hsplit, vsplit, dsplit
 
+def split(arr, indices_or_sections, axis=0):
+    dprint(2, "split", arr.shape, arr.distribution, indices_or_sections, axis)
+
+    ashape = arr.shape
+    num_dims = len(ashape)
+    if axis > num_dims:
+        raise ValueError("Wrong axis")
+    axis_len = ashape[axis]
+
+    if not isinstance(indices_or_sections, numbers.Integral):
+        raise ValueError("split with indices not implemented.")
+
+    if axis_len % indices_or_sections != 0:
+        raise ValueError(f"Cannot evenly divide array dimension of length {axis_len} into {indices_or_sections} equal sections.")
+
+    size_of_each = axis_len // indices_or_sections
+    return [arr[tuple([slice(None, None) if y != axis else slice(x*size_of_each, (x+1)*size_of_each) for y in range(num_dims)])] for x in range(indices_or_sections)]
 
 
 def _compute_remote_ranges(out_distribution, out_mapping):
