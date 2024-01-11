@@ -187,13 +187,12 @@ class TestFusion:
         a=ramba.ones(1)  # WORKAROUND: ensure large mem released
         ramba.sync()     # Ideally, should work without these
 
-    # Non materialization of temporaries seems to have been broken;  leave this test out for now
-    #def test_fuse2(self):
-    #    a = ramba.ones(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
-    #    a += (7*a-3)+(4*a+5*a)      # Should continue to fit if fused, no temporaries materialized
-    #    assert a[0]==14
-    #    a=ramba.ones(1)  # WORKAROUND: ensure large mem released
-    #    ramba.sync()     # Ideally, should work without these
+    def test_fuse2(self):
+        a = ramba.ones(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
+        a += (7*a-3)+(4*a+5*a)      # Should continue to fit if fused, no temporaries materialized
+        assert a[0]==14
+        a=ramba.ones(1)  # WORKAROUND: ensure large mem released
+        ramba.sync()     # Ideally, should work without these
 
 class TestBroadcast:
     def test1(self):
@@ -546,6 +545,60 @@ class TestDgemm:
                     for l in range(j - k):
                         if random.uniform(0, 1) < percent:
                             run_both(impl, i, j, k, l)
+
+    def test_3Dx1D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x, y, z: x + y + z, (i, j, k))
+            theta = app.fromfunction(lambda x: x, (k,), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 15, 7, 9)
+
+    def test_1Dx3D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x: x, (k,))
+            theta = app.fromfunction(lambda x, y, z: x + y + z, (i, k, j), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 12, 17, 6)
+
+    def test_5Dx3D(self):
+        def impl(app, a, b, c, i, j, k):
+            X = app.fromfunction(lambda v, w, x, y, z: v+w+x+y+z, (a, b, c, i, k))
+            theta = app.fromfunction(lambda x, y, z: x+y+z, (c, k, j), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 5, 2, 3, 4, 5, 7)
+
+    def test_dot_3Dx1D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x, y, z: x + y + z, (i, j, k))
+            theta = app.fromfunction(lambda x: x, (k,), dtype=X.dtype)
+            res = app.dot(X, theta)
+            return res
+
+        run_both(impl, 15, 7, 9)
+
+    def test_dot_1Dx3D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x: x, (k,))
+            theta = app.fromfunction(lambda x, y, z: x + y + z, (i, k, j), dtype=X.dtype)
+            res = app.dot(X, theta)
+            return res
+
+        run_both(impl, 12, 17, 6)
+
+    def test_dot_5Dx3D(self):
+        def impl(app, a, b, c, d, i, j, k):
+            X = app.fromfunction(lambda v, w, x, y, z: v+w+x+y+z, (a, b, c, i, k))
+            theta = app.fromfunction(lambda x, y, z: x+y+z, (d, k, j), dtype=X.dtype)
+            res = app.dot(X,theta)
+            return res
+
+        run_both(impl, 5, 2, 3, 6, 4, 5, 7)
 
 
 

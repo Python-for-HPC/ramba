@@ -3500,12 +3500,13 @@ class RemoteState:
         # info tuple is (size, distribution, local_border, from_border, to_border, dtype)
         # TODO:  Need to check array construction -- this code may break for views/slices; assumes first view of gid is the canonical, full array
         # [ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
-        for (g, (l, bdist, pad, _)) in arrays.items():
+        for (g, (l, _, bdist, pad, _)) in arrays.items():
             if g in self.numpy_map:
                 continue
             v = l[0][0]
             info = l[0][1]
-            ss = shardview.clean_range(info.distribution[self.worker_num])
+            #ss = shardview.clean_range(info.distribution[self.worker_num])
+            ss = shardview.clean_range(bdist[self.worker_num])
             self.create_array(
                 g,
                 ss,
@@ -3545,7 +3546,7 @@ class RemoteState:
         getview_time = 0.0
         arrview_time = 0.0
         copy_time = 0.0
-        for (g, (l, bdist, pad, _)) in arrays.items():
+        for (g, (l, _, bdist, pad, _)) in arrays.items():
             for (v, info) in l:
                 arr_parts[v] = []
                 if info.manual_idx:
@@ -5822,38 +5823,9 @@ class ndarray:
     def internal_array_unaryop( self, op, optext, imports=[], dtype=None ):
         return DAGshape(self.shape, dtype, False)
 
-    @classmethod
-    def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
-    ):
-        if dtype is None:
-            dtype = self.dtype
-        elif dtype == "float":
-            dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if isinstance(initval, numbers.Integral):
-            if initval<-1: initval = getminmax(dtype)[0]
-            elif initval>1: initval = getminmax(dtype)[1]
-        if axis is not None:
-            if isinstance(axis, numbers.Number):
-                axis = [axis]
-            axis = sorted( list( np.core.numeric.normalize_axis_tuple( axis, self.ndim ) ) )
-            if len(axis)==self.ndim:
-                axis = None
-        assert reduction
-        if axis is None or (axis == 0 and self.ndim == 1):
-            assert asarray
-            dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2b(op, dtype, asarray)
-        else:
-            dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
-
-    @DAGapi
+    # TODO: fully handle keepdims
+    # TODO: add out argument
     def array_unaryop(
         self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -5882,10 +5854,11 @@ class ndarray:
                 #    return DAGshape((1,), dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2b(op, dtype, asarray)
                 reduction2b_end = timer()
+                # TODO: Fixme -- this is not always measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2b", reduction2b_end - reduction2b_start)
                 return redres
             else:
@@ -5894,10 +5867,11 @@ class ndarray:
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
+                # TODO: Fixme -- this is not measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
                 return redres
         else:
@@ -6696,29 +6670,82 @@ ufunc_map = {
 }
 
 
+def _get_array_like(a):
+    if not isinstance(a, (np.ndarray, ndarray)):
+        try:
+            a = np.array(a)
+        except:
+            raise ValueError("Cannot convert to array")
+    if a.ndim==0:
+        return a[()], None
+    if isinstance(a, np.ndarray):
+        a = array(a)
+    return a, a.shape
+
+
+# TODO: handle out argument
 def dot(a, b, out=None):
     dprint(1, "dot")
-    ashape = a.shape
-    bshape = b.shape
-    if len(ashape) <= 2 and len(bshape) <= 2:
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        return a*b
+    if len(bshape)==1 or (len(ashape) <= 2 and len(bshape) <= 2):
         return matmul(a, b, out=out)
-    else:
-        print("dot for matrices higher than 2 dimensions not currently supported.")
-        assert 0
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    shp0 = ashape[:-1] + bshape
+    bn = [-(i+3) for i in range(len(bshape)-2)]+[-1]
+    a = expand_dims(a, bn)
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
 
 
-
-"""
+# TODO: handle out argument
 def matmul(a, b, reduction=False, out=None):
-    #DAG.in_evaluate += 1
-    res = matmul_internal(a, b, reduction=reduction, out=out)
-    #DAG.in_evaluate -= 1
-    return res
-"""
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        raise ValueError(f"Matmul cannot be used with scalar arguments")
+    if a.ndim==2 and b.ndim==2:
+        return matmul_2D(a, b, reduction=reduction, out=out)
+
+    if b.ndim==1:
+        if ashape[-1]!=bshape[0]:
+            raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+        b = b.broadcast_to(ashape)
+        #if out is not None:
+        #    if out.shape!=ashape:
+        #        raise ValueError(f"Mismatch shape of output {out.shape} for input shapes {ashape} and {bshape}")
+        #    out[...] = (a*b).sum(axis=a.ndim-1)
+        #    return
+        #else:
+        #    return (a*b).sum(axis=a.ndim-1)
+        return (a*b).sum(axis=-1)
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    a = expand_dims(a,axis=-1)
+    if len(ashape)==1:
+        a = a.broadcast_to(bshape)
+        return (a*b).sum(axis=-2)
+    b = expand_dims(b,axis=-3)
+    ashp0 = ashape[:-2]
+    bshp0 = bshape[:-2]
+    try:
+        shp0 = np.broadcast_shapes(ashp0,bshp0) + ashape[-2:-1] + bshape[-2:]
+    except:
+        raise ValueError(f"Cannot broadcast shapes {ashp0} and {bshp0} for arrays shaped {ashape} and {bshape}")
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
+
 
 
 @DAGapi
-def matmul(a, b, reduction=False, out=None):
+def matmul_2D(a, b, reduction=False, out=None):
     ashape = a.shape
     bshape = b.shape
     dprint(1, "matmul", ashape, bshape)
@@ -6761,7 +6788,7 @@ def matmul(a, b, reduction=False, out=None):
         return DAGshape(out_shape, dtype, False)
 
 
-def matmul_executor(temp_array, a, b, reduction=False, out=None):
+def matmul_2D_executor(temp_array, a, b, reduction=False, out=None):
     return matmul_internal(a, b, reduction=reduction, out=out)
 
 def matmul_internal(a, b, reduction=False, out=None):
@@ -7755,7 +7782,7 @@ class deferred_op:
         self.write_arrs = []  # (gid,dist) list of write arrays; dist is None if flex_dist
         self.use_gids = (
             {}
-        )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
+        )  # map gid to tuple ([(tmp var name, array details)*], bdarray shape, bdarray dist, pad, flex)
         self.preconstructed_gids = (
             {}
         )  # subset of use_gids that already are remote_constructed
@@ -7776,10 +7803,10 @@ class deferred_op:
         self.varcount += 1
         return nm
 
-    def add_gid(self, gid, arr_info, bd_info, pad, flex_dist):
+    def add_gid(self, gid, arr_info, bd_shape, bd_info, pad, flex_dist):
         if gid not in self.use_gids:
             # self.use_gids[gid] = tuple([self.get_var_name(), arr_info, bd_info, pad])
-            self.use_gids[gid] = ([], bd_info, pad, flex_dist)
+            self.use_gids[gid] = ([], bd_shape, bd_info, pad, flex_dist)
             self.keepalives.add(bdarray.get_by_gid(gid))  # keep bdarrays alive
         for (v, ai) in self.use_gids[gid][0]:
             if shardview.dist_is_eq(arr_info.distribution, ai.distribution):
@@ -7825,12 +7852,9 @@ class deferred_op:
         }
         dprint(3, "use_gids:", self.use_gids.keys(), "\nlive_gids", live_gids.keys(), "\npreconstructed gids", self.preconstructed_gids, "\ndistribution", self.distribution)
         # Change distributions for any flexible arrays -- we should not have slices here
-        for (_, (_, d, _, flex)) in live_gids.items():
-            if flex:
+        for (_, (_, s, d, _, flex)) in live_gids.items():
+            if flex and self.shape==s:
                 dcopy = shardview.clean_dist(self.distribution)
-                #dcopy = libcopy.deepcopy(shardview.clean_dist(self.distribution)) # version from dag branch
-                #dcopy = libcopy.deepcopy(self.distribution)
-                # d.clear()
                 for i, v in enumerate(
                     dcopy
                 ):  # deep copy distribution, but keep reference same as other arrays may be pointing to the same one
@@ -7971,6 +7995,7 @@ class deferred_op:
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
                         x.gid,
                         x.get_details(),
+                        bd.shape,
                         bd.distribution,
                         bd.pad,
                         bd.flex_dist and not bd.remote_constructed,
@@ -8102,6 +8127,7 @@ class deferred_op:
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
                         x.gid,
                         x.get_details(),
+                        bd.shape,
                         bd.distribution,
                         bd.pad,
                         bd.flex_dist and not bd.remote_constructed,
@@ -8121,6 +8147,7 @@ class deferred_op:
             v= cls.ramba_deferred_ops.add_gid(
                 v.gid,
                 v.get_details(),
+                bd.shape,
                 bd.distribution,
                 bd.pad,
                 bd.flex_dist and not bd.remote_constructed,
