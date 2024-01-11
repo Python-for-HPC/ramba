@@ -6357,7 +6357,6 @@ class ndarray:
     # Convert 0d indices in index into integers.
     def handle_0d_index(self, ind):
         if isinstance(ind, (ndarray, np.ndarray)) and ind.shape == ():
-            ind.instantiate()
             return ind[()]
         else:
             return ind
@@ -6371,10 +6370,12 @@ class ndarray:
         if not isinstance(index, tuple):
             index = (index,)
 
-        if index == (): # 0d case
-            assert self.shape == ()
-            self.instantiate()
-            return self.distribution[()]
+        if index == ():
+            if self.shape == (): # 0d case
+                self.instantiate()
+                return self.distribution[()]
+            else:
+                index=(...,)
 
         index = tuple([self.handle_0d_index(ind) for ind in index])
 
