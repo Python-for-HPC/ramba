@@ -888,6 +888,29 @@ class TestBasic:
 
         run_both(impl)
 
+    def test_fancy_indexing3(self):
+        # Test advanced indexing -- setitem to scalar
+        def impl(app):
+            a = app.arange(500)
+            b = a[::2]
+            c = app.fromfunction(lambda i,j: i+j*100, (50,3), dtype=int)
+            b[c] = 1
+            return a
+
+        run_both(impl)
+
+    def test_fancy_indexing4(self):
+        # Test advanced indexing -- setitem to dist array with mismatched distribution
+        def impl(app):
+            a = app.arange(500)
+            b = a[::2]
+            c = app.fromfunction(lambda i,j: i+j*100, (50,3), dtype=int)
+            d = app.fromfunction(lambda i,j: (i-j), (50,100), dtype=int)
+            b[c] = d[:,48:51]
+            return a
+
+        run_both(impl)
+
     def test_smap1(self):
         a = ramba.arange(100)
         b = ramba.smap("lambda x: 3*x-7", a)
