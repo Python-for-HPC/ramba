@@ -65,10 +65,10 @@ corresponding elements of the array should be updated;  other elements remain un
 
 (b)  When the masked array appears in any other expression, an output 1D array is constructed, containing all of the elements for which the mask is True.  The output is always 1D and a copy, regardless of the dimensionality of the original array.  
 
-Ramba currently only supports the first use case.  
+Ramba currently only supports the first use case.  Mixing mask indexing with slices, fancy indexing, etc., is not supported.  
 
 ### Fancy / Advanced Indexing
-Ramba now supports fancy/advanced indexing of an array with array of index values.  Although this works, in a distributed context this is a very expensive operation.  The result is always a copy, and may require significant communication betweeen nodes.  The result array will attempt to match the distribution of the indexing array, or use a clean default distribution if there is no distributed index.  
+Ramba now supports fancy/advanced indexing of an array with array of index values.  Although this works, in a distributed context this is a very expensive operation.  When indexing for read, the result is always a copy, and may require significant communication betweeen nodes.  The result array will attempt to match the distribution of the indexing array, or use a clean default distribution if there is no distributed index.  When setting the array using advanced indexing, a view is used.  If more than one term refers to the same element of the array, then the result is unpredictable (due to parallel execution); this is unlike numpy, where the "last" value set wins.  
 
 Mixing advanced indexing on an axis with simple indexing, slices, "None", ellipses, etc. on others is also supported.  Supplying index arrays for multiple axes is supported (as long as the arrays can broadcast together, as in Numpy).  However, in the current implementation, at most only one of the index arrays can be a distributed Ramba array -- others must be nondistributed Numpy arrays.  Note that the precise rules used in Numpy when mixing these indexing types is bit arcane.  Ramba tries to match these, but the position of the dimensions corresponding to the index arrays in the output shape may differ from Numpy when mixing broadcasting of indexing arrays, None, and slices in the same operation.  
 
