@@ -6114,7 +6114,6 @@ class ndarray:
             # This is the advanced indexing case.
             dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
             dst_arr = manual_idx_ndarray(self[preindex])
-            print(f"HERE: {dst_arr.shape} {dim_sizes} {dst_arr.distribution}")
             if isinstance(value, np.ndarray):
                 value = array(value)
             if isinstance(value, ndarray):
@@ -6144,11 +6143,11 @@ class ndarray:
                 if isinstance(i, numbers.Integral):
                     indop[-1]+=f"index[{i}]+global_start[{i}], "
                 elif isinstance(i, ndarray):
-                    indop[-1]+=f"numba.int64("
+                    indop[-1]+=f"np.int64("
                     indop.append(i)
                     indop.append("), ")
                 else:
-                    indop[-1]+=f"numba.int64("
+                    indop[-1]+=f"np.int64("
                     indop.append(i)
                     indop.append(f"[({arrindstr})]), ")
             indop[-1]+=")"
@@ -6171,8 +6170,7 @@ class ndarray:
                     precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
             comm = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "))"], valueind,
-                    precode=["", comm,"=[[[numba.int64(", dst_arr,".shape[0])]]*0 for _ in range(num_workers)]"])
-                    #precode=["", comm,"=[[[int(", dst_arr,".shape[0])]]*0 for _ in range(num_workers)]"])
+                    precode=["", comm,"=[[[np.int64(0)]]*0 for _ in range(num_workers)]"])
             vals = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", vals, "[", nodeid, "].append(", value, ")"], valueind,
                     precode=["", vals,"=[[", valuetype,"]*0 for _ in range(num_workers)]"])
@@ -6392,11 +6390,11 @@ class ndarray:
                 if isinstance(i, numbers.Integral):
                     indop[-1]+=f"index[{i}]+global_start[{i}], "
                 elif isinstance(i, ndarray):
-                    indop[-1]+=f"int("
+                    indop[-1]+=f"np.int64("
                     indop.append(i)
                     indop.append("), ")
                 else:
-                    indop[-1]+=f"int("
+                    indop[-1]+=f"np.int64("
                     indop.append(i)
                     indop.append(f"[({arrindstr})]), ")
             indop[-1]+=")"
@@ -6418,7 +6416,7 @@ class ndarray:
                     precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
             comm = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "+index))"], dst_arr,
-                    precode=["", comm,"=[[[", src_arr,".shape[0]]]*0 for _ in range(num_workers)]"])
+                    precode=["", comm,"=[[[np.int64(0)]]*0 for _ in range(num_workers)]"])
             deferred_op.add_op(["#"], dst_arr, postcode=["for i in range(num_workers):"] )
             tmp_arr = deferred_op.get_temp_var()
             indextype = 'int64' if ramba_big_data else 'int32'
