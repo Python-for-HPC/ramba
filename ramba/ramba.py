@@ -4131,7 +4131,10 @@ def unify_args(lhs, rhs, dtype):
         return dtype
     except Exception:
         pass
-    dtype = np.result_type(lhs, rhs_dtype)
+    try:
+        dtype = np.result_type(lhs, rhs_dtype)
+    except:
+        breakpoint()
     return dtype
 
 
@@ -5346,6 +5349,10 @@ class ndarray_details:
         return self
 
 
+def shapeToInt(shape):
+    return tuple([int(x) if isinstance(x, numbers.Integral) else x for x in shape])
+
+
 class ndarray:
     all_arrays = weakref.WeakSet()
 
@@ -5394,7 +5401,8 @@ class ndarray:
         else:
             gid = None
 
-        shape = tuple([int(x) for x in shape])
+        #shape = tuple([int(x) for x in shape])
+        shape = shapeToInt(shape)
 
         self.bdarray = bdarray.assign_bdarray(
             self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
@@ -6136,11 +6144,11 @@ class ndarray:
                 if isinstance(i, numbers.Integral):
                     indop[-1]+=f"index[{i}]+global_start[{i}], "
                 elif isinstance(i, ndarray):
-                    indop[-1]+=f"int("
+                    indop[-1]+=f"numba.int64("
                     indop.append(i)
                     indop.append("), ")
                 else:
-                    indop[-1]+=f"int("
+                    indop[-1]+=f"numba.int64("
                     indop.append(i)
                     indop.append(f"[({arrindstr})]), ")
             indop[-1]+=")"
@@ -6158,11 +6166,13 @@ class ndarray:
             nodeid = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", dst_arr_dist,",",ind_arr,")"], valueind)
             need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
-            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], valueind,
+            deferred_op.add_op(["  ", need_comm, "[0][", nodeid, "]=True"], valueind,
+            #deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], valueind,
                     precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
             comm = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "))"], valueind,
-                    precode=["", comm,"=[[[", dst_arr,".shape[0]]]*0 for _ in range(num_workers)]"])
+                    precode=["", comm,"=[[[numba.int64(", dst_arr,".shape[0])]]*0 for _ in range(num_workers)]"])
+                    #precode=["", comm,"=[[[int(", dst_arr,".shape[0])]]*0 for _ in range(num_workers)]"])
             vals = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", vals, "[", nodeid, "].append(", value, ")"], valueind,
                     precode=["", vals,"=[[", valuetype,"]*0 for _ in range(num_workers)]"])
@@ -7681,7 +7691,8 @@ def canonical_index(index, shape, allslice=True):
             newindex.append( canonical_slice(ti, shape[i]) )
         else:
             assert 0
-    return tuple(newindex)
+    return shapeToInt(newindex)
+    #return tuple(newindex)
 
 
 def numpy_broadcast_shape(a, b):
@@ -7903,22 +7914,46 @@ for (abf, code) in array_simple_reductions.items():
     setattr(ndarray, abf, new_func)
 
 
-def sum(x):
+def sum(x, axis=None, dtype=None, keepdims=np._NoValue, initial=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert dtype is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.sum()
 
-def prod(x):
+def prod(x, axis=None, dtype=None, keepdims=np._NoValue, initial=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert dtype is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.prod()
 
-def min(x):
+def min(x, axis=None, out=None, keepdims=np._NoValue, initial=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert out is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.min()
 
-def max(x):
+def max(x, axis=None, out=None, keepdims=np._NoValue, initial=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert out is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.max()
 
-def all(x):
+def all(x, axis=None, out=None,  keepdims=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert out is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.all()
 
-def any(x):
+def any(x, axis=None, out=None,  keepdims=np._NoValue, where=np._NoValue):
+    assert axis is None
+    assert out is None
+    assert keepdims == np._NoValue
+    assert where == np._NoValue
     return x.any()
 
 
@@ -8866,6 +8901,23 @@ def triu(m, k=0):
     return DAGshape(m.shape, m.dtype, False)
 
 
+# Array selection
+# select
+
+def select(condlist, choicelist, default=0):
+    assert len(condlist) == len(choicelist)
+    shape = condlist[0].shape
+    for i in range(len(condlist)):
+        assert condlist[i].shape == shape
+    for i in range(len(choicelist)):
+        assert choicelist[i].shape == shape
+
+    temp = full(shape, default)
+    for i in range(len(choicelist)):
+        temp[condlist[-i]] = choicelist[-i]
+
+    return temp
+
 
 # Array manipulation -- basic ops
 # copyto, shape
@@ -9599,8 +9651,9 @@ def where(cond, a, b):
     if atype == btype:
         utype = atype
     else:
-        print(atype.descr, btype.descr, type(atype), type(btype))
-        utype = np.dtype(atype.descr + btype.descr)
+        #print(atype.descr, btype.descr, type(atype), type(btype))
+        #utype = np.dtype(atype.descr + btype.descr)
+        utype = np.result_type(atype, btype)
     return DAGshape(condab_shape, utype, False)
 
 
