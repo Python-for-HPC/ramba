@@ -6081,9 +6081,9 @@ class ndarray:
             #add_constraint([(self, list(range(1, self.ndim + 1))), (rhs, list(range(1, rhs.ndim + 1)))])
             # We might need replaced_args below due to the div-to-mul rewrite above.
             if inplace:
-                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext])
+                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext, opfunc])
             else:
-                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext])
+                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext, opfunc])
 
 
     @classmethod
