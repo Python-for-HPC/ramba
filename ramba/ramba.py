@@ -247,9 +247,9 @@ def get_fm(func: FillerFunc, parallel, cache=False):
 
 
 class FunctionMetadata:
-    __slots__ = ('func', 'dargs', 'dkwargs', 'numba_args', 'numba_func', 'numba_pfunc', 'nfunc', 'npfunc', 'ngfunc', 'no_global_cache', 'parallel')
+    __slots__ = ('func', 'dargs', 'dkwargs', 'numba_args', 'numba_func', 'numba_pfunc', 'nfunc', 'npfunc', 'ngfunc', 'no_global_cache', 'parallel', 'code')
 
-    def __init__(self, func, dargs, dkwargs, no_global_cache=False, parallel=True):
+    def __init__(self, func, dargs, dkwargs, no_global_cache=False, parallel=True, code=None):
         self.func = func
         self.dargs = dargs
         self.dkwargs = dkwargs
@@ -262,6 +262,7 @@ class FunctionMetadata:
         self.ngfunc = {}
         self.no_global_cache = no_global_cache
         self.parallel = parallel
+        self.code = code
         if num_threads <= 1:
             self.parallel = False
         dprint(2, "FunctionMetadata finished", self.parallel, num_threads)
@@ -425,7 +426,7 @@ class FunctionMetadata:
                 except numba.core.errors.TypingError as te:
                     print("Ramba TypingError:", te, type(te))
                     self.npfunc[atypes] = False
-                    dprint(1, "Numba attempt failed for", self.func, atypes)
+                    dprint(1, "Numba attempt failed for", self.func, atypes, self.code)
                 except Exception:
                     self.nfunc[atypes] = False
                     dprint(1, "Numba attempt failed for", self.func, atypes)
@@ -3531,7 +3532,7 @@ class RemoteState:
         if fname not in gdict:
             dprint(2, "function does not exist, creating it\n", code)
             ffunc = ramba_exec(fname, code, gdict, ldict)
-            gdict[fname] = FunctionMetadata(ffunc, [], {})
+            gdict[fname] = FunctionMetadata(ffunc, [], {}, code=code)
         func = gdict[fname]
         times.append(timer())
 
@@ -6165,8 +6166,7 @@ class ndarray:
             nodeid = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", dst_arr_dist,",",ind_arr,")"], valueind)
             need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
-            deferred_op.add_op(["  ", need_comm, "[0][", nodeid, "]=True"], valueind,
-            #deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], valueind,
+            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], valueind,
                     precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
             comm = deferred_op.get_temp_var()
             deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "))"], valueind,
@@ -6189,7 +6189,6 @@ class ndarray:
 
             # Exchange messages
             need_comm = need_comm.asarray()
-            print("need_comm array: ",need_comm)
             remote_exec_all("all2all", uuid.uuid4(), need_comm)
 
             # Fill in from received data
@@ -8002,7 +8001,7 @@ class deferred_op:
             if shardview.dist_is_eq(arr_info.distribution, ai.distribution):
                 return v
         v = self.get_var_name()
-        dprint(4, "deferred_ops.ad_gid:", v, gid, arr_info.distribution)
+        dprint(4, "deferred_ops.add_gid:", v, gid, arr_info.distribution)
         self.use_gids[gid][0].append((v, arr_info))
         return v
 
@@ -8512,7 +8511,8 @@ def dtype(dtype, align=False, copy=False):
 # Array creation routines -- from shape or value
 
 # TODO: creating an empty array and then using in a non-deferred-op skeleton may not work
-def empty(shape, local_border=0, dtype=None, distribution=None, **kwargs):
+def empty(shape, dtype=None, order='C', local_border=0, distribution=None, **kwargs):
+    assert order == 'C'
     return init_array(
         shape,
         None,
