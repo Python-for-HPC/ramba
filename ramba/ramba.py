@@ -7637,34 +7637,55 @@ class deferred_op:
         times.append(timer())
         # Prepare args lists
         precode = []
+        precode2 = []
         args = []
         args2 = []
         args2tran = {}
         args2uv = {}
+        offsets = {}
         for i, (k, v) in enumerate(live_gids.items()):
-            did_once=False
-            did_more_than_once=False
+            count=0
             vtr = ""
+            vnlist = []
             unionview = None
             # precode.append("  "+v+" = arrays["+str(i)+"]")
             for (vn, ai) in v[0]:
                 args.append(vn)
+                vnlist.append(vn)
                 if shardview.dist_has_neg_step(ai.distribution):  # use separate argument for views with negative steps
                     args2.append(vn)
                 else:
-                    if not did_once:
+                    view = shardview.dist_to_view(ai.shape,ai.distribution,bdarray.gid_map[k].distribution)
+                    if count==0:
                         args2.append(vn)
                         vtr = vn
-                        did_once=True
-                        unionview = shardview.dist_to_view(ai.shape,ai.distribution,bdarray.gid_map[k].distribution)
-                        args2tran[vn] = (vtr, unionview)
+                        unionview = view
+                        offsets[vtr] = [[] for _ in range(shardview._base_offset(view).shape[0])]
                     else:
-                        did_more_than_once = True
-                        view = shardview.dist_to_view(ai.shape,ai.distribution,bdarray.gid_map[k].distribution)
                         unionview = shardview.view_union( view, unionview )
-                        args2tran[vn] = (vtr, view)
-            if did_more_than_once:
+                    args2tran[vn] = (vtr, view)
+                    am = shardview._axis_map(view)
+                    ub = shardview._base_offset(view)
+                    st = shardview._steps(view)
+                    for i,j in enumerate(am):
+                        if j>=0:
+                            offsets[vtr][j].append( (f"{vn}_{j}", f"{ub[j]}+global_start[{i}]*{st[i]}") )
+                    for j in range(ub.shape[0]):
+                        if j not in am:
+                            offsets[vtr][j].append( (f"{vn}_{j}", f"{ub[j]}") )
+                    count+=1
+            if count>1:
                 args2uv[vtr] = unionview
+                for l in offsets[vtr]:
+                    if len(l)==0: continue
+                    if len(l)==1:
+                        precode2.append( l[0][0] + " = 0" )
+                        continue
+                    for i,j in l:
+                        precode2.append( i + " = " + j )
+                    precode2.append( "tmp = min(" + ",".join([i for i,_ in l]) +")" )
+                    for i,_ in l:
+                        precode2.append( i + " -= tmp" )
 
         for i, (v, b) in enumerate(self.use_other.items()):
             # precode.append("  "+v+" = vars["+str(i)+"]")
@@ -7676,14 +7697,15 @@ class deferred_op:
         # substitute var_name with var_name[index] for ndarrays
         codelines2 = [v for v in self.codelines]
         index_text = "[index]"
-        if len(self.axis_reductions)>0:
-            index_text += "[axisindex]"
-        def make_index_text( v, u, a ):
+        #if len(self.axis_reductions)>0:
+        #    index_text += "[axisindex]"
+        def make_index_text( v, u, vn, a ):
             vb = shardview._base_offset(v)
             ub = shardview._base_offset(u)
             am = shardview._axis_map(v)
             st = shardview._steps(v)
-            idx = [ str(i) for i in (vb-ub) ]
+            #idx = [ str(i) for i in (vb-ub) ]
+            idx = [ f"{vn}_{i}" for i in range(vb.shape[0]) ]
             for i,j in enumerate(am):
                 if j>=0:
                     idx[j] += "+index["+str(i)+"]"
@@ -7693,7 +7715,7 @@ class deferred_op:
         for (k, v) in live_gids.items():
             for (vn, ai) in v[0]:
                 vn0 = vn if vn not in args2tran else args2tran[vn][0]
-                index_text2 = index_text if vn0 not in args2uv else make_index_text( args2tran[vn][1], args2uv[vn0], self.axis_reductions )
+                index_text2 = index_text if vn0 not in args2uv else make_index_text( args2tran[vn][1], args2uv[vn0], vn, self.axis_reductions )
                 for i in range(len(self.codelines)):
                     self.codelines[i] = self.codelines[i].replace(vn, vn + index_text)
                     codelines2[i] = codelines2[i].replace(vn, vn0 + index_text2)
@@ -7711,19 +7733,22 @@ class deferred_op:
                     axis = [axis]
                 tmp = "".join(["1," if i in axis else f"itershape[{i}]," for i in range(len(self.distribution[0][0]))])
                 precode.append( "  itershape2 = ("+tmp+")" )
-                tmp = "".join([f"itershape[{i}]," for i in axis])
+                #tmp = "".join([f"itershape[{i}]," for i in axis])
+                tmp = "".join([f"itershape[{i}]," if i in axis else "1," for i in range(len(self.distribution[0][0]))])
                 precode.append( "  itershape3 = ("+tmp+")" )
                 precode.append( "  for pindex in numba.pndindex(itershape2):" )
-                tmp = "".join(["slice(None)," if i in axis else f"pindex[{i}]," for i in range(len(self.distribution[0][0]))])
-                precode.append( "    index = ("+tmp+")" )
                 precode.append( "    for axisindex in np.ndindex(itershape3):" )
+                #tmp = "".join(["slice(None)," if i in axis else f"pindex[{i}]," for i in range(len(self.distribution[0][0]))])
+                tmp = "".join([f"axisindex[{i}]," if i in axis else f"pindex[{i}]," for i in range(len(self.distribution[0][0]))])
+                precode.append( "      index = ("+tmp+")" )
             else:
                 precode.append( "  for index in numba.pndindex(itershape):" )
             code = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +
                     "\n" + "\n".join(precode) +
                     ("" if len(self.codelines)==0 else "\n      " + "\n      ".join(self.codelines)) +
                     ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
-            code2 = ( ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +
+            code2 = ( ("" if len(precode2)==0 else "\n  " + "\n  ".join(precode2)) +
+                    ("" if len(self.precode)==0 else "\n  " + "\n  ".join(self.precode)) +
                     "\n" + "\n".join(precode) +
                     ("" if len(codelines2)==0 else "\n      " + "\n      ".join(codelines2)) +
                     ("" if len(self.postcode)==0 else "\n  " + "\n  ".join(self.postcode)) )
