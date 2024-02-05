@@ -3520,6 +3520,7 @@ class RemoteState:
         # check if function exists, else exec to create it
         ldict = {}
         gdict = globals()
+        if "min" in gdict: del(gdict["min"])
         for imp in imports:
             the_module = __import__(imp)
             gdict[imp.split(".")[0]] = the_module
