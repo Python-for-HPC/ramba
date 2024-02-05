@@ -412,7 +412,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
 
 
 @overload(calc_map_internal, nopython=True, cache=True)
-def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
+def overload_calc_map_internal(sl_i, sv_s, sv_e, sv_st):
     if isinstance(sl_i,numba.types.SliceType):
         if (sl_i.members==2):
             def impl(sl_i, sv_s, sv_e, sv_st):
