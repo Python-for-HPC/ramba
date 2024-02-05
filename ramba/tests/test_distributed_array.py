@@ -546,6 +546,60 @@ class TestDgemm:
                         if random.uniform(0, 1) < percent:
                             run_both(impl, i, j, k, l)
 
+    def test_3Dx1D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x, y, z: x + y + z, (i, j, k))
+            theta = app.fromfunction(lambda x: x, (k,), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 15, 7, 9)
+
+    def test_1Dx3D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x: x, (k,))
+            theta = app.fromfunction(lambda x, y, z: x + y + z, (i, k, j), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 12, 17, 6)
+
+    def test_5Dx3D(self):
+        def impl(app, a, b, c, i, j, k):
+            X = app.fromfunction(lambda v, w, x, y, z: v+w+x+y+z, (a, b, c, i, k))
+            theta = app.fromfunction(lambda x, y, z: x+y+z, (c, k, j), dtype=X.dtype)
+            res = X @ theta
+            return res
+
+        run_both(impl, 5, 2, 3, 4, 5, 7)
+
+    def test_dot_3Dx1D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x, y, z: x + y + z, (i, j, k))
+            theta = app.fromfunction(lambda x: x, (k,), dtype=X.dtype)
+            res = app.dot(X, theta)
+            return res
+
+        run_both(impl, 15, 7, 9)
+
+    def test_dot_1Dx3D(self):
+        def impl(app, i, j, k):
+            X = app.fromfunction(lambda x: x, (k,))
+            theta = app.fromfunction(lambda x, y, z: x + y + z, (i, k, j), dtype=X.dtype)
+            res = app.dot(X, theta)
+            return res
+
+        run_both(impl, 12, 17, 6)
+
+    def test_dot_5Dx3D(self):
+        def impl(app, a, b, c, d, i, j, k):
+            X = app.fromfunction(lambda v, w, x, y, z: v+w+x+y+z, (a, b, c, i, k))
+            theta = app.fromfunction(lambda x, y, z: x+y+z, (d, k, j), dtype=X.dtype)
+            res = app.dot(X,theta)
+            return res
+
+        run_both(impl, 5, 2, 3, 6, 4, 5, 7)
+
 
 
 class TestBasic:
@@ -809,6 +863,51 @@ class TestBasic:
             d = c[15:25:2,7:2:-1,::-3] - c[30:20:-2,6:11, -1::-3] + 4
             e = app.sum(d)
             return d+e
+
+        run_both(impl)
+
+    def test_fancy_indexing1(self):
+        # Test advanced indexing -- sizes
+        def impl(app):
+            a = app.ones((11,21,31,41),dtype=int)
+            b = a[7,5,[2,6,1],3:6]
+            c = a[None, [[3, 4, 7]], 4, [[3],[2],[7],[1]]]
+            d = a[None, [[2, 3, 1]], 4, None, [[1],[7]], 4:9]
+            return (b.shape, c.shape, d.shape)
+
+        run_both(impl)
+
+    def test_fancy_indexing2(self):
+        # Test advanced indexing -- gather/scatter values
+        def impl(app):
+            a = app.arange(500)
+            b = a[::7]
+            c = app.fromfunction(lambda i,j: (i+j)%70, (50,20), dtype=int)
+            d = b[c]
+            return d
+
+        run_both(impl)
+
+    def test_fancy_indexing3(self):
+        # Test advanced indexing -- setitem to scalar
+        def impl(app):
+            a = app.arange(500)
+            b = a[::2]
+            c = app.fromfunction(lambda i,j: i+j*100, (50,3), dtype=int)
+            b[c] = 1
+            return a
+
+        run_both(impl)
+
+    def test_fancy_indexing4(self):
+        # Test advanced indexing -- setitem to dist array with mismatched distribution
+        def impl(app):
+            a = app.arange(500)
+            b = a[::2]
+            c = app.fromfunction(lambda i,j: i+j*100, (50,3), dtype=int)
+            d = app.fromfunction(lambda i,j: (i-j), (50,100), dtype=int)
+            b[c] = d[:,48:51]
+            return a
 
         run_both(impl)
 

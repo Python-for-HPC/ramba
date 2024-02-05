@@ -16,3 +16,4 @@ from ramba.ramba import *
 
 import ramba.random as random
 import ramba.tests as tests
+from numpy import bool_, byte, ubyte, short, ushort, intc, uintc, int_, uint, longlong, ulonglong, half, float16, single, double, longdouble, int8, int16, int32, int64, float32, float64, csingle, cdouble, clongdouble, iinfo

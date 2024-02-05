@@ -14,6 +14,7 @@ from ramba.common import *
 
 import os
 
+
 if not USE_NON_DIST:
     if USE_MPI:
         import mpi4py
@@ -1852,8 +1853,27 @@ def unpickle_args(args):
 def external_set_common_state(st):
     set_common_state(st, globals())
 
+
+#list of list of messages for all-to-all messaging
+# put here in global scope so can access easily from jit functions
+remotestate=None
+def set_remotestate(x):
+    global remotestate
+    remotestate=x
+
+def init_comm(n=num_workers):
+    remotestate.comm_list.clear()
+    for i in range(n):
+        remotestate.comm_list.append([])
+
+def add_comm_msg( dst, msg ):
+    remotestate.comm_list[dst].append(msg)
+
+def get_comm_msg( src, i ):
+    return remotestate.comm_list[src][i]
+
 class RemoteState:
-    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children')
+    __slots__ = ('numpy_map', 'worker_num', 'my_comm_queue', 'my_control_queue', 'my_rvq', 'up_rvq', 'tlast', 'compile_recorder', 'deferred_ops_time', 'deferred_ops_count', 'deferred_exec_time', 'per_func', 'comm_queues', 'control_queues', 'is_aggregator', 'children', "comm_list")
 
     def __init__(self, worker_num, common_state):
         external_set_common_state(common_state)
@@ -1889,6 +1909,8 @@ class RemoteState:
         self.deferred_ops_count = 0
         self.deferred_exec_time = 0
         self.per_func = {}
+        self.comm_list = []
+        set_remotestate(self)
 
     def set_comm_queues(self, comm_queues, control_queues):
         self.comm_queues = comm_queues
@@ -3475,14 +3497,16 @@ class RemoteState:
         # info tuple is (size, distribution, local_border, from_border, to_border, dtype)
         # TODO:  Need to check array construction -- this code may break for views/slices; assumes first view of gid is the canonical, full array
         # [ self.create_array(g, subspace, info[0], None, info[2], info[1], None if info[3] is None else info[3][self.worker_num], None if info[4] is None else info[4][self.worker_num]) for (g,(v,info,bdist,pad)) in arrays.items() if g not in self.numpy_map ]
-        for (g, (l, bdist, pad, _)) in arrays.items():
+        for (g, (l, _, bdist, pad, _)) in arrays.items():
             if g in self.numpy_map:
                 continue
             v = l[0][0]
             info = l[0][1]
+            #ss = shardview.clean_range(info.distribution[self.worker_num])
+            ss = shardview.clean_range(bdist[self.worker_num])
             self.create_array(
                 g,
-                subspace,
+                ss,
                 info.shape,
                 None,
                 info.local_border,
@@ -3515,9 +3539,8 @@ class RemoteState:
 
         # Send data to other workers as needed, count how many items to recieve later
         # TODO: optimize by combining messages of overlapping array parts
-        arr_parts = (
-            {}
-        )  # place to keep array parts received and local parts, indexed by variable name
+        arr_parts = {}  # place to keep array parts received and local parts, indexed by variable name
+        manual_index_arrays = {} # place to keep local parts of arrays that will be indexed manually (i.e., no data xfer, may mismatch main index loop), indexed by variable name
         expected_bits ={} # set of parts that will be sent to this worker from others
         to_send = {}  # save up list of messages to node i, send all as single message
         from_set = {}  # nodes to recieve from
@@ -3525,9 +3548,13 @@ class RemoteState:
         getview_time = 0.0
         arrview_time = 0.0
         copy_time = 0.0
-        for (g, (l, bdist, pad, _)) in arrays.items():
+        for (g, (l, _, bdist, pad, _)) in arrays.items():
             for (v, info) in l:
                 arr_parts[v] = []
+                if info.manual_idx:
+                    sl = self.get_view(g, info.distribution[self.worker_num])
+                    manual_index_arrays[v] = sl
+                    continue
                 if shardview.is_compat(
                     subspace, info.distribution[self.worker_num]
                 ):  # whole compute range is local
@@ -3674,6 +3701,8 @@ class RemoteState:
         localranges = [True for _ in ranges]
         for i, rpart in enumerate(ranges):
             varlist = rangedvars[i]
+            for (varname, data) in manual_index_arrays.items():
+                varlist[varname] = data
             for (varname, partlist) in arr_parts.items():
                 for (vpart, data, local) in partlist:
                     #print("TODD:", len(arr_parts), len(partlist), len(ranges))
@@ -3691,7 +3720,8 @@ class RemoteState:
                     vtr = ""
                     unionview = None
                     for (vn, ai) in v[0]:
-                        if shardview.dist_has_neg_step(ai.distribution):  # use separate argument for views with negative steps
+                        if (vn in manual_index_arrays or                        # don't mess with manual arrays
+                                shardview.dist_has_neg_step(ai.distribution)):  # use separate argument for views with negative steps
                             #arrvars[vn] = self.get_partial_view( k, shardview.to_slice(r), ai[1][self.worker_num] )
                             arrvars[vn] = rangedvars[j][vn]
                         else:
@@ -3728,7 +3758,8 @@ class RemoteState:
                     #    dprint(0, "inputs:", k, v, type(v))
                     #for k, v in othervars.items():
                     #    dprint(0, "others:", k, v, type(v))
-                    func2(shardview._index_start(r), tuple(shardview._size(r).astype(np.int64)), **arrvars, **othervars)
+                    func2(shardview._index_start(r), tuple(shardview._size(r).astype(np.int64)), 
+                            self.worker_num, num_workers, **arrvars, **othervars)
                     #print ("run done : ")
                 else:
                     if ndebug>3:
@@ -3738,7 +3769,8 @@ class RemoteState:
                             dprint(4, "others:", k, v, type(v))
 
                     total_elements += sum([x.size for x in arrvars.values()])
-                    func(shardview._index_start(r), tuple(shardview._size(r).astype(np.int64)), **arrvars, **othervars)
+                    func(shardview._index_start(r), tuple(shardview._size(r).astype(np.int64)), 
+                            self.worker_num, num_workers, **arrvars, **othervars)
                 if ndebug>3:
                     for k, v in arrvars.items():
                         dprint(4, "results:", k, v, type(v))
@@ -3916,6 +3948,20 @@ class RemoteState:
             postindex = inverter(subslice, *index)
             fldr.read(fname, lnd.bcontainer, postindex, **kwargs)
 
+    # All to all communication;  uses global comm lists;  
+    # optional mask (n^2 boolean numpy array) that selects which source (row) and dest (column) communicate
+    def all2all(self, gid, mask=None):
+        need_sends = mask[self.worker_num] if mask is not None else np.ones(num_workers,dtype=bool)
+        num_recvs = mask[:,self.worker_num].sum() if mask is not None else num_workers
+        for i in range(num_workers):
+            if not need_sends[i]: continue
+            self.comm_queues[i].put( (gid, self.worker_num, self.comm_list[i]) )
+        init_comm(num_workers)
+        for i in range(num_recvs):
+            _, j, k = self.comm_queues[self.worker_num].get(gfilter=lambda x: x[0]==gid)
+            self.comm_list[j] = k
+        if not USE_ZMQ and USE_MPI:
+            ramba_queue.wait_sends()
 
 if not USE_MPI:
     if USE_NON_DIST:
@@ -5329,7 +5375,7 @@ class ndarray_flags:
 
 
 class ndarray_details:
-    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__')
+    __slots__ = ('shape', 'distribution', 'local_border', 'from_border', 'to_border', 'dtype', '__weakref__', 'manual_idx')
 
     def __init__(self, shape, distribution, local_border, from_border, to_border, dtype):
         self.shape = shape
@@ -5338,6 +5384,11 @@ class ndarray_details:
         self.from_border = from_border
         self.to_border = to_border
         self.dtype = dtype
+        self.manual_idx = False
+
+    def force_manual_idx(self):
+        self.manual_idx = True
+        return self
 
 
 class ndarray:
@@ -5347,7 +5398,7 @@ class ndarray:
 
     def __init__(
         self,
-        shape,
+        shape, # can support use as copy constructor if shape is an ndarray
         *,    # the arguments below can only be passed as keyword
         base=None,
         distribution=None,
@@ -5360,6 +5411,16 @@ class ndarray:
         **kwargs
     ):
         t0 = timer()
+        if isinstance(shape, ndarray):  # act as copy constructor
+            base = shape.base
+            distribution = shape.distribution
+            local_border = shape.local_border
+            dtype = shape.dtype
+            flex_dist = shape.bdarray.flex_dist
+            readonly = shape.readonly
+            dag = shape.idag
+            maskarray = shape.maskarray
+            shape = shape.shape
         self.base = base
         if self.base is not None:
             gid = self.base.gid
@@ -5367,6 +5428,9 @@ class ndarray:
                 readonly = True
         else:
             gid = None
+
+        shape = tuple([int(x) for x in shape])
+
         self.bdarray = bdarray.assign_bdarray(
             self, shape, gid, distribution, local_border, flex_dist, dtype, **kwargs
         )  # extra options for distribution hints
@@ -5793,38 +5857,9 @@ class ndarray:
     def internal_array_unaryop( self, op, optext, imports=[], dtype=None ):
         return DAGshape(self.shape, dtype, False)
 
-    @classmethod
-    def array_unaryop_executor(
-        cls, temp_array, self, op, optext, reduction=False, imports=[], dtype=None, axis=None, optext2="", opsep=",", initval=0, asarray=False
-    ):
-        if dtype is None:
-            dtype = self.dtype
-        elif dtype == "float":
-            dtype = np.float32 if self.dtype == np.float32 else np.float64
 
-        if isinstance(initval, numbers.Integral):
-            if initval<-1: initval = getminmax(dtype)[0]
-            elif initval>1: initval = getminmax(dtype)[1]
-        if axis is not None:
-            if isinstance(axis, numbers.Number):
-                axis = [axis]
-            axis = sorted( list( np.core.numeric.normalize_axis_tuple( axis, self.ndim ) ) )
-            if len(axis)==self.ndim:
-                axis = None
-        assert reduction
-        if axis is None or (axis == 0 and self.ndim == 1):
-            assert asarray
-            dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2b(op, dtype, asarray)
-        else:
-            dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-            red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
-            red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
-            return red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis)
-
-    @DAGapi
+    # TODO: fully handle keepdims
+    # TODO: add out argument
     def array_unaryop(
         self, op, optext, *, reduction=False, imports=[], dtype=None, axis=None, keepdims=np._NoValue, optext2="", opsep=",", initval=0, asarray=False
     ):
@@ -5853,10 +5888,11 @@ class ndarray:
                 #    return DAGshape((1,), dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_all_axes(self.shape, self.distribution)
-                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full( dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, None, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2b(op, dtype, asarray)
                 reduction2b_end = timer()
+                # TODO: Fixme -- this is not always measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2b", reduction2b_end - reduction2b_start)
                 return redres
             else:
@@ -5865,10 +5901,11 @@ class ndarray:
                 #return DAGshape(outshape, dtype, False)
                 DAG.instantiate(self, do_ops=False)
                 dsz, dist, bdist = shardview.reduce_axes(self.shape, self.distribution, axis)
-                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )
+                red_arr = full(dsz, initval, dtype=dtype, distribution=dist, no_defer=True )  # out of band creation, initialization
                 red_arr.internal_reduction1(self, bdist, axis, initval, imports=imports, optext2=optext2, opsep=opsep)
                 redres = red_arr.internal_reduction2(op, optext, imports=imports, dtype=dtype, axis=axis, keepdims=True if keepdims==True else False)
                 reduction2_end = timer()
+                # TODO: Fixme -- this is not measuring the execution times
                 add_sub_time("DAGapi", "unary_reduction2", reduction2_end - reduction2_start)
                 return redres
         else:
@@ -6070,37 +6107,143 @@ class ndarray:
             #add_constraint([(self, list(range(1, self.ndim + 1))), (rhs, list(range(1, rhs.ndim + 1)))])
             # We might need replaced_args below due to the div-to-mul rewrite above.
             if inplace:
-                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext])
+                return DAGshape(new_shape, new_dtype, self, replaced_args=[self, rhs, op, optext, opfunc])
             else:
-                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext])
+                return DAGshape(new_shape, new_dtype, False, replaced_args=[self, rhs, op, optext, opfunc])
 
 
     @classmethod
-    def setitem_executor(cls, temp_array, self, key, value):
-        dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
+    def setitem_array_executor(cls, temp_array, self, index, value):
+        dprint(1, "ndarray::__setitem__:", index, type(index), value, type(value))
         if self.readonly:
             raise ValueError("assignment destination is read-only")
 
-        #if self.shape == (): # 0d case
-        #    print("setitem 0d:", key, type(key))
-        #    # Is there a better way of testing and performing type conversion?
-        #    tmp = np.empty((), dtype=self.dtype)
-        #    tmp[()] = value
-        #    self.distribution = tmp
-        #    return
-
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
         is_mask = False
-        if isinstance(key, ndarray) and key.dtype==bool and key.broadcastable_to(self.shape):
-            is_mask = True
-        elif not isinstance(key, tuple):
-            key = (key,)
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                is_mask=True
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
-        if not is_mask:
-            key = tuple([self.handle_0d_index(ind) for ind in key])
+        index_has_slice = not is_mask and builtins.any([isinstance(i, slice) for i in index])
+        index_has_array = not is_mask and builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
+        index_has_ndarray = not is_mask and builtins.any([isinstance(i, ndarray) for i in index])
 
-        if is_mask or builtins.any([isinstance(i, slice) or i is Ellipsis for i in key]) or len(key) < len(self.shape):
-            view = self[key]
-            if isinstance(value, (int, bool, float, complex, np.generic)):
+        if isinstance(value, (list, tuple)):
+            try:
+                value = np.array(value)
+            except:
+                raise ValueError("Cannot convert sequences to array")
+
+        if index_has_array:
+            # This is the advanced indexing case.
+            dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
+            dst_arr = manual_idx_ndarray(self[preindex])
+            if isinstance(value, np.ndarray):
+                value = array(value)
+            if isinstance(value, ndarray):
+                if not value.broadcastable_to(dim_sizes):
+                    raise ValueError(f"Mismatched shapes during fancy indexing assignment {dim_sizes} {value.shape}")
+                value = value.broadcast_to(dim_sizes)
+                # if index has an ndarray and value dist does not match, copy value to array with matching dist
+                if index_has_ndarray and not shardview.compatible_distributions(dist, value.distribution):
+                    tmp = empty(dim_sizes, dtype=value.dtype, distribution=dist)
+                    tmp[...] = value
+                    value = tmp
+                value.instantiate()
+                valueind = value
+                valuetype = np.array(0, dtype=value.dtype)[()]
+            else:  # value is a scalar; distribute computation according to ndarray in index (or default dist)
+                valueind = empty(dim_sizes, distribution=dist)  # construct array with desired dist; wasteful but works
+                valueind.instantiate()  # is this needed?
+                valuetype = value
+
+            dst_arr_dist = deferred_op.get_temp_var()  # temp variable to store distribution of target array
+            deferred_op.add_op(["#",valueind], valueind, precode=["", dst_arr_dist,"=",dst_arr.distribution])  # make sure that value/indexing array is first array and used for loop size; copy distribution (numpy array) so it does not get passed in multiple times
+            # construct indexing tuples
+            ind_arr = deferred_op.get_temp_var()  # temporary variable to hold constructed global index tuple
+            arrindstr = ",".join([f"index[{i}]+global_start[{i}]" for i in range(arrayind.start,arrayind.stop)])
+            indop = ["", ind_arr, "= ("]
+            for i in postindind:
+                if isinstance(i, numbers.Integral):
+                    indop[-1]+=f"index[{i}]+global_start[{i}], "
+                elif isinstance(i, ndarray):
+                    indop[-1]+=f"np.int64("
+                    indop.append(i)
+                    indop.append("), ")
+                else:
+                    indop[-1]+=f"np.int64("
+                    indop.append(i)
+                    indop.append(f"[({arrindstr})]), ")
+            indop[-1]+=")"
+            deferred_op.add_op(indop, valueind)
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([ind_arr, f"[{i}]-",dst_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(indop_local, valueind)
+            # if index is in local range of source array, copy value to output array
+            deferred_op.add_op(["if shardview.has_index(", dst_arr_dist,"[worker_num],",ind_arr, "): ", dst_arr, "[", ind_arr_local, "] = ", value], valueind)
+            # otherwise, add to list of items to push to remote node
+            deferred_op.add_op(["else:"],valueind)
+            nodeid = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", dst_arr_dist,",",ind_arr,")"], valueind)
+            need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
+            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], valueind,
+                    precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
+            comm = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "))"], valueind,
+                    precode=["", comm,"=[[[np.int64(0)]]*0 for _ in range(num_workers)]"])
+            vals = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", vals, "[", nodeid, "].append(", value, ")"], valueind,
+                    precode=["", vals,"=[[", valuetype,"]*0 for _ in range(num_workers)]"])
+            # prepare messages
+            deferred_op.add_op(["#"], valueind, postcode=["for i in range(num_workers):"] )
+            tmp_arr = deferred_op.get_temp_var()
+            tmp_arr2 = deferred_op.get_temp_var()
+            indextypestr = 'int64' if ramba_big_data else 'int32'
+            valuetypestr = str(np.array(valuetype).dtype)
+            deferred_op.add_op(["#"], valueind, postcode=["  if not ", need_comm,"[0,i]: continue"] )
+            deferred_op.add_op(["#"], valueind, postcode=["  ",tmp_arr,"=np.array(", comm,"[i], dtype=np."+indextypestr+")"] )
+            deferred_op.add_op(["#"], valueind, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr, ")"],
+                    precode=["with numba.objmode(): init_comm(num_workers)"] )
+            deferred_op.add_op(["#"], valueind, postcode=["  ",tmp_arr2,"=np.array(", vals,"[i], dtype=np."+valuetypestr+")"] )
+            deferred_op.add_op(["#"], valueind, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr2, ")"])
+
+            # Exchange messages
+            need_comm = need_comm.asarray()
+            print("need_comm array: ",need_comm)
+            remote_exec_all("all2all", uuid.uuid4(), need_comm)
+
+            # Fill in from received data
+            dst_arr_dist = deferred_op.get_temp_var()  # temp variable to store distribution of target array
+            deferred_op.add_op(["#",valueind], valueind, precode=["", dst_arr_dist,"=",dst_arr.distribution])
+            deferred_op.add_op(["#"], valueind, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], valueind, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], valueind, precode=["  with numba.objmode(", req_arr,"='"+indextypestr+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], valueind, precode=["  with numba.objmode(", reply_arr,"='"+valuetypestr+"[:]'): ", reply_arr, "=get_comm_msg(i,1)"])
+            deferred_op.add_op(["#"], valueind, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([req_arr, f"[j,{i}]-",dst_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], valueind, precode=indop_local)
+            deferred_op.add_op(["#"], valueind, precode=["    ", dst_arr, "[", ind_arr_local, "]=", reply_arr,"[j]"])
+            deferred_op.add_op(["pass #"], valueind, precode=["return"])
+            deferred_op.do_ops()
+
+            # Done!
+            return
+
+        # If this is a maxked array, any of the indices are slices or the number of indices is less than the number of array dimensions.
+        elif is_mask or index_has_slice or len(index) < len(self.shape):
+            view = self[index]
+            if isinstance(value, (int, bool, float, complex, np.generic)):  # non-array value
                 deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             if isinstance(value, np.ndarray):
@@ -6116,60 +6259,118 @@ class ndarray:
                     deferred_op.add_op(["", view, " = ", value, ""], view)
                 return
             else:
-                # TODO:  Should try to broadcast value to view.shape before giving up;  Done?
                 print("Mismatched shapes", view.shape, value.shape)
                 assert 0
 
-        # Need to handle all possible remaining cases.
-        print("Don't know how to set index", key, " of dist array of shape", self.shape)
-        assert 0
+        print("Don't know how to gset index", index, type(index), " of dist array of shape", self.shape)
+        assert 0  # Handle other types
 
     @DAGapi
-    def setitem(self, key, value):
-        key = self.handle_0d_index(key)
-        if isinstance(key, (ndarray, np.ndarray)):
+    def setitem_array(self, index, value):
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
+        #    return DAGshape(self.shape, self.dtype, False)
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                return DAGshape(self.shape, self.dtype, self)
+            else:
+                raise IndexError("Mask index shape does not match array shape")
+
+        if len(index) > self.ndim:
+            raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
+
+        index_has_slice = builtins.any([isinstance(i, slice) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
+
+        if index_has_array:
+            # This is the advanced indexing case. 
+            dim_sizes,_,_,_,_ = dim_sizes_from_index(index, self.shape)
             return DAGshape(self.shape, self.dtype, self)
-        if not isinstance(key, tuple):
-            key = (key,)
-        key = tuple([self.handle_0d_index(ind) for ind in key])
-        key2 = tuple(i for i in key if i is not Ellipsis)
-        if len(key2)+1<len(key):
+        # If any of the indices are slices or the number of indices is less than the number of array dimensions.
+        elif index_has_slice or len(index) < len(self.shape):
+            dim_shapes, (cindex, _) = apply_index(self.shape, index)
+            dprint(2, "__setitem__array slice:", cindex, dim_shapes)
+            return DAGshape(self.shape, self.dtype, self)
+
+        print("Don't know how to set index", index, type(index), " of dist array of shape", self.shape)
+        assert 0  # Handle other types
+
+    def setitem_real(self, index, value):
+        dprint(2, "ndarray::__setitem__real:", index, type(index), value, type(value))
+
+        # index is a mask ndarray -- boolean type
+        if isinstance(index, ndarray) and index.dtype==bool:
+            return self.setitem_array(index, value)
+
+        if not isinstance(index, tuple):
+            index = (index,)
+
+        if index == ():
+            if self.shape == (): # 0d case
+                if isinstance(value, (ndarray, np.ndarray)):
+                    assert all(np.array(value.shape)==1), f"Need value size 1 in assignment but got shape {value.shape}"
+                    value = value[ (0,)*value.ndim ]
+                self.instantiate()
+                self.distribution[()] = value
+                return
+            else:
+                index=(...,)
+
+        index = tuple([self.handle_0d_index(ind) for ind in index])
+
+        # Handle Ellipsis -- it can occur in any position, and may be combined with np.newzxis/None
+        ellpos = [i for i,x in enumerate(index) if x is Ellipsis]
+        if len(ellpos)>1:
             raise IndexError("an index can only have a single ellipsis ('...')")
-        if builtins.all([isinstance(i, numbers.Integral) for i in key2]):
-            if len(key2) > self.ndim:
-                raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(key2)} were indexed")
-            elif len(key2) == self.ndim:
-                dprint(1, "ndarray::__setitem__:", key, type(key), value, type(value))
+        if len(ellpos)==1:
+            ellpos = ellpos[0]
+            preind = index[:ellpos]
+            postind = index[ellpos+1:]
+            index = preind + tuple( slice(None) for _ in range(self.ndim - len(index) + 1 + index.count(None)) ) + postind
+
+        # Handle None;  np.newaxis is an alias for None
+        if builtins.any([x is None for x in index]):
+            newdims = [i for i in range(len(index)) if index[i] is None]
+            newindex = tuple([i if i is not None else slice(None) for i in index])
+            expanded_array = expand_dims(self, newdims)
+            #print(self.shape, newdims, expanded_array.shape, newindex)
+            return expanded_array.setitem(newindex, value)
+
+        # If all the indices are integers and the number of indices equals the number of array dimensions.
+        if builtins.all([isinstance(i, numbers.Integral) for i in index]):
+            if len(index) > len(self.shape):
+                raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
+            elif len(index) == len(self.shape):
+                dprint(1, "ndarray::__setitem__:", index, type(index), value, type(value))
                 if isinstance(value, (list, tuple)):
                     raise ValueError("setting an array element with a sequence")
                 if isinstance(value, (ndarray, np.ndarray)):
                     if value.size!=1:
                         raise ValueError("setting an array element with an array size>1")
                     value = value[tuple(0 for _ in range(value.ndim))]
-                # Is there a better way of testing and performing type conversion?
-                tmp = np.empty((), dtype=self.dtype)
-                tmp[()] = value
-                value = tmp[()]
 
+                dprint(2, "before setitem_real instantiate")
                 self.instantiate()
-                if self.shape == (): # 0d case
-                    dprint(2,"setitem 0d:", key, type(key))
-                    self.distribution = tmp
-                    return
 
                 if self.readonly:
                     raise ValueError("assignment destination is read-only")
 
-                index = canonical_index(key2, self.shape, allslice=False)
-                owner = shardview.find_index( self.distribution, index)
+                # 0d case
+                if self.shape==():
+                    dprint(2,"setitem 0d:", index, type(index))
+                    self.distribution[()] = value
+                    return self.distribution
+
+                index = canonical_index(index, self.shape, allslice=False)
+                owner = shardview.find_index(self.distribution, index)
                 dprint(2, "owner:", owner)
                 remote_exec( owner, "setitem_global", self.gid, index, value, self.distribution[owner])
                 return
 
-        return DAGshape(self.shape, self.dtype, self)
+        return self.setitem_array(index, value)
 
     def __setitem__(self, key, value):
-        return self.setitem(key, value)
+        return self.setitem_real(key, value)
 
     def __getitem__(self, index):
         return self.getitem_real(index)
@@ -6185,19 +6386,120 @@ class ndarray:
 
     @classmethod
     def getitem_array_executor(cls, temp_array, self, index):
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            if index.shape != self.shape:
-                index = index.broadcast_to(self.shape)
-            return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                if index.shape != self.shape:
+                    index = index.broadcast_to(self.shape)
+                return ndarray( self.shape, base=self, distribution=self.distribution, local_border=0,
                     readonly=self.readonly, dtype=self.dtype, maskarray=index)
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
-            assert 0 # Need to implement the slow way here in the case it doesn't get optimized away.
+            dim_sizes, preindex, postindind, arrayind, dist = dim_sizes_from_index(index, self.shape)
+            src_arr = manual_idx_ndarray(self[preindex])
+            dst_arr = ndarray(dim_sizes, distribution=dist, dtype=self.dtype)
+
+            src_arr_dist = deferred_op.get_temp_var()  # temp variable to store distribution of source array
+            deferred_op.add_op(["#",dst_arr], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])  # make sure that the output array is first argument and used for loop size; copy distribution (numpy array) so it does not get passed in multiple times
+            # construct indexing tuples
+            ind_arr = deferred_op.get_temp_var()  # temporary variable to hold constructed global index tuple
+            arrindstr = ",".join([f"index[{i}]+global_start[{i}]" for i in range(arrayind.start,arrayind.stop)])
+            indop = ["", ind_arr, "= ("]
+            for i in postindind:
+                if isinstance(i, numbers.Integral):
+                    indop[-1]+=f"index[{i}]+global_start[{i}], "
+                elif isinstance(i, ndarray):
+                    indop[-1]+=f"np.int64("
+                    indop.append(i)
+                    indop.append("), ")
+                else:
+                    indop[-1]+=f"np.int64("
+                    indop.append(i)
+                    indop.append(f"[({arrindstr})]), ")
+            indop[-1]+=")"
+            deferred_op.add_op(indop, dst_arr)
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([ind_arr, f"[{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(indop_local, dst_arr)
+            # if index is in local range of source array, copy value to output array
+            deferred_op.add_op(["if shardview.has_index(", src_arr_dist,"[worker_num],",ind_arr, "): ",dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
+            # otherwise, add to list of items to request from the corresponding remote node
+            deferred_op.add_op(["else:"],dst_arr)
+            nodeid = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", nodeid,"=shardview.find_index(", src_arr_dist,",",ind_arr,")"], dst_arr)
+            need_comm = manual_idx_ndarray((num_workers,num_workers), dtype=bool, dist_dims=0, flex_dist=False)
+            deferred_op.add_op(["  ", need_comm, "[0][int(", nodeid, ")]=True"], dst_arr,
+                    precode=["for i in range(num_workers): ", need_comm, "[0,i]=False"] )
+            comm = deferred_op.get_temp_var()
+            deferred_op.add_op(["  ", comm, "[", nodeid, "].append(list(", ind_arr, "+index))"], dst_arr,
+                    precode=["", comm,"=[[[np.int64(0)]]*0 for _ in range(num_workers)]"])
+            deferred_op.add_op(["#"], dst_arr, postcode=["for i in range(num_workers):"] )
+            tmp_arr = deferred_op.get_temp_var()
+            indextype = 'int64' if ramba_big_data else 'int32'
+            deferred_op.add_op(["#"], dst_arr, postcode=["  if not ", need_comm,"[0,i]: continue"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  ",tmp_arr,"=np.array(", comm,"[i], dtype=np."+indextype+")"] )
+            deferred_op.add_op(["#"], dst_arr, postcode=["  with numba.objmode(): add_comm_msg(i,", tmp_arr, ")"],
+                    precode=["with numba.objmode(): init_comm(num_workers)"] )
+
+            # Exchange messages
+            need_comm = need_comm.asarray()
+            print("need_comm array: ",need_comm)
+            remote_exec_all("all2all", uuid.uuid4(), need_comm)
+
+            # Create reply data
+            src_arr_dist = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["", src_arr_dist,"=",src_arr.distribution])
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  ", reply_arr, "=np.empty(", req_arr, ".shape[0],dtype=", src_arr, ".dtype)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(len(postindind)):
+                indop_local.extend([req_arr, f"[j,{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", reply_arr, "[j]=", src_arr, "[", ind_arr_local, "]"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(): add_comm_msg(i,", reply_arr,")"])
+            deferred_op.add_op(["pass #",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
+
+            # Exchange messages
+            remote_exec_all("all2all", uuid.uuid4(), need_comm.T)
+
+            # Fill in from received data
+            deferred_op.add_op(["#"], dst_arr, precode=["for i in range(num_workers):"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  if not ", need_comm.T, "[worker_num,i]: continue"])
+            req_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", req_arr,"='"+indextype+"[:,:]'): ", req_arr, "=get_comm_msg(i,0)"])
+            reply_arr = deferred_op.get_temp_var()
+            deferred_op.add_op(["#"], dst_arr, precode=["  with numba.objmode(", reply_arr,"='"+str(dst_arr.dtype)+"[:]'): ", reply_arr, "=get_comm_msg(i,1)"])
+            deferred_op.add_op(["#"], dst_arr, precode=["  for j in numba.prange(", req_arr, ".shape[0]):"])
+            ind_arr_local = deferred_op.get_temp_var()  # temporary variable to hold constructed local index tuple
+            indop_local = ["    ", ind_arr_local, "= ("]
+            for i in range(dst_arr.ndim):
+                indop_local.extend([req_arr, f"[j,{i+len(postindind)}], "])
+            indop_local[-1]+=")"
+            deferred_op.add_op(["#"], dst_arr, precode=indop_local)
+            deferred_op.add_op(["#"], dst_arr, precode=["    ", dst_arr, "[", ind_arr_local, "]=", reply_arr,"[j]"])
+            deferred_op.add_op(["pass #",dst_arr], dst_arr, precode=["return"])
+            deferred_op.do_ops()
+
+            # Done!
+            return dst_arr
+
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
             cindex = canonical_index(index, self.shape)
@@ -6237,20 +6539,24 @@ class ndarray:
 
     @DAGapi
     def getitem_array(self, index):
+        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
         #if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
         #    return DAGshape(self.shape, self.dtype, False)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
-            return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+        if isinstance(index, ndarray) and index.dtype==bool:
+            if index.broadcastable_to(self.shape):
+                return DAGshape(self.shape, self.dtype, False, aliases=self, extra_ndarray_opts={'maskarray':index})
+            else:
+                raise IndexError("Mask index shape does not match array shape")
 
         if len(index) > self.ndim:
             raise IndexError(f"too many indices for array: array is {self.ndim}-dimensional, but {len(index)} were indexed")
 
         index_has_slice = builtins.any([isinstance(i, slice) for i in index])
-        index_has_array = builtins.any([isinstance(i, np.ndarray) for i in index])
+        index_has_array = builtins.any([isinstance(i, (tuple, list, np.ndarray, ndarray)) for i in index])
 
         if index_has_array:
             # This is the advanced indexing case that always creates a copy.
-            dim_sizes = dim_sizes_from_index(index, self.shape)
+            dim_sizes,_,_,_,_ = dim_sizes_from_index(index, self.shape)
             return DAGshape(dim_sizes, self.dtype, False, aliases=self)
         # If any of the indices are slices or the number of indices is less than the number of array dimensions.
         elif index_has_slice or len(index) < len(self.shape):
@@ -6264,24 +6570,18 @@ class ndarray:
     # Convert 0d indices in index into integers.
     def handle_0d_index(self, ind):
         if isinstance(ind, (ndarray, np.ndarray)) and ind.shape == ():
-            ind.instantiate()
             return ind[()]
         else:
             return ind
 
     def getitem_real(self, index):
         dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
-        # index is a mask ndarray -- boolean type with same shape as array (or broadcastable to that shape)
-        if isinstance(index, ndarray) and index.dtype==bool and index.broadcastable_to(self.shape):
+        # index is a mask ndarray -- boolean type
+        if isinstance(index, ndarray) and index.dtype==bool:
             return self.getitem_array(index)
 
         if not isinstance(index, tuple):
             index = (index,)
-
-        if index == (): # 0d case
-            assert self.shape == ()
-            self.instantiate()
-            return self.distribution[()]
 
         index = tuple([self.handle_0d_index(ind) for ind in index])
 
@@ -6544,6 +6844,11 @@ class ndarray:
 
 atexit.register(ndarray.atexit)
 
+
+class manual_idx_ndarray(ndarray):
+    def get_details(self):
+        return super().get_details().force_manual_idx()
+
 # We only have to put functions here where the ufunc name is different from the
 # Python operation name.
 ufunc_map = {
@@ -6555,29 +6860,82 @@ ufunc_map = {
 }
 
 
+def _get_array_like(a):
+    if not isinstance(a, (np.ndarray, ndarray)):
+        try:
+            a = np.array(a)
+        except:
+            raise ValueError("Cannot convert to array")
+    if a.ndim==0:
+        return a[()], None
+    if isinstance(a, np.ndarray):
+        a = array(a)
+    return a, a.shape
+
+
+# TODO: handle out argument
 def dot(a, b, out=None):
     dprint(1, "dot")
-    ashape = a.shape
-    bshape = b.shape
-    if len(ashape) <= 2 and len(bshape) <= 2:
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        return a*b
+    if len(bshape)==1 or (len(ashape) <= 2 and len(bshape) <= 2):
         return matmul(a, b, out=out)
-    else:
-        print("dot for matrices higher than 2 dimensions not currently supported.")
-        assert 0
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    shp0 = ashape[:-1] + bshape
+    bn = [-(i+3) for i in range(len(bshape)-2)]+[-1]
+    a = expand_dims(a, bn)
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
 
 
-
-"""
+# TODO: handle out argument
 def matmul(a, b, reduction=False, out=None):
-    #DAG.in_evaluate += 1
-    res = matmul_internal(a, b, reduction=reduction, out=out)
-    #DAG.in_evaluate -= 1
-    return res
-"""
+    a, ashape = _get_array_like(a)
+    b, bshape = _get_array_like(b)
+    if ashape is None or bshape is None:
+        raise ValueError(f"Matmul cannot be used with scalar arguments")
+    if a.ndim==2 and b.ndim==2:
+        return matmul_2D(a, b, reduction=reduction, out=out)
+
+    if b.ndim==1:
+        if ashape[-1]!=bshape[0]:
+            raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+        b = b.broadcast_to(ashape)
+        #if out is not None:
+        #    if out.shape!=ashape:
+        #        raise ValueError(f"Mismatch shape of output {out.shape} for input shapes {ashape} and {bshape}")
+        #    out[...] = (a*b).sum(axis=a.ndim-1)
+        #    return
+        #else:
+        #    return (a*b).sum(axis=a.ndim-1)
+        return (a*b).sum(axis=-1)
+    if ashape[-1]!=bshape[-2]:
+        raise ValueError(f"Mismatched reduction dimension length for arrays of shape {ashape} and {bshape}")
+    a = expand_dims(a,axis=-1)
+    if len(ashape)==1:
+        a = a.broadcast_to(bshape)
+        return (a*b).sum(axis=-2)
+    b = expand_dims(b,axis=-3)
+    ashp0 = ashape[:-2]
+    bshp0 = bshape[:-2]
+    try:
+        shp0 = np.broadcast_shapes(ashp0,bshp0) + ashape[-2:-1] + bshape[-2:]
+    except:
+        raise ValueError(f"Cannot broadcast shapes {ashp0} and {bshp0} for arrays shaped {ashape} and {bshape}")
+    #print(f"HERE {ashape} {bshape} {a.shape} {b.shape} {shp0}")
+    a = a.broadcast_to(shp0)
+    b = b.broadcast_to(shp0)
+    return (a*b).sum(axis=-2)
+
 
 
 @DAGapi
-def matmul(a, b, reduction=False, out=None):
+def matmul_2D(a, b, reduction=False, out=None):
     ashape = a.shape
     bshape = b.shape
     dtype = np.result_type(a.dtype, b.dtype)
@@ -6619,7 +6977,7 @@ def matmul(a, b, reduction=False, out=None):
         return DAGshape(out_shape, dtype, False)
 
 
-def matmul_executor(temp_array, a, b, reduction=False, out=None):
+def matmul_2D_executor(temp_array, a, b, reduction=False, out=None):
     return matmul_internal(a, b, reduction=reduction, out=out)
 
 def matmul_internal(a, b, reduction=False, out=None):
@@ -7249,26 +7607,89 @@ def canonical_slice( sl, dim_size ):
         s
     )
 
+
+# Helper function to setup fancy/advanced indexing
+# This assumes at least one index term is an array or iterable, but at most one can be a ramba ndarray
+# "none", 0-d arrays, and ellipses as index terms should be resolved before caling this function
+# slices and integral values are ok
+# inputs: index, size
+#   index is the fancy indes
+#   size is the shape of the ndarray
+# outputs: newshape, preindex, postindind, arrayind, dist
+#   newshape is the shape of the resultant array
+#   preindex is the index to apply to the original (e.g., to handle constant and slice terms)
+#   postindind has the list of index terms to apply after preindex;
+#     if integral, this is indicates the kth dimension of the output array
+#     if an array or ndarray, use the values in the array for this index term position
+#   arrayind indicates the slice of the output array dimensions used to index the array terms in postindind
+#   dist indicates the desired distribution of the output to match an ndarray term, or None to use defaults
 def dim_sizes_from_index(index, size):
-    newindex = []
+    newshape = []
+    preindex = []
+    postindind = []
+    arrayshape=None
+    arraypos=0
+    distarr=None
     if not isinstance(index, tuple):
         index = (index,)
-    assert len(index) <= len(size)
+    if (len(index) > len(size)):
+        raise IndexError(f"too many indices for array: array is {len(size)}-dimensional, but {len(index)} were indexed")
     for i in range(len(size)):
         if i >= len(index):
-            newindex.append(size[i])
+            postindind.append(len(newshape))
+            newshape.append(size[i])
             continue
         ti = index[i]
         if isinstance(ti, numbers.Integral):
-            newindex.append(1)
+            preindex.append(ti)
         elif isinstance(ti, slice):
             tmp = canonical_slice(ti, size[i])
-            newindex.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
-        elif isinstance(ti, np.ndarray):
-            newindex.append(len(ti))
+            postindind.append(len(newshape))
+            newshape.append( builtins.max(0,np.ceil((tmp.stop-tmp.start)/tmp.step).astype(int)) )
+            preindex.append( tmp )
+        elif isinstance(ti, (tuple, list, np.ndarray, ndarray)):
+            if isinstance(ti, ndarray):
+                if distarr is not None:
+                    raise IndexError(f"Support only maximum of 1 distributed array in advanced indexing")
+                distarr = ti
+            else:
+                if not isinstance(ti, np.ndarray):
+                    ti = np.array(ti, dtype=int)
+                if np.min(ti)<-size[i] or np.max(ti)>=size[i]:
+                    raise IndexError(f"index out of bounds for axis {i} with size {size[i]}")
+            if arrayshape is None:
+                arrayshape = ti.shape
+                arraypos = len(newshape)
+            else:
+                # broadcast check
+                try:
+                    arrayshape = np.broadcast_shapes(arrayshape, ti.shape)
+                except:
+                    raise IndexError(f"shape mismatch: indexing arrays could not be broadcast together with shapes {arrayshape} {ti.shape}")
+                # check arraypos
+                if arraypos != len(newshape):
+                    arraypos = 0
+            postindind.append(ti)
+            preindex.append( slice(0,size[i],1) )
         else:
             assert 0
-    return tuple(newindex)
+    newshape[arraypos:arraypos] = list(arrayshape)
+    dist = None
+    for i,j in enumerate(postindind):
+        if isinstance(j, numbers.Integral):
+            if j>=arraypos:
+                postindind[i]=j+len(arrayshape)
+        elif isinstance(j, ndarray):
+            distarr = distarr.broadcast_to(arrayshape)
+            distarr = expand_dims(distarr, [i if i<arraypos else i+len(arrayshape) for i in range(len(newshape)-len(arrayshape))])
+            distarr = distarr.broadcast_to(tuple(newshape))
+            postindind[i]=distarr
+            dist = shardview.distribution_like( distarr.distribution )
+        else:   # numpy array
+            postindind[i]=np.broadcast_to(j, arrayshape)
+    arrayind = slice(arraypos, arraypos+len(arrayshape))
+    #print(f"newshape is {tuple(newshape)} preindex is {tuple(preindex)} postindind is {postindind} arrayind is {arrayind} dist is {dist}")
+    return tuple(newshape), tuple(preindex), postindind, arrayind, dist
 
 
 def canonical_index(index, shape, allslice=True):
@@ -7276,7 +7697,7 @@ def canonical_index(index, shape, allslice=True):
     if not isinstance(index, tuple):
         index = (index,)
     if (len(index) > len(shape)):
-        raise IndexError(f"too many indices for array: array is {len(index)}-dimensional, but {len(index)} were indexed")
+        raise IndexError(f"too many indices for array: array is {len(shape)}-dimensional, but {len(index)} were indexed")
     for i in range(len(shape)):
         if i >= len(index):
             newindex.append(slice(0, shape[i]))
@@ -7550,7 +7971,7 @@ class deferred_op:
         self.write_arrs = []  # (gid,dist) list of write arrays; dist is None if flex_dist
         self.use_gids = (
             {}
-        )  # map gid to tuple ([(tmp var name, array details)*], bdarray dist, pad)
+        )  # map gid to tuple ([(tmp var name, array details)*], bdarray shape, bdarray dist, pad, flex)
         self.preconstructed_gids = (
             {}
         )  # subset of use_gids that already are remote_constructed
@@ -7571,10 +7992,10 @@ class deferred_op:
         self.varcount += 1
         return nm
 
-    def add_gid(self, gid, arr_info, bd_info, pad, flex_dist):
+    def add_gid(self, gid, arr_info, bd_shape, bd_info, pad, flex_dist):
         if gid not in self.use_gids:
             # self.use_gids[gid] = tuple([self.get_var_name(), arr_info, bd_info, pad])
-            self.use_gids[gid] = ([], bd_info, pad, flex_dist)
+            self.use_gids[gid] = ([], bd_shape, bd_info, pad, flex_dist)
             self.keepalives.add(bdarray.get_by_gid(gid))  # keep bdarrays alive
         for (v, ai) in self.use_gids[gid][0]:
             if shardview.dist_is_eq(arr_info.distribution, ai.distribution):
@@ -7624,12 +8045,9 @@ class deferred_op:
         }
         dprint(3, "use_gids:", self.use_gids.keys(), "\nlive_gids", live_gids.keys(), "\npreconstructed gids", self.preconstructed_gids, "\ndistribution", self.distribution)
         # Change distributions for any flexible arrays -- we should not have slices here
-        for (_, (_, d, _, flex)) in live_gids.items():
-            if flex:
+        for (_, (_, s, d, _, flex)) in live_gids.items():
+            if flex and self.shape==s:
                 dcopy = shardview.clean_dist(self.distribution)
-                #dcopy = libcopy.deepcopy(shardview.clean_dist(self.distribution)) # version from dag branch
-                #dcopy = libcopy.deepcopy(self.distribution)
-                # d.clear()
                 for i, v in enumerate(
                     dcopy
                 ):  # deep copy distribution, but keep reference same as other arrays may be pointing to the same one
@@ -7714,6 +8132,7 @@ class deferred_op:
             return "["+",".join(idx)+"]"
         for (k, v) in live_gids.items():
             for (vn, ai) in v[0]:
+                if ai.manual_idx: continue  # skip for manually indexed arrays
                 vn0 = vn if vn not in args2tran else args2tran[vn][0]
                 index_text2 = index_text if vn0 not in args2uv else make_index_text( args2tran[vn][1], args2uv[vn0], vn, self.axis_reductions )
                 for i in range(len(self.codelines)):
@@ -7758,10 +8177,10 @@ class deferred_op:
         # Use hashlib here so that hash is same every time so that caching works.
         code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
         fname = "ramba_deferred_ops_func_" + str(len(args)) + str(code_hash)
-        code = "def " + fname + "(global_start,itershape," + ",".join(args) + "):" + code + "\n  pass"
+        code = "def " + fname + "(global_start,itershape,worker_num,num_workers," + ",".join(args) + "):" + code + "\n  pass"
         code_hash2 = hashlib.sha256(code2.encode('utf-8')).hexdigest()
         fname2 = "ramba_deferred_ops_func_" + str(len(args2)) + str(code_hash2)
-        code2 = "def " + fname2 + "(global_start,itershape," + ",".join(args2) + "):" + code2 + "\n  pass"
+        code2 = "def " + fname2 + "(global_start,itershape,worker_num,num_workers," + ",".join(args2) + "):" + code2 + "\n  pass"
         if (debug_showcode or ndebug>=2) and is_main_thread:
             print("Executing code:\n" + code)
             print("with")
@@ -7857,6 +8276,7 @@ class deferred_op:
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
                         x.gid,
                         x.get_details(),
+                        bd.shape,
                         bd.distribution,
                         bd.pad,
                         bd.flex_dist and not bd.remote_constructed,
@@ -7988,6 +8408,7 @@ class deferred_op:
                     oplist[1 + 2 * i] = cls.ramba_deferred_ops.add_gid(
                         x.gid,
                         x.get_details(),
+                        bd.shape,
                         bd.distribution,
                         bd.pad,
                         bd.flex_dist and not bd.remote_constructed,
@@ -8007,6 +8428,7 @@ class deferred_op:
             v= cls.ramba_deferred_ops.add_gid(
                 v.gid,
                 v.get_details(),
+                bd.shape,
                 bd.distribution,
                 bd.pad,
                 bd.flex_dist and not bd.remote_constructed,
@@ -8444,14 +8866,28 @@ def load(fname, dtype=None, local=False, ftype=None, **kwargs):
 # Array creation routines -- numerical ranges
 # arange, linspace, logspace, geomspace, meshgrid, mgrid, ogrid
 
-def arange_executor(temp_ndarray, size, like=None, local_border=0):
-    res = empty(size, local_border=local_border, dtype=int64)
-    deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
+def arange_executor(temp_ndarray, start, stop=None, step=None, dtype=None, like=None, local_border=0):
+    res = empty(temp_ndarray.size, local_border=local_border, dtype=int64)
+    if stop is None:
+        deferred_op.add_op( ["", res, " = index[0] + global_start[0]"], res, imports=[] )
+    else:
+        if step is None:
+            deferred_op.add_op( ["", res, " = ", start, " + index[0] + global_start[0]"], res, imports=[] )
+        else:
+            deferred_op.add_op( ["", res, " = ", start, " + ", step, " * (index[0] + global_start[0])"], res, imports=[] )
     return res
 
 @DAGapi
-def arange(size, *, like=None, local_border=0):
-    return DAGshape((size,), int64, False)
+def arange(start, stop=None, step=None, dtype=None, *, like=None, local_border=0):
+    if stop is None:
+        size = start
+    else:
+        if step is None:
+            size = stop - start
+        else:
+            size = (stop - start + step - 1) // step
+    return DAGshape((size,), int64 if dtype is None else dtype, False)
+
 
 def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None):
     assert num > 0
@@ -8558,7 +8994,27 @@ def triu(m, k=0):
 # Array manipulation -- basic ops
 # copyto, shape
 
+def cbrt_executor(temp_array, x, *args, **kwargs):
+    new_ndarray = create_array_with_divisions(
+        x.shape,
+        x.distribution,
+        local_border=x.local_border,
+        dtype=temp_array.dtype,
+    )
+    deferred_op.add_op(
+        ["", new_ndarray, " = " + "numpy.cbrt" + "(", x, ")"],
+        new_ndarray,
+        imports=["numpy"]
+    )
+    return new_ndarray
 
+@DAGapi
+def cbrt(x, out=None, dtype=None):   # just to keep flake happy
+    if isinstance(x, ndarray):
+        dprint(1, "cbrt", x.shape)
+        return DAGshape(x.shape, dtype if dtype is not None else np.float64, False)
+    else:
+        return np.cbrt(x)
 
 # Array manipulation -- changing shape
 # reshape, ravel, ndarray.flat, ndarray.flatten
