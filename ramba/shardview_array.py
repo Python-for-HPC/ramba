@@ -13,6 +13,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 import os
 import numba
 from numba import literal_unroll
+from numba.extending import overload
 import numpy as np
 from ramba.common import *
 
@@ -388,7 +389,7 @@ def has_index(sv, index):
     # return (_index_start(sv)<=index).all() and (index<_stop(sv)).all()
 
 
-@numba.generated_jit(nopython=True,cache=True)
+@overload(calc_map_internal, nopython=True, cache=True)
 def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
     if isinstance(sl_i,numba.types.SliceType):
         if (sl_i.members==2):
@@ -423,6 +424,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
         return impl
     else:
         raise numba.core.errors.TypingError("ERR: slice contains something unexpected!", type(sl_i))
+
 
 @numba.njit(fastmath=fastmath, cache=True)
 def mapslice(sv, sl):
