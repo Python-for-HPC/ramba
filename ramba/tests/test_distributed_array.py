@@ -4,6 +4,7 @@ import random
 import numba
 import time
 import os
+import gc
 
 full_test = int(os.environ.get("RAMBA_FULL_TEST", "0"))
 
@@ -147,6 +148,7 @@ class TestFusion:
         assert(exec10<2*exec1)
         a=ramba.ones(1)  # WORKAROUND: ensure large mem released
         ramba.sync()     # Ideally, should work without these
+        gc.collect()
 
     def test_nofuse(self):
         a = ramba.zeros(1000,dtype=float)
@@ -186,6 +188,7 @@ class TestFusion:
         assert(exec10>5*exec1)
         a=ramba.ones(1)  # WORKAROUND: ensure large mem released
         ramba.sync()     # Ideally, should work without these
+        gc.collect()
 
     def test_fuse2(self):
         a = ramba.ones(500*1000*1000,dtype=float)  # Should fit in GitHub runner VM (7GB RAM)
@@ -193,6 +196,8 @@ class TestFusion:
         assert a[0]==14
         a=ramba.ones(1)  # WORKAROUND: ensure large mem released
         ramba.sync()     # Ideally, should work without these
+        gc.collect()
+
 
 class TestBroadcast:
     def test1(self):
