@@ -6271,7 +6271,6 @@ class ndarray:
 
     def setitem_real(self, index, value):
         dprint(2, "ndarray::__setitem__real:", index, type(index), value, type(value))
-
         # index is a mask ndarray -- boolean type
         if isinstance(index, ndarray) and index.dtype==bool:
             return self.setitem_array(index, value)
@@ -6328,6 +6327,8 @@ class ndarray:
 
                 if self.readonly:
                     raise ValueError("assignment destination is read-only")
+
+                add_time("setitem non-DAG", 1)
 
                 # 0d case
                 if self.shape==():
@@ -6590,6 +6591,8 @@ class ndarray:
                     if ellpos==[]:  # No ellipsis, return value
                         return self.distribution[()]
                     return self.distribution  # has an ellipsis, return array not value
+
+                add_time("getitem non-DAG", 1)
 
                 index = canonical_index(index, self.shape, allslice=False)
                 owner = shardview.find_index(
