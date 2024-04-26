@@ -6159,6 +6159,9 @@ class ndarray:
                 indop_local.extend([ind_arr, f"[{i}]-",dst_arr_dist, f"[worker_num,1,{i}], "])
             indop_local[-1]+=")"
             deferred_op.add_op(indop_local, valueind)
+            if (num_workers==1):  # simple case as everythng must be local
+                deferred_op.add_op(["", dst_arr, "[", ind_arr_local, "] = ", value], valueind)
+                return
             # if index is in local range of source array, copy value to output array
             deferred_op.add_op(["if shardview.has_index(", dst_arr_dist,"[worker_num],",ind_arr, "): ", dst_arr, "[", ind_arr_local, "] = ", value], valueind)
             # otherwise, add to list of items to push to remote node
@@ -6270,7 +6273,18 @@ class ndarray:
         assert 0  # Handle other types
 
     def setitem_real(self, index, value):
-        dprint(2, "ndarray::__setitem__real:", index, type(index), value, type(value))
+        if debug>=2: dprint(2, "ndarray::__setitem__real:", index, type(index), value, type(value))
+
+        # hack -- fast track i worker case, fully indexed
+        if num_workers==1 and (self.ndim==1 and isinstance(index, numbers.Integral) and index>=0 or (
+            isinstance(index, tuple) and len(index)==self.ndim and 
+            builtins.all([isinstance(i, numbers.Integral) and i>=0 for i in index]) ) ):
+                if isinstance(index, numbers.Integral): index = (index,)
+                index = tuple( [ np.int32(i) for i in index] )
+                self.instantiate()
+                remote_exec( 0, "setitem_global", self.gid, index, value, self.distribution[0])
+                return
+
         # index is a mask ndarray -- boolean type
         if isinstance(index, ndarray) and index.dtype==bool:
             return self.setitem_array(index, value)
@@ -6405,6 +6419,9 @@ class ndarray:
                 indop_local.extend([ind_arr, f"[{i}]-",src_arr_dist, f"[worker_num,1,{i}], "])
             indop_local[-1]+=")"
             deferred_op.add_op(indop_local, dst_arr)
+            if (num_workers==1):  # simple case as everythng must be local
+                deferred_op.add_op(["", dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
+                return dst_arr
             # if index is in local range of source array, copy value to output array
             deferred_op.add_op(["if shardview.has_index(", src_arr_dist,"[worker_num],",ind_arr, "): ",dst_arr, "= ", src_arr, "[", ind_arr_local, "]"], dst_arr)
             # otherwise, add to list of items to request from the corresponding remote node
@@ -6550,7 +6567,17 @@ class ndarray:
             return ind
 
     def getitem_real(self, index):
-        dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
+        if debug>=2:  dprint(2, "ndarray::__getitem__real:", index, type(index), self.shape, len(self.shape))
+
+        #hack to speed up 1 worker case, where index is fully specified
+        if num_workers==1 and (self.ndim==1 and isinstance(index, numbers.Integral) and index>=0 or (
+            isinstance(index, tuple) and len(index)==self.ndim and 
+            builtins.all([isinstance(i, numbers.Integral) and i>=0 for i in index]) ) ):
+                if isinstance(index, numbers.Integral): index = (index,)
+                index = tuple( [ np.int32(i) for i in index] )
+                self.instantiate()
+                ret = remote_call( 0, "getitem_global", self.gid, index, self.distribution[0])
+                return ret
         # index is a mask ndarray -- boolean type
         if isinstance(index, ndarray) and index.dtype==bool:
             return self.getitem_array(index)
