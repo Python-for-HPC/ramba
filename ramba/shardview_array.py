@@ -16,6 +16,10 @@ from numba import literal_unroll
 import numpy as np
 from ramba.common import *
 
+import numba.cpython.unsafe.tuple as UT
+import ramba.numba_ext as UTx
+
+
 ramba_dist_dtype = np.int32
 
 if ramba_big_data:
@@ -212,8 +216,8 @@ def base_to_index(sv, base):
         [s + (0 if am[i] < 0 else offset[am[i]]) for i, s in enumerate(_size(sv))]
     )
 
-
-def index_to_base(sv, index, end=False):
+@numba.njit(fastmath=fastmath, cache=True)
+def _index_to_base_internal(sv, zero_tup, index, bcastval):
     assert len(index) == len_size(sv)
     offset = [index[i] - s for i,s in enumerate(_start(sv))]
     offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
@@ -222,13 +226,35 @@ def index_to_base(sv, index, end=False):
     for i, v in enumerate(_axis_map(sv)):
         if v >= 0:
             invmap[v] = i
-    bcastval = 1 if end else 0
-    return tuple(
-        [
-            bo + (bcastval if invmap[i] < 0 else offset[invmap[i]])
-            for i, bo in enumerate(_base_offset(sv))
-        ]
-    )
+    t = zero_tup
+    for i, bo in enumerate(_base_offset(sv)):
+        t = UT.tuple_setitem(t,i,bo + (bcastval if invmap[i] < 0 else offset[invmap[i]]) )
+    return t
+
+@functools.cache
+def tuple_n(n):
+    return (0,)*n
+
+def index_to_base(sv, index, end=False):
+    return _index_to_base_internal(sv, tuple_n(len_base_offset(sv)), index, 1 if end else 0)
+    #return _index_to_base_internal(sv, (0,)*len_base_offset(sv), index, 1 if end else 0)
+
+#def index_to_base(sv, index, end=False):
+#    assert len(index) == len_size(sv)
+#    offset = [index[i] - s for i,s in enumerate(_start(sv))]
+#    offset = [o if _steps(sv)[i]>0 else max(-1,_size(sv)[i]-1-o) for i,o in enumerate(offset)]
+#    offset = [o*abs(_steps(sv)[i]) for i,o in enumerate(offset)]
+#    invmap = -np.ones(len_base_offset(sv), dtype=ramba_dist_dtype)
+#    for i, v in enumerate(_axis_map(sv)):
+#        if v >= 0:
+#            invmap[v] = i
+#    bcastval = 1 if end else 0
+#    return tuple(
+#        [
+#            bo + (bcastval if invmap[i] < 0 else offset[invmap[i]])
+#            for i, bo in enumerate(_base_offset(sv))
+#        ]
+#    )
 
 
 @numba.njit(fastmath=fastmath, cache=True)
@@ -340,10 +366,6 @@ def to_base_slice(sv):
         ret_array[i][0],
         ret_array[i][1] if ret_array[i][1] >= 0 else None,
         ret_array[i][2]) for i in range(ret_array.shape[0])])
-
-
-import numba.cpython.unsafe.tuple as UT
-import ramba.numba_ext as UTx
 
 
 def get_base_slice_internal(sv, arr):
