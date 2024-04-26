@@ -13,6 +13,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 import os
 import numba
 from numba import literal_unroll
+from numba.extending import overload
 import numpy as np
 from ramba.common import *
 
@@ -410,8 +411,30 @@ def has_index(sv, index):
     # return (_index_start(sv)<=index).all() and (index<_stop(sv)).all()
 
 
-@numba.generated_jit(nopython=True,cache=True)
 def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
+    if sl_i.step is None:
+        s = min(max(sl_i.start, sv_s), sv_e)
+        e = min(max(sl_i.stop, sv_s), sv_e)
+        sz = e-s
+        si = s-sl_i.start
+        st = sv_st
+    else:
+        if sl_i.step>0:
+            s = min(max(sl_i.start, sv_s + (sl_i.start-sv_s)%sl_i.step), sv_e)
+            e = min(max(sl_i.stop - (sl_i.stop-1-sl_i.start)%sl_i.step, sv_s), sv_e)
+            si = max(0,(s-sl_i.start)//sl_i.step)
+        else:
+            s = min(max(sl_i.stop + 1 + (sl_i.start-sl_i.stop-1)%abs(sl_i.step), sv_s+(sl_i.start-sv_s)%abs(sl_i.step)), sv_e)
+            e = min(max(sl_i.start+1, sv_s), sv_e)
+            si = max(0,int(np.ceil((e-1-sl_i.start)/sl_i.step)))
+        sz = int(np.ceil((e-s)/abs(sl_i.step)))
+        st = sv_st*sl_i.step
+        e = s + (sz-1)*abs(sl_i.step)+1
+    return s, max(s,e-1), sz, si, st
+
+
+@overload(calc_map_internal, nopython=True, cache=True)
+def overload_calc_map_internal(sl_i, sv_s, sv_e, sv_st):
     if isinstance(sl_i,numba.types.SliceType):
         if (sl_i.members==2):
             def impl(sl_i, sv_s, sv_e, sv_st):
@@ -445,6 +468,7 @@ def calc_map_internal(sl_i, sv_s, sv_e, sv_st):
         return impl
     else:
         raise numba.core.errors.TypingError("ERR: slice contains something unexpected!", type(sl_i))
+
 
 @numba.njit(fastmath=fastmath, cache=True)
 def mapslice(sv, sl):
@@ -733,6 +757,48 @@ def dist_is_eq(d1, d2, axis=None):
                 return False
     return True
 
+@numba.njit(fastmath=fastmath, cache=True)
+def dist_has_neg_step(dist):
+    am = _axis_map(dist[0])
+    s = _steps(dist[0])
+    for i in range(am.shape[0]):
+        if am[i]>=0 and s[i]<0: return True
+    return False
+
+# This is still not quite right; to be comparable, all views need to be based on a common node i;
+# may not be the case if index [0,0,..] is right near the boundary of a node
+@numba.njit(fastmath=fastmath, cache=True)
+def dist_to_view(sz,d,bd):
+    am = _axis_map(d[0])
+    zero_idx = _size(d[0])*0
+    i = int(find_index(d,zero_idx))
+    bo = _base_offset(d[i])
+    st = _steps(d[0])
+    return shardview(np.array(sz), index_start=None, base_offset=bo, axis_map=am, steps=st)
+
+# assumes non-zero size, positive steps
+@numba.njit(fastmath=fastmath, cache=True)
+def view_base_size(v):
+    mapv = _axis_map(v)
+    szv = _size(v)
+    stv = _steps(v)
+    sz = _base_offset(v) * 0 + 1
+    for i,j in enumerate(mapv):
+        if j>=0:
+            sz[j] = (szv[i]-1)*stv[i]+1
+    return sz
+
+# assumes non-zero size, positive steps
+@numba.njit(fastmath=fastmath, cache=True)
+def view_union(u,v):
+    bo1 = _base_offset(u)
+    bo2 = _base_offset(v)
+    eo1 = bo1+view_base_size(u)
+    eo2 = bo2+view_base_size(v)
+    bo = np.minimum(bo1, bo2)
+    eo = np.maximum(eo1, eo2)
+    sz = eo-bo
+    return shardview(sz, base_offset=bo)
 
 @numba.njit(fastmath=fastmath, cache=True)
 def slice_distribution(sl, dist):
