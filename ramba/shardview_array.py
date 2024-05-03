@@ -232,7 +232,7 @@ def _index_to_base_internal(sv, zero_tup, index, bcastval):
         t = UT.tuple_setitem(t,i,bo + (bcastval if invmap[i] < 0 else offset[invmap[i]]) )
     return t
 
-@functools.cache
+@functools.lru_cache(maxsize=None)
 def tuple_n(n):
     return (0,)*n
 
